@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the 5-stage Closed-Loop Eval Flywheel and TCO Benchmark suite."""
+"""Unit tests for the 6-Stage Closed-Loop Optimizer and 8-Capability Coexistence Suite."""
 
 from __future__ import annotations
 
@@ -27,9 +27,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.mark.asyncio
-async def test_closed_loop_flywheel_blocks_v1_and_promotes_v2() -> None:
+async def test_closed_loop_flywheel_executes_6_stages_blocks_v1_and_promotes_v2_blueprint() -> None:
     report = await execute_closed_loop_flywheel(live_cloud=False, reset_to_v1_first=True)
     assert report["status"] == "PROMOTED_V2"
+    assert report["flywheel_stages_count"] == 6
+    assert len(report["stages"]) == 6
+    assert len(report["few_shot_exemplars"]) >= 2
     assert report["elapsed_seconds"] < 120.0
 
     v1 = report["v1_baseline"]
@@ -48,13 +51,18 @@ async def test_closed_loop_flywheel_blocks_v1_and_promotes_v2() -> None:
     assert pointer["active_version"] == "v2"
     assert pointer["behavior_score"] >= 90.0
 
+    bp = report["promotion"]["enterprise_golden_blueprint"]
+    assert bp["blueprint_id"] == "bp-governance-synthesizer-v2"
+    assert "aws_bedrock_otlp" in bp["a_la_carte_trace_sources"]
+
 
 @pytest.mark.asyncio
-async def test_platform_8_capability_suite_and_tco_math() -> None:
+async def test_platform_8_capability_suite_and_ensemble_tco_math() -> None:
     tco = calculate_guardrail_tco(daily_turns=10_000_000, tokens_per_turn=1000)
     assert tco["azure_content_safety_annual_usd"] == 3_650_000.0
     assert tco["aws_bedrock_guardrails_annual_usd"] == 1_095_000.0
     assert tco["google_model_armor_annual_usd"] == 365_000.0
+    assert tco["ensemble_tier0_hybrid_annual_usd"] == 584_000.0
     assert tco["annual_savings_vs_azure_usd"] == 3_285_000.0
     assert tco["annual_savings_vs_bedrock_usd"] == 730_000.0
 
@@ -66,4 +74,4 @@ async def test_platform_8_capability_suite_and_tco_math() -> None:
     doc_text = (REPO_ROOT / "docs" / "GOOGLE_AGENT_PLATFORM_BENCHMARK.md").read_text(encoding="utf-8")
     assert "\u2014" not in doc_text
     assert "\u2013" not in doc_text
-    assert "Cymbal Core Operations & Release Agent" in doc_text
+    assert "Cymbal Agent Governance, Optimization & Deployment Workbench" in doc_text

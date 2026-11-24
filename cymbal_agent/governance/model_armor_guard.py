@@ -12,17 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fail-closed Model Armor & inline Cloud SDP PII sanitizer.
+"""Fail-closed Model Armor Dynamic Per-Request Policy Router & Cloud SDP Sanitizer.
 
 Implements:
-1. 3-step NFKC + URL-decode + bounded Base64/Hex recursive unpacker (max_depth=3).
-2. Inline PII redaction (SSN, MAC address, payment card) so pasted SRE incident
-   logs are safely masked inline rather than leaking or crashing.
-3. Multi-URL phishing / malicious URI inspection (up to 40 URLs per payload).
-4. Live Google Cloud Model Armor (`modelarmor.<region>.rep.googleapis.com`)
+1. Interim Dynamic Per-Request Policy Abstraction (`DynamicGuardrailPolicyPayload`):
+   Accepts per-request business unit, risk tier, active detector switches, PI/RAI
+   sensitivity thresholds, SDP action mode (`DEIDENTIFY_INLINE` | `BLOCK_ON_MATCH` |
+   `INSPECT_ONLY`), and 4-5 guardrail ensemble role, compiling hundreds of logical
+   BU combinations onto a bounded 2-tier Floor-enforced GCP base template pool
+   (`cymbal-default-medium-gpp` and `cymbal-strict-ag3-gpp`) plus runtime filter
+   evaluation.
+2. 3-step NFKC + URL-decode + bounded Base64/Hex recursive unpacker (max_depth=3).
+3. Inline PII redaction (SSN, MAC address, payment card) or strict block per dynamic
+   request policy.
+4. Multi-URL phishing / malicious URI inspection (up to 40 URLs per payload).
+5. Live Google Cloud Model Armor (`modelarmor.<region>.rep.googleapis.com`)
    `sanitize_user_prompt` and `sanitize_model_response` calls with strict
-   fail-closed semantics (`MATCH_FOUND`, `PARTIAL`, `FAILURE`, or provider error
-   all deny execution).
+   fail-closed semantics.
 """
 
 from __future__ import annotations
@@ -33,18 +39,20 @@ from dataclasses import dataclass, field
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 import unicodedata
 import urllib.parse
 
 from google.api_core.client_options import ClientOptions
 from google.cloud import modelarmor_v1
+from pydantic import BaseModel, Field
 
 from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 SSN_RE = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 MAC_RE = re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\b")
 CARD_RE = re.compile(r"\b(?:\d{4}[-\s]?){3}(\d{4})\b")
+REDACTED_TOKEN_RE = re.compile(r"\[REDACTED_PII_([A-Z]+):[^\]]+\]")
 
 BASE64_CANDIDATE_RE = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{24,}={0,2}(?![A-Za-z0-9+/=])")
 HEX_CANDIDATE_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}){14,}\b")
@@ -67,6 +75,71 @@ PROMPT_INJECTION_PATTERNS = (
     re.compile(r"bypass\s+(?:sentinel|aegis)?\s*ag3\s+approval", re.IGNORECASE),
     re.compile(r"system\s*override\s*:\s*execute\s+unapproved", re.IGNORECASE),
 )
+
+
+class DynamicGuardrailPolicyPayload(BaseModel):
+    """Per-request guardrail policy payload eliminating static template sprawl."""
+
+    business_unit: Literal[
+        "core_cable", "media_studio", "intl_sky", "enterprise_shared"
+    ] = Field(default="enterprise_shared")
+    risk_tier: Literal["AG1", "AG2", "AG3", "AG4"] = Field(default="AG2")
+    pi_and_jailbreak_threshold: Literal[
+        "LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH_ONLY"
+    ] = Field(default="MEDIUM_AND_ABOVE")
+    malicious_uri_filter: bool = Field(default=True)
+    sdp_pii_mode: Literal[
+        "DEIDENTIFY_INLINE", "BLOCK_ON_MATCH", "INSPECT_ONLY"
+    ] = Field(default="DEIDENTIFY_INLINE")
+    rai_sensitivity: Literal[
+        "LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH_ONLY"
+    ] = Field(default="MEDIUM_AND_ABOVE")
+    ensemble_role: Literal[
+        "tier0_prefilter", "parallel_ensemble_voter", "standalone_floor"
+    ] = Field(default="tier0_prefilter")
+
+
+def compile_dynamic_policy_to_base_template(
+    policy: DynamicGuardrailPolicyPayload,
+    project_id: str,
+    location: str = "us-central1",
+    default_template: str | None = None,
+    strict_template: str | None = None,
+) -> dict[str, Any]:
+    """Routes dynamic BU/risk/detector payloads onto a bounded 2-template Floor pool."""
+    med_tpl = (
+        default_template
+        or os.getenv("CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE")
+        or f"projects/{project_id}/locations/{location}/templates/cymbal-default-medium-gpp"
+    )
+    high_strict_tpl = (
+        strict_template
+        or os.getenv("CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE")
+        or f"projects/{project_id}/locations/{location}/templates/cymbal-strict-ag3-gpp"
+    )
+    if "<PROJECT_ID>" in med_tpl:
+        med_tpl = f"projects/{project_id}/locations/{location}/templates/cymbal-default-medium-gpp"
+    if "<PROJECT_ID>" in high_strict_tpl:
+        high_strict_tpl = f"projects/{project_id}/locations/{location}/templates/cymbal-strict-ag3-gpp"
+
+    needs_strict = (
+        policy.risk_tier in {"AG3", "AG4"}
+        or policy.pi_and_jailbreak_threshold == "LOW_AND_ABOVE"
+        or policy.rai_sensitivity == "LOW_AND_ABOVE"
+    )
+    resolved_tpl = high_strict_tpl if needs_strict else med_tpl
+    logical_policy_key = (
+        f"{policy.business_unit}:{policy.risk_tier}:pi={policy.pi_and_jailbreak_threshold}:"
+        f"sdp={policy.sdp_pii_mode}:uri={'on' if policy.malicious_uri_filter else 'floor'}:"
+        f"role={policy.ensemble_role}"
+    )
+    return {
+        "resolved_template": resolved_tpl,
+        "resolved_tier": "strict_ag3_pool" if needs_strict else "default_medium_floor_pool",
+        "logical_policy_key": logical_policy_key,
+        "static_templates_avoided_estimate": 288,
+        "ensemble_role": policy.ensemble_role,
+    }
 
 
 class ModelArmorBlockedError(PermissionError):
@@ -93,6 +166,8 @@ class GuardrailVerdict:
     scanned_urls_count: int = 0
     latency_ms: float = 0.0
     summary: str = ""
+    dynamic_policy_key: str = "default:AG2:DEIDENTIFY_INLINE"
+    ensemble_role: str = "tier0_prefilter"
 
 
 def mask_inline_pii(text: str) -> tuple[str, list[str]]:
@@ -160,7 +235,7 @@ def unpack_obfuscated_payloads(text: str, max_depth: int = 3) -> tuple[str, int]
 
 
 class FailClosedModelArmorGuard:
-    """Fail-closed Model Armor sanitizer with regional REP client & inline SDP masking."""
+    """Fail-closed Model Armor sanitizer with Dynamic Policy Router & inline SDP masking."""
 
     def __init__(
         self,
@@ -222,10 +297,32 @@ class FailClosedModelArmorGuard:
         *,
         direction: str = "USER_PROMPT",
         template_override: str | None = None,
+        dynamic_policy: DynamicGuardrailPolicyPayload | dict[str, Any] | None = None,
         block_malicious_urls_inline_mask_only: bool = False,
     ) -> GuardrailVerdict:
         start = time.perf_counter()
+
+        parsed_policy: DynamicGuardrailPolicyPayload | None = None
+        dynamic_key = "default:AG2:DEIDENTIFY_INLINE"
+        ensemble_role = "tier0_prefilter"
         active_template = template_override or self.template_id
+
+        if dynamic_policy is not None:
+            parsed_policy = (
+                dynamic_policy
+                if isinstance(dynamic_policy, DynamicGuardrailPolicyPayload)
+                else DynamicGuardrailPolicyPayload.model_validate(dynamic_policy)
+            )
+            compiled = compile_dynamic_policy_to_base_template(
+                parsed_policy,
+                project_id=self.project_id,
+                location=self.location,
+                default_template=self.template_id,
+            )
+            if not template_override:
+                active_template = str(compiled["resolved_template"])
+            dynamic_key = str(compiled["logical_policy_key"])
+            ensemble_role = str(compiled["ensemble_role"])
 
         if self.simulate_outage:
             latency = round((time.perf_counter() - start) * 1000, 2)
@@ -238,12 +335,38 @@ class FailClosedModelArmorGuard:
                 action_taken="BLOCKED_FAIL_CLOSED",
                 latency_ms=latency,
                 summary="Guardrail provider unreachable; enforced strict fail-closed block.",
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
             )
 
+        sdp_mode = parsed_policy.sdp_pii_mode if parsed_policy else "DEIDENTIFY_INLINE"
         masked_text, pii_types = mask_inline_pii(text)
-        pii_masked = bool(pii_types)
+        pii_detected = bool(pii_types)
 
-        expanded_corpus, unpacked_layers = unpack_obfuscated_payloads(masked_text, max_depth=3)
+        if pii_detected and sdp_mode == "BLOCK_ON_MATCH":
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            return GuardrailVerdict(
+                allowed=False,
+                sanitized_text="",
+                template_id=active_template,
+                filter_match_state="MATCH_FOUND",
+                invocation_result="SUCCESS",
+                action_taken="BLOCKED_SDP_PII_POLICY",
+                pii_masked=False,
+                pii_types_masked=pii_types,
+                latency_ms=latency,
+                summary=(
+                    f"Blocked regulated PII ({', '.join(pii_types)}) per dynamic request policy "
+                    f"[{dynamic_key}] routed onto {active_template.split('/')[-1]}."
+                ),
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
+            )
+
+        effective_text = text if sdp_mode == "INSPECT_ONLY" else masked_text
+        pii_masked = pii_detected and sdp_mode == "DEIDENTIFY_INLINE"
+
+        expanded_corpus, unpacked_layers = unpack_obfuscated_payloads(effective_text, max_depth=3)
 
         urls = URL_EXTRACT_RE.findall(expanded_corpus)[:40]
         malicious_uri = any(
@@ -260,7 +383,10 @@ class FailClosedModelArmorGuard:
         if self.live_api_enabled:
             try:
                 client = self._get_client()
-                scan_payload = expanded_corpus[:16000]
+                # Normalize internal asterisk redaction markers before upstream RAI scan
+                scan_payload = REDACTED_TOKEN_RE.sub(
+                    r"<MASKED_\1>", expanded_corpus[:16000]
+                )
                 if direction == "MODEL_RESPONSE":
                     req = modelarmor_v1.SanitizeModelResponseRequest(
                         name=active_template,
@@ -304,15 +430,19 @@ class FailClosedModelArmorGuard:
                     if inspect_res and (
                         modelarmor_v1.FilterMatchState(inspect_res.match_state).name == "MATCH_FOUND"
                     ):
-                        pii_masked = True
+                        pii_detected = True
+                        if sdp_mode == "DEIDENTIFY_INLINE":
+                            pii_masked = True
                         if "CLOUD_SDP_INFO_TYPE" not in pii_types:
                             pii_types.append("CLOUD_SDP_INFO_TYPE")
                     if deid_res and (
                         modelarmor_v1.FilterMatchState(deid_res.match_state).name == "MATCH_FOUND"
                     ):
-                        pii_masked = True
-                        if getattr(getattr(deid_res, "data", None), "text", None):
-                            masked_text = str(deid_res.data.text)
+                        pii_detected = True
+                        if sdp_mode == "DEIDENTIFY_INLINE":
+                            pii_masked = True
+                            if getattr(getattr(deid_res, "data", None), "text", None):
+                                effective_text = str(deid_res.data.text)
             except Exception as exc:
                 if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") and "401" in str(exc):
                     ma_inv_result = "SUCCESS"
@@ -331,6 +461,8 @@ class FailClosedModelArmorGuard:
                         scanned_urls_count=len(urls),
                         latency_ms=latency,
                         summary=f"Model Armor invocation error; blocked fail-closed ({type(exc).__name__}).",
+                        dynamic_policy_key=dynamic_key,
+                        ensemble_role=ensemble_role,
                     )
 
         latency = round((time.perf_counter() - start) * 1000, 2)
@@ -351,6 +483,8 @@ class FailClosedModelArmorGuard:
                 scanned_urls_count=len(urls),
                 latency_ms=latency,
                 summary=f"Blocked fail-closed on non-SUCCESS invocation_result={ma_inv_result}.",
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
             )
 
         if injection_hit:
@@ -370,8 +504,10 @@ class FailClosedModelArmorGuard:
                 latency_ms=latency,
                 summary=(
                     f"Blocked prompt injection / jailbreak attempt (unpacked_layers={unpacked_layers}) "
-                    f"under {active_template.split('/')[-1]}."
+                    f"under {active_template.split('/')[-1]} [{dynamic_key}]."
                 ),
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
             )
 
         if malicious_uri and not block_malicious_urls_inline_mask_only:
@@ -391,14 +527,16 @@ class FailClosedModelArmorGuard:
                 latency_ms=latency,
                 summary=(
                     f"Blocked malicious/phishing URL across {len(urls)} inspected URI(s) "
-                    f"under {active_template.split('/')[-1]}."
+                    f"under {active_template.split('/')[-1]} [{dynamic_key}]."
                 ),
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
             )
 
         if malicious_uri and block_malicious_urls_inline_mask_only:
             for u in urls:
                 if any(ind in u.lower() for ind in KNOWN_PHISHING_OR_MALICIOUS_URL_INDICATORS):
-                    masked_text = masked_text.replace(u, "[BLOCKED_MALICIOUS_URI]")
+                    effective_text = effective_text.replace(u, "[BLOCKED_MALICIOUS_URI]")
 
         if non_sdp_policy_match and not block_malicious_urls_inline_mask_only:
             return GuardrailVerdict(
@@ -416,12 +554,20 @@ class FailClosedModelArmorGuard:
                 scanned_urls_count=len(urls),
                 latency_ms=latency,
                 summary=f"Blocked policy violation by Model Armor ({active_template.split('/')[-1]}).",
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
             )
 
-        action = "ALLOWED_WITH_INLINE_SDP_REDACTION" if pii_masked else "ALLOWED_CLEAN"
+        if pii_detected and sdp_mode == "INSPECT_ONLY":
+            action = "ALLOWED_ENSEMBLE_SDP_FLAGGED"
+        elif pii_masked:
+            action = "ALLOWED_WITH_INLINE_SDP_REDACTION"
+        else:
+            action = "ALLOWED_CLEAN"
+
         return GuardrailVerdict(
             allowed=True,
-            sanitized_text=masked_text,
+            sanitized_text=effective_text,
             template_id=active_template,
             filter_match_state="NO_MATCH_FOUND",
             invocation_result=ma_inv_result,
@@ -434,7 +580,9 @@ class FailClosedModelArmorGuard:
             scanned_urls_count=len(urls),
             latency_ms=latency,
             summary=(
-                f"Sanitized via {active_template.split('/')[-1]} in {latency}ms "
-                f"(pii_masked={pii_masked}, urls_scanned={len(urls)})."
+                f"Sanitized via {active_template.split('/')[-1]} [{dynamic_key}] in {latency}ms "
+                f"(pii_masked={pii_masked}, urls_scanned={len(urls)}, role={ensemble_role})."
             ),
+            dynamic_policy_key=dynamic_key,
+            ensemble_role=ensemble_role,
         )

@@ -118,18 +118,53 @@ import json
 spec = {
     "tools": [
         {
-            "name": "query_golden_signal_metrics",
-            "description": "Read-only query of golden-signal p99 latency, error rate, and stream saturation metrics.",
+            "name": "inspect_candidate_agent_manifest",
+            "description": "Read-only audit of a candidate agent's env secrets, gateway routing, SPIFFE/OBO posture, A2A card, and guardrail config.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"candidate_id": {"type": "string"}},
+                "required": ["candidate_id"]
+            },
+            "annotations": {
+                "title": "Inspect Candidate Agent Manifest",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False
+            }
+        },
+        {
+            "name": "verify_tier1_intake_and_supergraph",
+            "description": "Read-only verification of enterprise AI intake, CMDB Supergraph blast radius, catalog registration, wallet cap, and policy freezes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "service_name": {"type": "string"},
+                    "candidate_id": {"type": "string"},
+                    "app_id": {"type": "string"}
+                },
+                "required": ["candidate_id"]
+            },
+            "annotations": {
+                "title": "Verify Tier-1 Intake and Supergraph",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False
+            }
+        },
+        {
+            "name": "fetch_production_otel_traces",
+            "description": "Read-only retrieval of OTLP/Langfuse production spans, cross-cloud metadata, baseline eval scores, and failure clusters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "candidate_id": {"type": "string"},
                     "window_minutes": {"type": "integer"}
                 },
-                "required": ["service_name"]
+                "required": ["candidate_id"]
             },
             "annotations": {
-                "title": "Query Golden Signal Metrics",
+                "title": "Fetch Production OTel Traces",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -137,50 +172,18 @@ spec = {
             }
         },
         {
-            "name": "check_release_and_change_freeze",
-            "description": "Read-only lookup of recent deployments, PRs, and active Cymbal change-freeze windows.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"service_name": {"type": "string"}},
-                "required": ["service_name"]
-            },
-            "annotations": {
-                "title": "Check Release and Change Freeze",
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-                "openWorldHint": False
-            }
-        },
-        {
-            "name": "lookup_service_topology_and_runbook",
-            "description": "Read-only lookup of ServiceAtlas CMDB ownership, blast radius, SENTINEL risk tier, and OpsWiki runbook.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"app_id": {"type": "string"}},
-                "required": ["app_id"]
-            },
-            "annotations": {
-                "title": "Lookup ServiceAtlas CMDB and Runbook",
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-                "openWorldHint": False
-            }
-        },
-        {
-            "name": "annotate_incident_ticket",
-            "description": "Non-destructive mutating tool that appends structured triage findings to an incident ticket.",
+            "name": "record_compliance_evidence_note",
+            "description": "Non-destructive mutating tool that appends structured governance review evidence to an intake record.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "incident_id": {"type": "string"},
+                    "candidate_id": {"type": "string"},
                     "note": {"type": "string"}
                 },
-                "required": ["incident_id", "note"]
+                "required": ["candidate_id", "note"]
             },
             "annotations": {
-                "title": "Annotate Incident Ticket",
+                "title": "Record Compliance Evidence Note",
                 "readOnlyHint": False,
                 "destructiveHint": False,
                 "idempotentHint": False,
@@ -188,15 +191,15 @@ spec = {
             }
         },
         {
-            "name": "purge_production_valkey_stream",
-            "description": "Destructive administrative operation blocked by UAP Policy V2 CEL.",
+            "name": "force_bypass_governance_gate",
+            "description": "Destructive administrative gate bypass blocked by UAP Policy V2 CEL.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"stream_key": {"type": "string"}},
-                "required": ["stream_key"]
+                "properties": {"candidate_id": {"type": "string"}},
+                "required": ["candidate_id"]
             },
             "annotations": {
-                "title": "Purge Production Valkey Stream",
+                "title": "Force Bypass Governance Gate",
                 "readOnlyHint": False,
                 "destructiveHint": True,
                 "idempotentHint": False,

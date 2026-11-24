@@ -19,13 +19,14 @@
 
   const state = {
     csrfToken: "",
-    architectureMode: "google_native",
+    architectureMode: "enterprise_hybrid",
+    tenant: null,
     incidents: [],
     selectedIncident: null,
     activeSessionId: "",
     activeInterruptId: "",
     platformSnapshot: null,
-    expandedServiceIds: new Set(["agent_runtime"]),
+    expandedServiceIds: new Set(["eval_flywheel"]),
     expandAll: false,
     steppingServiceId: "",
     replayTimerIds: [],
@@ -35,49 +36,49 @@
     {
       id: 1,
       title: "1. Un-Bypassable Tenant Network (ACT + PSC-I) & Unified Kill Switch",
-      baseline: "DIY Baseline: Opt-in HTTP proxy URL; PAUSED blocks A2A only.",
+      baseline: "Addresses Gap: Opt-in HTTP proxy URL bypass & A2A-only pause scope.",
       vendors: "Consolidates: Agentgateway, Hush, Geordie, Harmonic",
     },
     {
       id: 2,
       title: "2. Inline Per-Tool & Semantic Payload Authz (UAP Policy V2 CEL)",
-      baseline: "DIY Baseline: Coarse mcp.use scope allows all tools in pool.",
+      baseline: "Addresses Gap: Coarse mcp.use scope permits destructive tools in pool.",
       vendors: "Consolidates: Runlayer, Keycard, Arcade",
     },
     {
       id: 3,
       title: "3. Zero-Secret Container (SPIFFE AGENT_IDENTITY) & ADR-011 azp OBO",
-      baseline: "DIY Baseline: Static pod keys, OBO sidecar 2x hop, pairwise sub mismatch.",
+      baseline: "Addresses Gap: Static pod keys, OBO sidecar 2x hop, pairwise sub mismatch.",
       vendors: "Consolidates: Keycard, Custom Sidecars, Vault",
     },
     {
       id: 4,
-      title: "4. Un-Bypassable Org Safety Floor + Inline SDP PII + 40-URL Scan",
-      baseline: "DIY Baseline: 10x cost, cross-cloud hairpin, fail-open, plain text only.",
-      vendors: "Consolidates: Straiker.ai, Azure Content Safety, Bedrock Guardrails",
+      title: "4. Dynamic Per-Request Model Armor Router + Inline SDP + 40-URL Floor",
+      baseline: "Addresses Gap: Static template sprawl across BUs & fail-open defaults.",
+      vendors: "Consolidates: Straiker.ai, Static Template Glue",
     },
     {
       id: 5,
-      title: "5. Durable RequestInput HITL Checkpointing & Native gVisor Sandbox",
-      baseline: "DIY Baseline: Stateless request wrapper, no isolated code execution.",
+      title: "5. Durable Reviewer RequestInput HITL & Native gVisor Sandbox",
+      baseline: "Addresses Gap: Stateless request wrapper lacking isolated code execution.",
       vendors: "Consolidates: E2B MicroVMs, Custom Checkpoint Glue",
     },
     {
       id: 6,
-      title: "6. Longitudinal Cross-Session Memory Bank (Strict JWT Isolation)",
-      baseline: "DIY Baseline: Stateless across sessions; custom ABAC wrappers needed.",
+      title: "6. Longitudinal Governance Memory Bank (Strict JWT Isolation)",
+      baseline: "Addresses Gap: Stateless sessions requiring custom ABAC memory wrappers.",
       vendors: "Consolidates: Mem0, Memori, Custom Memory Stores",
     },
     {
       id: 7,
-      title: "7. Unified Single-Trace Join & Atomic Cost-per-Outcome Wallet",
-      baseline: "DIY Baseline: Split log vs agent trace stores; post-response Valkey lag.",
+      title: "7. Unified W3C + OTLP Trace Join & Atomic Cost-per-Outcome Wallet",
+      baseline: "Addresses Gap: Disconnected guardrail logs vs traces & post-charge overshoot.",
       vendors: "Consolidates: Revenium, Ascerta, Faros",
     },
     {
       id: 8,
-      title: "8. Closed-Loop Trace -> 503 & Freeze Sim -> Prompt Optimizer -> Gate",
-      baseline: "DIY Baseline: Static CI YAML only; no 503 fault sim or prompt rewrite.",
+      title: "8. A-La-Carte 6-Stage Cross-Cloud Trace -> Eval -> Optimizer -> Gate",
+      baseline: "Addresses Gap: Static CI YAML unable to optimize AWS/Azure/GCP traces.",
       vendors: "Consolidates: Veris Simulator, LangSmith",
     },
   ];
@@ -126,13 +127,31 @@
     if (!tenant) {
       return;
     }
+    state.tenant = tenant;
+    const terms = tenant.terminology || {};
     document.getElementById("app-title").textContent = tenant.agent_title;
     document.getElementById("org-subtitle").textContent = tenant.organization_display_name;
     document.getElementById("brand-badge").textContent = tenant.theme.badge_text;
-    document.getElementById("term-observability").textContent = tenant.terminology.observability_name;
-    document.getElementById("term-wallet").textContent = tenant.terminology.wallet_name;
+    document.getElementById("term-observability").textContent = terms.observability_name || "";
+    document.getElementById("term-wallet").textContent = terms.wallet_name || "";
     document.getElementById("term-guardrail").textContent =
-      tenant.terminology.guardrail_policy_name + " TCO Calculator";
+      (terms.guardrail_policy_name || "Guardrail") + " & Ensemble TCO Calculator";
+    if (terms.eval_engine_name) {
+      document.getElementById("term-eval-engine").textContent =
+        "6-Stage A-La-Carte " + terms.eval_engine_name;
+    }
+    if (terms.blueprint_registry_name) {
+      document.getElementById("term-blueprint-heading").textContent =
+        "Promoted v2 (" + terms.blueprint_registry_name + ")";
+    }
+    if (terms.platform_name) {
+      document.getElementById("viz-panel-title").textContent =
+        terms.platform_name + " + Google Pipeline";
+    }
+    if (terms.risk_framework) {
+      document.getElementById("approval-card-title").textContent =
+        terms.risk_framework + " AG3 Governance Reviewer Sign-Off Gate (RequestInput)";
+    }
   }
 
   function clearReplayTimers() {
@@ -184,13 +203,11 @@
       const row = el("div", rowClasses.join(" "));
       row.setAttribute("role", "listitem");
 
-      // Left vertical timeline rail + numbered node circle
       const rail = el("div", "pipeline-rail");
       rail.appendChild(el("div", "pipeline-node-circle", String(svc.step)));
       rail.appendChild(el("div", "pipeline-rail-line"));
       row.appendChild(rail);
 
-      // Spacious full-width service card
       const card = el("div", "pipeline-card");
       const trigger = el("button", "pipeline-card-trigger");
       trigger.type = "button";
@@ -212,7 +229,6 @@
       topLine.appendChild(badgesWrap);
       trigger.appendChild(topLine);
 
-      // Subtitle (clean full text when collapsed; full live summary inside drawer when expanded)
       const briefLine =
         svc.status === "READY" || isExpanded ? svc.subtitle : svc.summary;
       trigger.appendChild(el("p", "pipeline-svc-subtitle", briefLine));
@@ -238,12 +254,12 @@
 
         const metaList = el("div", "drawer-meta-list");
         const apiRow = el("div", "drawer-meta-row");
-        apiRow.appendChild(el("span", "drawer-label", "Google Cloud API Surface"));
+        apiRow.appendChild(el("span", "drawer-label", "Integration & API Surface"));
         apiRow.appendChild(el("code", "drawer-code", svc.api_surface));
         metaList.appendChild(apiRow);
 
         const vendorRow = el("div", "drawer-meta-row");
-        vendorRow.appendChild(el("span", "drawer-label", "Consolidates Specialist 3P Categories"));
+        vendorRow.appendChild(el("span", "drawer-label", "Point Vendors Consolidated"));
         vendorRow.appendChild(el("code", "drawer-code", svc.consolidates));
         metaList.appendChild(vendorRow);
         drawer.appendChild(metaList);
@@ -271,7 +287,7 @@
 
   function pickHighlightService(snapshot) {
     if (!snapshot || !snapshot.services) {
-      return "agent_runtime";
+      return "eval_flywheel";
     }
     const blocked = snapshot.services.find((s) => s.status === "BLOCKED");
     if (blocked) {
@@ -290,7 +306,7 @@
     if (anyActive && seq.length > 0) {
       return seq[seq.length - 1];
     }
-    return "agent_runtime";
+    return "eval_flywheel";
   }
 
   function animateFlowSequence(sequence, finalHighlightId) {
@@ -308,7 +324,7 @@
           state.expandedServiceIds = new Set([svcId]);
         }
         renderVerticalPipeline();
-      }, idx * 130);
+      }, idx * 120);
       state.replayTimerIds.push(tid);
     });
 
@@ -318,7 +334,7 @@
         state.expandedServiceIds = new Set([finalHighlightId]);
       }
       renderVerticalPipeline();
-    }, steps.length * 130 + 180);
+    }, steps.length * 120 + 170);
     state.replayTimerIds.push(endTid);
   }
 
@@ -330,11 +346,11 @@
     document.getElementById("viz-last-event").textContent = snapshot.last_event || "";
     document.getElementById("viz-mode-pill").textContent =
       snapshot.architecture_mode === "enterprise_hybrid"
-        ? "Enterprise Hybrid"
-        : "Google-Native";
+        ? "4-Tier Coexistence"
+        : "Full GCP-Native";
     document.getElementById("viz-trace-pill").textContent = snapshot.trace_id
       ? "Trace: " + snapshot.trace_id.slice(0, 12) + "..."
-      : "W3C Trace: Ready";
+      : "W3C + OTLP Ready";
 
     const targetHighlight = pickHighlightService(snapshot);
     if (animate && snapshot.flow_sequence && snapshot.flow_sequence.length) {
@@ -347,29 +363,27 @@
     }
   }
 
-  function renderIncidentList() {
+  function renderCandidateList() {
     const container = document.getElementById("incident-list");
     container.replaceChildren();
-    state.incidents.forEach((inc) => {
-      const btn = el(
-        "button",
-        "incident-item" +
-          (state.selectedIncident && state.selectedIncident.incident_id === inc.incident_id
-            ? " selected"
-            : "")
-      );
+    state.incidents.forEach((cand) => {
+      const cid = cand.candidate_id || cand.incident_id;
+      const selId = state.selectedIncident
+        ? state.selectedIncident.candidate_id || state.selectedIncident.incident_id
+        : "";
+      const btn = el("button", "incident-item" + (selId === cid ? " selected" : ""));
       btn.type = "button";
       const top = el("div", "incident-item-top");
-      top.appendChild(el("span", "", inc.incident_id));
-      top.appendChild(el("span", "subtle-tag", inc.severity));
+      top.appendChild(el("span", "", cid));
+      top.appendChild(el("span", "subtle-tag", cand.severity));
       btn.appendChild(top);
-      btn.appendChild(el("div", "incident-item-title", inc.title));
+      btn.appendChild(el("div", "incident-item-title", cand.title));
       btn.addEventListener("click", () => {
-        state.selectedIncident = inc;
+        state.selectedIncident = cand;
         document.getElementById("selected-incident-heading").textContent =
-          inc.incident_id + ": " + inc.title;
-        document.getElementById("agent-prompt-input").value = inc.default_prompt;
-        renderIncidentList();
+          cid + ": " + cand.title;
+        document.getElementById("agent-prompt-input").value = cand.default_prompt;
+        renderCandidateList();
       });
       container.appendChild(btn);
     });
@@ -380,13 +394,13 @@
     container.replaceChildren();
     (memories || []).forEach((m) => {
       const box = el("div", "memory-entry");
-      box.appendChild(el("strong", "", "[" + (m.incident_id || "MEM") + "] "));
+      box.appendChild(el("strong", "", "[" + (m.incident_id || "AUDIT") + "] "));
       box.appendChild(el("span", "", m.fact));
       container.appendChild(box);
     });
   }
 
-  function renderTriageResult(data) {
+  function renderAuditResult(data) {
     const panel = document.getElementById("triage-results-panel");
     panel.replaceChildren();
 
@@ -401,11 +415,27 @@
       const b = data.correlated_bundle;
       const corrCard = el("div", "card");
       corrCard.appendChild(
-        el("h3", "", "Parallel 3-Way MCP Triage & JoinNode Correlation (" + b.app_id + ")")
+        el(
+          "h3",
+          "",
+          "Parallel 3-Way MCP Governance Audit & JoinNode Correlation (" + b.app_id + ")"
+        )
       );
-      corrCard.appendChild(el("p", "muted-note", "Golden Signals: " + b.observability.summary));
-      corrCard.appendChild(el("p", "muted-note", "Release & Freeze: " + b.release_change.summary));
-      corrCard.appendChild(el("p", "muted-note", "ServiceAtlas CMDB: " + b.cmdb_runbook.summary));
+      if (b.manifest_security) {
+        corrCard.appendChild(
+          el("p", "muted-note", "Manifest & Identity: " + b.manifest_security.summary)
+        );
+      }
+      if (b.tier1_supergraph) {
+        corrCard.appendChild(
+          el("p", "muted-note", "Tier-1 Intake & Supergraph: " + b.tier1_supergraph.summary)
+        );
+      }
+      if (b.production_traces) {
+        corrCard.appendChild(
+          el("p", "muted-note", "OTLP / Langfuse Traces: " + b.production_traces.summary)
+        );
+      }
       if (data.sandbox_anomaly) {
         corrCard.appendChild(
           el(
@@ -422,12 +452,50 @@
       const a = data.assessment;
       const synthCard = el("div", "card");
       synthCard.appendChild(
-        el("h3", "", "Synthesizer Assessment (" + a.risk_level + " -> " + a.recommended_route + ")")
+        el(
+          "h3",
+          "",
+          "Synthesized Remediation & Paved-Path Plan (" +
+            a.risk_level +
+            " -> " +
+            a.recommended_route +
+            ")"
+        )
       );
-      synthCard.appendChild(el("p", "", a.root_cause_summary));
-      synthCard.appendChild(el("p", "muted-note", "Remediation Plan: " + a.remediation_plan));
       synthCard.appendChild(
-        el("p", "mono-note", "Citations: " + (a.citations || []).join(", ") + " | Trace: " + data.trace_id)
+        el("p", "", a.governance_gaps_summary || a.root_cause_summary || "")
+      );
+      synthCard.appendChild(el("p", "muted-note", "Action Plan: " + a.remediation_plan));
+
+      if (a.terraform_paved_path_hcl || a.dynamic_guardrail_spec) {
+        const diffGrid = el("div", "prompt-diff-grid");
+        if (a.terraform_paved_path_hcl) {
+          const tfCol = el("div", "");
+          tfCol.appendChild(el("h4", "", "Generated Terraform Paved-Path Module"));
+          tfCol.appendChild(el("pre", "code-box", a.terraform_paved_path_hcl));
+          diffGrid.appendChild(tfCol);
+        }
+        if (a.dynamic_guardrail_spec) {
+          const polCol = el("div", "");
+          polCol.appendChild(el("h4", "", "Dynamic Per-Request Guardrail Policy JSON"));
+          let prettyPol = a.dynamic_guardrail_spec;
+          try {
+            prettyPol = JSON.stringify(JSON.parse(a.dynamic_guardrail_spec), null, 2);
+          } catch (_e) {
+            prettyPol = a.dynamic_guardrail_spec;
+          }
+          polCol.appendChild(el("pre", "code-box", prettyPol));
+          diffGrid.appendChild(polCol);
+        }
+        synthCard.appendChild(diffGrid);
+      }
+
+      synthCard.appendChild(
+        el(
+          "p",
+          "mono-note",
+          "Citations: " + (a.citations || []).join(", ") + " | Trace: " + data.trace_id
+        )
       );
       panel.appendChild(synthCard);
     }
@@ -439,7 +507,10 @@
       document.getElementById("approval-plan-summary").textContent =
         data.pending_approval.remediation_plan;
       const freezeBanner = document.getElementById("approval-freeze-banner");
-      if (data.pending_approval.change_freeze_active) {
+      if (
+        data.pending_approval.policy_freeze_active ||
+        data.pending_approval.change_freeze_active
+      ) {
         freezeBanner.classList.remove("hidden");
       } else {
         freezeBanner.classList.add("hidden");
@@ -449,14 +520,49 @@
       approvalCard.classList.add("hidden");
     }
 
+    if (data.remediation_outcome && data.status === "COMPLETED") {
+      const ro = data.remediation_outcome;
+      const depCard = el("div", "card");
+      depCard.appendChild(el("h3", "", "Deployment & Registry Enrollment (" + ro.status + ")"));
+      depCard.appendChild(el("p", "", ro.summary));
+      if (ro.golden_blueprint_id) {
+        depCard.appendChild(
+          el(
+            "p",
+            "mono-note",
+            "Golden Blueprint: " +
+              ro.golden_blueprint_id +
+              " | Post-Deploy Readiness: " +
+              (ro.post_deploy_readiness_score || 98) +
+              "/100"
+          )
+        );
+      }
+      panel.appendChild(depCard);
+    }
+
     if (data.postmortem_record) {
       const outCard = el("div", "card");
       outCard.appendChild(
-        el("h3", "", "Final Resolution (" + data.postmortem_record.final_status + ")")
+        el("h3", "", "Audit Memory Trail (" + data.postmortem_record.final_status + ")")
       );
       outCard.appendChild(el("p", "", data.postmortem_record.executive_summary));
       panel.appendChild(outCard);
     }
+  }
+
+  function renderFlywheelStages(stages) {
+    const box = document.getElementById("flywheel-stages-list");
+    if (!box) {
+      return;
+    }
+    box.replaceChildren();
+    (stages || []).forEach((s) => {
+      const pill = el("div", "stage-pill-box");
+      pill.appendChild(el("strong", "", "Stage " + s.stage + ": " + s.name));
+      pill.appendChild(el("div", "muted-note", s.detail));
+      box.appendChild(pill);
+    });
   }
 
   function renderProofCards() {
@@ -522,7 +628,7 @@
     );
 
     const b3 = el("div", "tco-box highlight");
-    b3.appendChild(el("strong", "", "Google Cloud Model Armor"));
+    b3.appendChild(el("strong", "", "Model Armor ($0.10 / 1M tok)"));
     b3.appendChild(
       el("div", "", "$" + Math.round(tco.google_model_armor_annual_usd).toLocaleString() + " / yr")
     );
@@ -536,9 +642,18 @@
       )
     );
 
+    const b4 = el("div", "tco-box highlight");
+    b4.appendChild(el("strong", "", "Ensemble Tier-0 Hybrid"));
+    const ensVal =
+      tco.ensemble_tier0_hybrid_annual_usd ||
+      Math.round(tco.google_model_armor_annual_usd + 0.2 * tco.aws_bedrock_guardrails_annual_usd);
+    b4.appendChild(el("div", "", "$" + Math.round(ensVal).toLocaleString() + " / yr"));
+    b4.appendChild(el("div", "mono-note", "100% SDP/URL Pre-Filter + 20% Voter"));
+
     container.appendChild(b1);
     container.appendChild(b2);
     container.appendChild(b3);
+    container.appendChild(b4);
   }
 
   function renderAgentAndWallet(agentState, walletState) {
@@ -553,7 +668,7 @@
       const capUsd = ((walletState.monthly_cap_nano_usd || 0) / 1e9).toFixed(4);
       const resolved = walletState.resolved_incidents_count || 0;
       document.getElementById("wallet-summary-text").textContent =
-        "$" + spentUsd + " spent / $" + capUsd + " cap (" + resolved + " resolved)";
+        "$" + spentUsd + " spent / $" + capUsd + " cap (" + resolved + " deployed)";
     }
   }
 
@@ -563,7 +678,8 @@
     (traces || []).slice(0, 5).forEach((t) => {
       const row = el("div", "trace-row");
       const stages = (t.spans || []).map((s) => s.span_name + " (" + s.duration_ms + "ms)").join(" -> ");
-      const modeTag = t.architecture_mode || "google_native";
+      const modeTag =
+        t.architecture_mode === "enterprise_hybrid" ? "OTLP+W3C Coexistence" : "GCP-Native W3C";
       row.appendChild(el("strong", "", "Trace " + t.trace_id.slice(0, 16) + "... [" + modeTag + "] "));
       row.appendChild(el("div", "muted-note", stages || "Root span initialized"));
       traceBox.appendChild(row);
@@ -579,14 +695,14 @@
         r.outcome +
         " | turn=" +
         r.total_cost_nano_usd +
-        " nano-USD | cost_per_resolved_incident=" +
+        " nano-USD | cost_per_outcome=" +
         r.cost_per_resolved_incident_nano_usd +
         " nano-USD";
       ledgerBox.appendChild(row);
     });
   }
 
-  function activateWorkspaceTab(mode) {
+  function activateWorkspaceTab(mode, focusButton) {
     const tabAgent = document.getElementById("tab-agent");
     const tabSteward = document.getElementById("tab-steward");
     const tabPipeline = document.getElementById("tab-pipeline");
@@ -598,36 +714,66 @@
     [tabAgent, tabSteward, tabPipeline].forEach((b) => {
       b.classList.remove("active");
       b.setAttribute("aria-selected", "false");
+      b.setAttribute("tabindex", "-1");
     });
 
+    let activeBtn = tabAgent;
     if (mode === "pipeline") {
-      tabPipeline.classList.add("active");
-      tabPipeline.setAttribute("aria-selected", "true");
+      activeBtn = tabPipeline;
       leftCol.classList.add("hidden");
       shell.className = "workspace-container workspace-focus-pipeline";
     } else if (mode === "steward") {
-      tabSteward.classList.add("active");
-      tabSteward.setAttribute("aria-selected", "true");
+      activeBtn = tabSteward;
       leftCol.classList.remove("hidden");
       viewSteward.classList.remove("hidden");
       viewAgent.classList.add("hidden");
       shell.className = "workspace-container workspace-split";
     } else {
-      tabAgent.classList.add("active");
-      tabAgent.setAttribute("aria-selected", "true");
+      activeBtn = tabAgent;
       leftCol.classList.remove("hidden");
       viewAgent.classList.remove("hidden");
       viewSteward.classList.add("hidden");
       shell.className = "workspace-container workspace-split";
     }
+
+    activeBtn.classList.add("active");
+    activeBtn.setAttribute("aria-selected", "true");
+    activeBtn.setAttribute("tabindex", "0");
+    if (focusButton) {
+      activeBtn.focus();
+    }
+  }
+
+  function wireAccessibleTablistKeyboard() {
+    const tabModes = ["agent", "steward", "pipeline"];
+    const tabIds = ["tab-agent", "tab-steward", "tab-pipeline"];
+    tabIds.forEach((id, index) => {
+      const btn = document.getElementById(id);
+      btn.addEventListener("keydown", (ev) => {
+        let nextIdx = -1;
+        if (ev.key === "ArrowRight") {
+          nextIdx = (index + 1) % tabModes.length;
+        } else if (ev.key === "ArrowLeft") {
+          nextIdx = (index - 1 + tabModes.length) % tabModes.length;
+        } else if (ev.key === "Home") {
+          nextIdx = 0;
+        } else if (ev.key === "End") {
+          nextIdx = tabModes.length - 1;
+        }
+        if (nextIdx >= 0) {
+          ev.preventDefault();
+          activateWorkspaceTab(tabModes[nextIdx], true);
+        }
+      });
+    });
   }
 
   async function init() {
     renderProofCards();
     const boot = await apiGet("/api/bootstrap");
     state.csrfToken = boot.csrf_token;
-    state.architectureMode = boot.architecture_mode || "google_native";
-    state.incidents = boot.incidents || [];
+    state.architectureMode = boot.architecture_mode || "enterprise_hybrid";
+    state.incidents = boot.candidates || boot.incidents || [];
     state.selectedIncident = state.incidents[0] || null;
 
     document.getElementById("mode-select").value = state.architectureMode;
@@ -648,8 +794,11 @@
     }
     updatePlatformServices(boot.platform_services, false);
 
-    renderIncidentList();
+    renderCandidateList();
     if (state.selectedIncident) {
+      const cid = state.selectedIncident.candidate_id || state.selectedIncident.incident_id;
+      document.getElementById("selected-incident-heading").textContent =
+        cid + ": " + state.selectedIncident.title;
       document.getElementById("agent-prompt-input").value = state.selectedIncident.default_prompt;
     }
     renderMemories(boot.recent_memories);
@@ -668,7 +817,7 @@
         el(
           "span",
           "status-chip",
-          "Active Version: " +
+          "Active Blueprint: " +
             boot.prompt_registry.active.active_version +
             " (behavior_score=" +
             boot.prompt_registry.active.behavior_score +
@@ -677,7 +826,6 @@
       );
     }
 
-    // Pipeline toolbar controls
     document.getElementById("btn-replay-flow").addEventListener("click", () => {
       if (state.platformSnapshot) {
         animateFlowSequence(
@@ -695,18 +843,17 @@
       renderVerticalPipeline();
     });
 
-    // Accessible Workspace Tabs (1. Agent | 2. Steward | 3. Full Platform Pipeline)
     document
       .getElementById("tab-agent")
-      .addEventListener("click", () => activateWorkspaceTab("agent"));
+      .addEventListener("click", () => activateWorkspaceTab("agent", false));
     document
       .getElementById("tab-steward")
-      .addEventListener("click", () => activateWorkspaceTab("steward"));
+      .addEventListener("click", () => activateWorkspaceTab("steward", false));
     document
       .getElementById("tab-pipeline")
-      .addEventListener("click", () => activateWorkspaceTab("pipeline"));
+      .addEventListener("click", () => activateWorkspaceTab("pipeline", false));
+    wireAccessibleTablistKeyboard();
 
-    // Architecture Mode switching
     document.getElementById("mode-select").addEventListener("change", async () => {
       state.architectureMode = document.getElementById("mode-select").value;
       const res = await apiPost("/api/config/mode", {
@@ -716,24 +863,24 @@
       updatePlatformServices(res.platform_services, true);
     });
 
-    // Agent Workflow triage execution
     document.getElementById("btn-run-triage").addEventListener("click", async () => {
       const statusEl = document.getElementById("agent-run-status");
-      statusEl.textContent = "Running Workflow...";
+      statusEl.textContent = "Running Governance Audit...";
       statusEl.className = "status-chip chip-warn";
       try {
-        const inc = state.selectedIncident || state.incidents[0];
-        const res = await apiPost("/api/agent/triage", {
-          incident_id: inc.incident_id,
-          service_name: inc.service_name,
-          app_id: inc.app_id,
+        const cand = state.selectedIncident || state.incidents[0];
+        const cid = cand.candidate_id || cand.incident_id;
+        const res = await apiPost("/api/agent/audit", {
+          candidate_id: cid,
+          agent_name: cand.agent_name || cand.service_name,
+          app_id: cand.app_id,
           operator_prompt: document.getElementById("agent-prompt-input").value,
           architecture_mode: state.architectureMode,
         });
         statusEl.textContent = res.status;
         statusEl.className =
           res.status === "WAITING_AG3_APPROVAL" ? "status-chip chip-warn" : "status-chip";
-        renderTriageResult(res);
+        renderAuditResult(res);
         renderAgentAndWallet(res.agent_state, res.wallet_state);
         if (res.recent_memories) {
           renderMemories(res.recent_memories);
@@ -747,26 +894,25 @@
       }
     });
 
-    // HITL Approve / Hold
     const submitHitl = async (approved) => {
       const statusEl = document.getElementById("agent-run-status");
-      statusEl.textContent = "Resuming Workflow...";
+      statusEl.textContent = "Resuming Deployment Gate...";
       statusEl.className = "status-chip chip-warn";
       try {
         const res = await apiPost("/api/agent/resume", {
           session_id: state.activeSessionId,
           interrupt_id: state.activeInterruptId,
           approved: approved,
-          approver_principal: "sre-oncall-lead",
+          approver_principal: "gov-steward-lead",
           vp_exception_ticket: document.getElementById("vp-ticket-input").value || null,
           reason: approved
-            ? "Approved governed canary rollback."
-            : "Held pending VP Change-Freeze Exception.",
+            ? "Approved Paved-Path HCL & Golden Blueprint deployment."
+            : "Held pending VP Governance-Freeze Exception.",
         });
         document.getElementById("ag3-approval-card").classList.add("hidden");
         statusEl.textContent = res.status;
         statusEl.className = "status-chip";
-        renderTriageResult(res);
+        renderAuditResult(res);
         renderAgentAndWallet(res.agent_state, res.wallet_state);
         renderMemories(res.memories);
         updatePlatformServices(res.platform_services, true);
@@ -782,7 +928,6 @@
       .getElementById("btn-hold-exception")
       .addEventListener("click", () => submitHitl(false));
 
-    // Kill switch buttons
     document.querySelectorAll("[data-kill]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const res = await apiPost("/api/steward/kill-switch", {
@@ -793,7 +938,6 @@
       });
     });
 
-    // Wallet cap buttons
     document.getElementById("btn-cap-normal").addEventListener("click", async () => {
       const res = await apiPost("/api/steward/wallet-cap", {
         monthly_cap_nano_usd: 15000000000,
@@ -811,7 +955,6 @@
       updatePlatformServices(res.platform_services, true);
     });
 
-    // OBO verify
     document.getElementById("btn-verify-obo").addEventListener("click", async () => {
       const res = await apiPost("/api/steward/obo-verify", {});
       document.getElementById("obo-verify-output").textContent =
@@ -824,7 +967,6 @@
       updatePlatformServices(res.platform_services, true);
     });
 
-    // Run all 8 proofs
     document.getElementById("btn-run-all-proofs").addEventListener("click", async () => {
       const btn = document.getElementById("btn-run-all-proofs");
       btn.textContent = "Running All 8 Live Proofs...";
@@ -840,7 +982,6 @@
       updatePlatformServices(res.platform_services, true);
     });
 
-    // TCO Slider
     document.getElementById("tco-slider").addEventListener("input", async (ev) => {
       const val = parseInt(ev.target.value, 10);
       document.getElementById("tco-volume-label").textContent = val.toLocaleString();
@@ -848,55 +989,87 @@
       renderTco(tco);
     });
 
-    // Threat lab presets & test
     document.querySelectorAll("[data-threat]").forEach((btn) => {
       btn.addEventListener("click", () => {
         document.getElementById("threat-input").value = btn.getAttribute("data-threat");
       });
     });
+
     document.getElementById("btn-test-threat").addEventListener("click", async () => {
       const box = document.getElementById("threat-verdict-box");
-      box.replaceChildren(el("div", "muted-note", "Inspecting via Model Armor..."));
+      box.replaceChildren(el("div", "muted-note", "Routing dynamic policy payload..."));
+      const dynamicPolicy = {
+        business_unit: document.getElementById("dyn-bu-select").value,
+        risk_tier: document.getElementById("dyn-risk-select").value,
+        pi_and_jailbreak_threshold:
+          document.getElementById("dyn-risk-select").value === "AG3"
+            ? "LOW_AND_ABOVE"
+            : "MEDIUM_AND_ABOVE",
+        malicious_uri_filter: true,
+        sdp_pii_mode: document.getElementById("dyn-sdp-select").value,
+        rai_sensitivity: "MEDIUM_AND_ABOVE",
+        ensemble_role: document.getElementById("dyn-role-select").value,
+      };
       const res = await apiPost("/api/steward/guardrail-test", {
         sample_text: document.getElementById("threat-input").value,
+        dynamic_policy: dynamicPolicy,
       });
       box.replaceChildren(
-        el("strong", "", (res.allowed ? "ALLOWED" : "BLOCKED") + " (" + res.action_taken + ")"),
+        el(
+          "strong",
+          "",
+          (res.allowed ? "ALLOWED" : "BLOCKED") +
+            " (" +
+            res.action_taken +
+            " -> " +
+            res.resolved_template +
+            ")"
+        ),
         el("div", "muted-note", res.summary),
+        el("div", "mono-note", "Dynamic Policy Key: " + res.dynamic_policy_key),
         el("div", "mono-note", "Sanitized Output: " + (res.sanitized_text || "[BLOCKED]"))
       );
       updatePlatformServices(res.platform_services, true);
     });
 
-    // Closed-loop flywheel button
     document.getElementById("btn-run-flywheel").addEventListener("click", async () => {
       const sc = document.getElementById("flywheel-scorecard");
-      sc.replaceChildren(el("span", "risk-badge", "Running 5-Stage Closed-Loop Flywheel..."));
-      const res = await apiPost("/api/steward/closed-loop-eval", {});
       sc.replaceChildren(
-        el(
-          "span",
-          "risk-badge",
-          "v1=" + res.v1_baseline.behavior_score + " (" + res.v1_baseline.gate_verdict + ")"
-        ),
-        el(
-          "span",
-          "status-chip",
-          "Promoted v2=" +
-            res.v2_candidate.behavior_score +
-            " (" +
-            res.v2_candidate.cases_passed +
-            "/" +
-            res.v2_candidate.cases_total +
-            " Passed in " +
-            res.elapsed_seconds +
-            "s)"
-        )
+        el("span", "risk-badge", "Running 6-Stage Cross-Cloud Closed-Loop Optimization...")
       );
-      updatePlatformServices(res.platform_services, true);
+      try {
+        const res = await apiPost("/api/steward/closed-loop-eval", {});
+        sc.replaceChildren(
+          el(
+            "span",
+            "risk-badge",
+            "v1=" + res.v1_baseline.behavior_score + " (" + res.v1_baseline.gate_verdict + ")"
+          ),
+          el(
+            "span",
+            "status-chip",
+            "Promoted Golden Blueprint v2=" +
+              res.v2_candidate.behavior_score +
+              " (" +
+              res.v2_candidate.cases_passed +
+              "/" +
+              res.v2_candidate.cases_total +
+              " Sims Passed in " +
+              res.elapsed_seconds +
+              "s)"
+          ),
+          el("span", "mono-pill", "Eval Engine: " + (res.eval_engine_used || "agentplatform.Client"))
+        );
+        if (res.v2_prompt_text) {
+          document.getElementById("prompt-v2-pre").textContent = res.v2_prompt_text;
+        }
+        renderFlywheelStages(res.stages);
+        updatePlatformServices(res.platform_services, true);
+      } catch (err) {
+        sc.replaceChildren(el("span", "status-chip chip-danger", "Error: " + err.message));
+      }
     });
 
-    // Telemetry refresh
     document.getElementById("btn-refresh-telemetry").addEventListener("click", async () => {
       const snap = await apiGet("/api/steward/telemetry");
       renderAgentAndWallet(snap.agent_state, snap.wallet_state);
@@ -904,11 +1077,10 @@
       updatePlatformServices(snap.platform_services, false);
     });
 
-    // Optional URL view parameter (?view=pipeline | ?view=steward)
     const params = new URLSearchParams(window.location.search);
     const requestedView = params.get("view");
     if (requestedView === "pipeline" || requestedView === "steward") {
-      activateWorkspaceTab(requestedView);
+      activateWorkspaceTab(requestedView, false);
     }
     if (params.get("expand") === "all") {
       state.expandAll = true;

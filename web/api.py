@@ -12,21 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FastAPI Backend-for-Frontend (BFF) for Cymbal Core Operations & Release Agent.
+"""FastAPI Backend-for-Frontend (BFF) for Agent Governance, Optimization & Deployment Workbench.
 
 Serves:
-- View 1: Cymbal Core Operations & Release Agent (ADK 2.0 Workflow + Resumable HITL)
-- View 2: Google Agent Platform Steward Console (Kill Switch, Atomic Wallet, Proofs,
-  TCO Calculator, Threat Sanitizer, Closed-Loop Optimizer, W3C Single-Trace Ledger)
-- Live 9-Service Google Agent Platform Architecture Telemetry (`platform_services`)
+- View 1: Analyze, Optimize & Deploy (3 Candidate Agents, ADK 2.0 Parallel Audit,
+  6-Stage Closed-Loop Optimizer, Dynamic Model Armor + Terraform Paved-Path Diff,
+  Resumable AG3 Reviewer HITL, and A2A Blueprint Deployment)
+- View 2: Day-2 Fleet & Steward Lab (Kill Switch, Atomic Wallet, ADR-011 Verifier,
+  Interactive Dynamic Per-Request Model Armor Router, Ensemble TCO Calculator,
+  8 Modular Capability Proofs, W3C + OTLP Trace Waterfall)
+- Right Rail / View 3: Live 9-Service 4-Tier Architecture Pipeline (`platform_services`)
 
 Implements strict web security controls:
 - Strict Content-Security-Policy (`default-src 'self'`, zero `unsafe-inline`/`unsafe-eval`),
   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Permissions-Policy`,
   and `Cache-Control: no-store` on API responses.
-- Hardened `HttpOnly`, `SameSite=Strict` session cookies + synchronizer CSRF token
-  verification on mutating POST routes.
-- Per-IP sliding-window rate limiting and HTTP method allow-listing (`GET`, `POST`).
+- Hardened `HttpOnly`, `SameSite=Strict` (`__Host-` on HTTPS) session cookies +
+  synchronizer CSRF token verification on mutating POST routes.
+- Fetch Metadata cross-site isolation, per-IP sliding-window rate limiting, and
+  HTTP method allow-listing (`GET`, `POST`, `HEAD`).
 - Strict Pydantic validation on all inbound payloads.
 """
 
@@ -77,6 +81,7 @@ from cymbal_agent.governance.identity_obo import (  # noqa: E402
     verify_adr011_dual_tokens,
 )
 from cymbal_agent.governance.model_armor_guard import (  # noqa: E402
+    DynamicGuardrailPolicyPayload,
     FailClosedModelArmorGuard,
     ModelArmorBlockedError,
 )
@@ -232,24 +237,29 @@ def build_runtime_environment(request: Request | None = None) -> dict[str, Any]:
 
 
 class TriageStartRequest(BaseModel):
-    incident_id: str = Field(default="INC-4092", pattern=r"^INC-\d{4}$")
-    service_name: str = Field(default="cymbal-release-api", min_length=2, max_length=80)
-    app_id: str = Field(default="SVC-CYMBAL-992", min_length=3, max_length=64)
-    operator_prompt: str = Field(..., min_length=4, max_length=2000)
-    architecture_mode: Literal["google_native", "enterprise_hybrid"] = "google_native"
+    candidate_id: str | None = Field(default=None, max_length=32)
+    incident_id: str | None = Field(default=None, max_length=32)
+    agent_name: str | None = Field(default=None, max_length=80)
+    service_name: str | None = Field(default=None, max_length=80)
+    app_id: str = Field(default="SVC-CYMBAL-101", min_length=3, max_length=64)
+    operator_prompt: str = Field(..., min_length=4, max_length=4000)
+    architecture_mode: Literal["enterprise_hybrid", "google_native"] = "enterprise_hybrid"
 
 
 class HitlResumeRequest(BaseModel):
     session_id: str = Field(..., min_length=4, max_length=128)
     interrupt_id: str = Field(..., min_length=4, max_length=128)
     approved: bool
-    approver_principal: str = Field(default="sre-oncall-lead", min_length=2, max_length=80)
+    approver_principal: str = Field(default="gov-steward-lead", min_length=2, max_length=80)
     vp_exception_ticket: str | None = Field(default=None, max_length=64)
-    reason: str = Field(default="Reviewed correlated telemetry and blast radius.", max_length=400)
+    reason: str = Field(
+        default="Verified Tier-1 compliance hooks, dynamic guardrail spec, and Golden Blueprint.",
+        max_length=400,
+    )
 
 
 class ModeSwitchRequest(BaseModel):
-    architecture_mode: Literal["google_native", "enterprise_hybrid"]
+    architecture_mode: Literal["enterprise_hybrid", "google_native"]
 
 
 class KillSwitchUpdateRequest(BaseModel):
@@ -263,6 +273,11 @@ class WalletCapUpdateRequest(BaseModel):
 
 class GuardrailTestRequest(BaseModel):
     sample_text: str = Field(..., min_length=1, max_length=4000)
+    dynamic_policy: DynamicGuardrailPolicyPayload | None = None
+
+
+class ClosedLoopTriggerRequest(BaseModel):
+    custom_traces_json: str | None = Field(default=None, max_length=12000)
 
 
 class TcoQueryRequest(BaseModel):
@@ -270,38 +285,46 @@ class TcoQueryRequest(BaseModel):
     tokens_per_turn: int = Field(default=1000, ge=100, le=16000)
 
 
-INCIDENT_PRESETS: list[dict[str, Any]] = [
+CANDIDATE_PRESETS: list[dict[str, Any]] = [
     {
-        "incident_id": "INC-4092",
-        "title": "Release Gateway p99 Latency & Valkey usage:0 Saturation",
-        "service_name": "cymbal-release-api",
-        "app_id": "SVC-CYMBAL-992",
-        "severity": "SEV-1 / AG3",
+        "candidate_id": "CAND-101",
+        "incident_id": "CAND-101",
+        "title": "Shadow Python Agent Missing Tier-1 Hooks",
+        "agent_name": "billing-dispute-assistant",
+        "service_name": "billing-dispute-assistant",
+        "app_id": "SVC-CYMBAL-101",
+        "severity": "Path B | AG3 Shadow",
         "default_prompt": (
-            "Investigate INC-4092: cymbal-release-api gateway p99 latency spiked to 4,820ms "
-            "with Valkey usage:0 stream memory at 94.6% after release v2.14.3."
+            "Audit CAND-101 (billing-dispute-assistant): remove static API keys, wire Tier-1 "
+            "Gateway + OTLP + SPIFFE WIF via Terraform Paved Path, and stage Golden Blueprint deployment."
         ),
     },
     {
-        "incident_id": "INC-4095",
-        "title": "Settlement Webhook Timeout During Peak Change Freeze",
-        "service_name": "billing-webhook-router",
-        "app_id": "SVC-CYMBAL-710",
-        "severity": "SEV-1 / AG3 Freeze",
+        "candidate_id": "CAND-204",
+        "incident_id": "CAND-204",
+        "title": "Cross-Cloud AWS/Azure Agent with Failing OTLP Traces",
+        "agent_name": "media-entitlement-router",
+        "service_name": "media-entitlement-router",
+        "app_id": "SVC-CYMBAL-204",
+        "severity": "A-La-Carte | AG3 Freeze",
         "default_prompt": (
-            "Urgent INC-4095: billing-webhook-router p99 latency jumped to 5,410ms following "
-            "release v3.8.1. Evaluate root cause, change-freeze rules, and safe remediation."
+            "Evaluate cross-cloud CAND-204 (media-entitlement-router) production OTLP/Langfuse "
+            "failure spans without migrating its AWS runtime, verify governance-freeze rules, "
+            "and stage Golden Blueprint promotion."
         ),
     },
     {
-        "incident_id": "INC-4099",
-        "title": "Edge Session Alert with Pasted Customer PII",
-        "service_name": "edge-session-ingestor",
-        "app_id": "SVC-CYMBAL-305",
-        "severity": "SEV-3 / AG1 + SDP",
+        "candidate_id": "CAND-309",
+        "incident_id": "CAND-309",
+        "title": "High-Risk Multi-BU PII & Mutating Tool Agent",
+        "agent_name": "cpe-fleet-provisioning-agent",
+        "service_name": "cpe-fleet-provisioning-agent",
+        "app_id": "SVC-CYMBAL-309",
+        "severity": "Multi-BU | SDP + CEL",
         "default_prompt": (
-            "Triage INC-4099 on edge-session-ingestor. Raw pasted log snippet: subscriber SSN "
-            "123-45-6789 on CPE MAC aa:bb:cc:dd:ee:ff saw minor 890ms jitter."
+            "Audit CAND-309 (cpe-fleet-provisioning-agent). Sample trace log: subscriber SSN "
+            "123-45-6789 on CPE MAC aa:bb:cc:dd:ee:ff. Attach Dynamic Model Armor policy and "
+            "block destructive MCP tools."
         ),
     },
 ]
@@ -327,7 +350,7 @@ def _load_prompt_pointer() -> dict[str, Any]:
                 return json.loads(pointer_path.read_text(encoding="utf-8"))
             except Exception:
                 pass
-    return {"active_version": "v2", "behavior_score": 96.2, "eval_gate": "passed"}
+    return {"active_version": "v2", "behavior_score": 96.4, "eval_gate": "passed"}
 
 
 def build_platform_services_snapshot(
@@ -336,41 +359,50 @@ def build_platform_services_snapshot(
     mem_bank: ScopedMemoryBankClient,
     tracer: UnifiedTraceBridge,
     architecture_mode: str,
-    last_event: str = "Platform control plane initialized and ready",
+    last_event: str = "4-Tier Coexistence control plane initialized and ready",
     trace_id: str = "",
     flow_sequence: list[str] | None = None,
     active_edges: list[str] | None = None,
     overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Constructs live status & telemetry across all 9 Google Agent Platform services."""
+    """Constructs live status across all 9 services mapped 1:1 to the 4-Tier Pyramid."""
+    profile = load_tenant_profile()
+    terms = profile.terminology
     agent_state = store.get_agent_state("cymbal-ops-release-agent")
     wallet_state = store.get_wallet_state("wallet-cymbal-ops")
     posture = inspect_zero_secret_posture()
     pointer = _load_prompt_pointer()
-    memories = mem_bank.retrieve_memories(verified_user_id="sre-oncall-01", limit=5)
+    memories = mem_bank.retrieve_memories(verified_user_id="gov-reviewer-01", limit=5)
     recent_traces = tracer.list_recent_traces(limit=5)
+    recent_otlp = tracer.list_recent_otlp_exports(limit=5)
 
     kill_status = str(agent_state.get("status", "ACTIVE")).upper()
-    spent_usd = (int(wallet_state.get("spent_nano_usd", 0)) / 1e9)
-    cap_usd = (int(wallet_state.get("monthly_cap_nano_usd", 15_000_000_000)) / 1e9)
+    spent_usd = int(wallet_state.get("spent_nano_usd", 0)) / 1e9
+    cap_usd = int(wallet_state.get("monthly_cap_nano_usd", 15_000_000_000)) / 1e9
     resolved_cnt = int(wallet_state.get("resolved_incidents_count", 0))
     active_ver = str(pointer.get("active_version", "v2"))
-    b_score = pointer.get("behavior_score", 96.2)
+    b_score = pointer.get("behavior_score", 96.4)
+
+    t1_label = f"Tier 1 - Mandatory Foundation ({terms.platform_name})"
+    t2_label = "Tier 2 - Enterprise Control & Runtime"
+    t34_label = "Tier 3 & 4 - Eval Optimization & Frontier Models"
 
     services: list[dict[str, Any]] = [
         {
             "id": "agent_identity",
             "step": 1,
-            "stage_group": "Stage 1 - Identity & Zero-Trust Safety",
-            "name": "Agent Identity & OBO",
-            "plane": "Identity & Security",
-            "subtitle": "SPIFFE SVID + Zero Static Secrets",
+            "stage_group": t1_label,
+            "name": "SPIFFE Identity & OIDC OBO",
+            "plane": "Tier 1 Foundation",
+            "subtitle": "Zero Static Secrets + ADR-011 azp Federation",
             "status": "READY" if posture.zero_secret_compliant else "BLOCKED",
             "badge_label": (
-                "SPIFFE + ADR-011 OBO" if architecture_mode == "enterprise_hybrid" else "SPIFFE SVID Ready"
+                "SPIFFE + ADR-011 OBO"
+                if architecture_mode == "enterprise_hybrid"
+                else "SPIFFE SVID Ready"
             ),
             "latency_ms": None,
-            "api_surface": "agentidentity.googleapis.com / sts.googleapis.com",
+            "api_surface": "agentidentity.googleapis.com / sts.googleapis.com (WIF)",
             "consolidates": "Keycard, Custom OBO Sidecars, HashiCorp Vault",
             "summary": posture.summary,
             "metrics": {
@@ -380,64 +412,46 @@ def build_platform_services_snapshot(
             },
         },
         {
-            "id": "model_armor",
-            "step": 2,
-            "stage_group": "Stage 1 - Identity & Zero-Trust Safety",
-            "name": "Model Armor + Cloud SDP",
-            "plane": "Identity & Security",
-            "subtitle": "Floor Settings + Inline PII Mask + 40-URL Scan",
-            "status": "READY",
-            "badge_label": "Fail-Closed Floor Active",
-            "latency_ms": None,
-            "api_surface": "modelarmor.us-central1.rep.googleapis.com + dlp.googleapis.com",
-            "consolidates": "Straiker.ai, Azure Content Safety, Bedrock Guardrails",
-            "summary": (
-                "Enforces un-bypassable global Floor Settings, 3-layer Base64/Hex unpacking, "
-                "inline SSN/MAC PII masking, and 40-URL phishing inspection."
-            ),
-            "metrics": {
-                "template": "cymbal-default-medium-gpp",
-                "floor_enforcement": "ENABLED (failOpen=false)",
-                "sdp_inline_redaction": "SSN, MAC, Payment Card",
-            },
-        },
-        {
             "id": "agent_registry",
-            "step": 3,
-            "stage_group": "Stage 2 - Discovery & Private L7 Gateway",
-            "name": "Agent & Tool Registry",
-            "plane": "Discovery & Inventory",
-            "subtitle": "Canonical Agent, MCP Tool-Spec & A2A Card",
+            "step": 2,
+            "stage_group": t1_label,
+            "name": f"{terms.registry_name} & Sync",
+            "plane": "Tier 1 Foundation",
+            "subtitle": "Golden Blueprints, Intake & Supergraph Link",
             "status": "READY",
-            "badge_label": f"Active {active_ver} ({b_score})",
+            "badge_label": f"Blueprint {active_ver} ({b_score})",
             "latency_ms": None,
-            "api_surface": "agentregistry.googleapis.com/v1alpha",
-            "consolidates": "Fragmented Multi-Catalog Sync Glue",
+            "api_surface": "Enterprise Catalog Hook + agentregistry.googleapis.com",
+            "consolidates": "Disconnected Multi-Catalog Sync Glue",
             "summary": (
-                f"Governs canonical discovery for cymbal-ops-release-agent ({active_ver}, "
-                f"behavior_score={b_score}), cymbal-ops-mcp-server, and remediation-a2a-agent."
+                f"Synchronizes Golden Blueprint {active_ver} (behavior_score={b_score}) across "
+                f"{terms.registry_name}, {terms.supergraph_name}, and GCP Agent Registry."
             ),
             "metrics": {
-                "registered_services": "3 (Agent, MCP Tool-Spec, A2A Card)",
-                "active_prompt_version": active_ver,
+                "active_blueprint": f"bp-governance-synthesizer-{active_ver}",
+                "supergraph_link": terms.supergraph_name,
                 "eval_gate": str(pointer.get("eval_gate", "passed")),
             },
         },
         {
             "id": "agent_gateway",
-            "step": 4,
-            "stage_group": "Stage 2 - Discovery & Private L7 Gateway",
-            "name": "Agent Gateway + ACT + UAP",
-            "plane": "Network & Access Plane",
+            "step": 3,
+            "stage_group": t1_label,
+            "name": f"{terms.gateway_name} + UAP",
+            "plane": "Tier 1 Foundation",
             "subtitle": "/26 PSC-I Attachment + Per-Tool CEL Policy",
             "status": "READY",
-            "badge_label": "PSC-I + UAP CEL Active",
+            "badge_label": (
+                "Coexistence Proxy + CEL"
+                if architecture_mode == "enterprise_hybrid"
+                else "PSC-I + UAP CEL Active"
+            ),
             "latency_ms": None,
-            "api_surface": "networkservices.googleapis.com/agentGateways + iap.googleapis.com",
+            "api_surface": "Enterprise Gateway Proxy + networkservices.googleapis.com/agentGateways",
             "consolidates": "Agentgateway, Runlayer, Arcade, Hush",
             "summary": (
-                "Routes agent egress over private /26 PSC-I attachment (10.10.1.0/26) and "
-                "evaluates UAP Policy V2 CEL per-tool annotations inline."
+                f"Routes outbound traffic via {terms.gateway_name} over private /26 PSC-I "
+                "attachment while enforcing fine-grained UAP Policy V2 CEL per-tool rules."
             ),
             "metrics": {
                 "network_attachment": "10.10.1.0/26 (PRIVATE_RANGES_ONLY)",
@@ -446,64 +460,109 @@ def build_platform_services_snapshot(
             },
         },
         {
-            "id": "agent_runtime",
+            "id": "trace_wallet",
+            "step": 4,
+            "stage_group": t1_label,
+            "name": f"{terms.observability_name} & Wallet",
+            "plane": "Tier 1 Foundation",
+            "subtitle": "OTLP Dual-Export + Kill Switch + Atomic Budget",
+            "status": "READY" if kill_status == "ACTIVE" else "BLOCKED",
+            "badge_label": f"{kill_status} | ${spent_usd:.4f}",
+            "latency_ms": None,
+            "api_surface": "OTLP v1 resourceSpans + cloudtrace + firestore + bigquery",
+            "consolidates": "Revenium, Ascerta, Custom Trace Joiners",
+            "summary": (
+                f"Kill Switch={kill_status}; {terms.wallet_name}=${spent_usd:.6f}/${cap_usd:.2f} "
+                f"({resolved_cnt} governed deployments); exported {len(recent_otlp)} OTLP envelopes."
+            ),
+            "metrics": {
+                "kill_switch": kill_status,
+                "wallet_spend_usd": f"${spent_usd:.6f} / ${cap_usd:.2f}",
+                "otlp_envelopes_buffered": str(len(recent_otlp)),
+                "w3c_traces": str(len(recent_traces)),
+            },
+        },
+        {
+            "id": "model_armor",
             "step": 5,
-            "stage_group": "Stage 3 - ADK 2.0 Runtime, Memory & Mesh",
-            "name": "Vertex AI Agent Runtime",
-            "plane": "ADK 2.0 Runtime & Sandbox",
-            "subtitle": "Workflow Graph + JoinNode + gVisor + RequestInput HITL",
+            "stage_group": t2_label,
+            "name": "Dynamic Model Armor + SDP",
+            "plane": "Tier 2 Control & Guardrail",
+            "subtitle": "Per-Request BU Policy Router + Inline PII + 40-URL",
+            "status": "READY",
+            "badge_label": "Dynamic Router + Floor",
+            "latency_ms": None,
+            "api_surface": "modelarmor.us-central1.rep.googleapis.com + dlp.googleapis.com",
+            "consolidates": "Straiker.ai, Static Template Sprawl",
+            "summary": (
+                "Routes per-request BU/risk/SDP JSON payloads onto 2 Floor-enforced base "
+                "templates (eliminating 280+ static templates) as a $0.10/1M-token Ensemble Tier-0 filter."
+            ),
+            "metrics": {
+                "base_pool": "cymbal-default-medium-gpp & cymbal-strict-ag3-gpp",
+                "floor_enforcement": "ENABLED (failOpen=false)",
+                "ensemble_role": "Tier-0 Inline SDP & URL Pre-Filter",
+            },
+        },
+        {
+            "id": "agent_runtime",
+            "step": 6,
+            "stage_group": t2_label,
+            "name": "ADK 2.0 Runtime & gVisor",
+            "plane": "Tier 2 Runtime & Sandbox",
+            "subtitle": "Parallel Audit Graph + gVisor + RequestInput HITL",
             "status": "READY" if kill_status == "ACTIVE" else "BLOCKED",
             "badge_label": "ADK 2.0 Resumable" if kill_status == "ACTIVE" else f"Halted ({kill_status})",
             "latency_ms": None,
-            "api_surface": "aiplatform.googleapis.com/ReasoningEngine (gemini-3.8-flash)",
+            "api_surface": "aiplatform.googleapis.com/ReasoningEngine + infra/terraform",
             "consolidates": "E2B MicroVMs, Custom Checkpoint State Glue",
             "summary": (
-                "Executes typed ADK 2.0 Workflow graph: 3-way parallel MCP fan-out, JoinNode, "
-                "BuiltInCodeExecutor gVisor sandbox, Gemini 3.8 Flash synthesis, and RequestInput HITL."
+                "Executes typed ADK 2.0 Governance Workflow: 3-way parallel MCP audit, JoinNode, "
+                "gVisor readiness scoring, Terraform Paved-Path generation, and AG3 HITL gate."
             ),
             "metrics": {
                 "model": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
                 "sandbox": "BuiltInCodeExecutor (gVisor)",
-                "resumability": "ResumabilityConfig(is_resumable=True)",
+                "paved_path_iac": "infra/terraform/ (Cloud Run & Vertex)",
             },
         },
         {
             "id": "memory_bank",
-            "step": 6,
-            "stage_group": "Stage 3 - ADK 2.0 Runtime, Memory & Mesh",
+            "step": 7,
+            "stage_group": t2_label,
             "name": "Vertex AI Memory Bank",
-            "plane": "Scoped Longitudinal State",
-            "subtitle": "JWT Principal-Scoped Cross-Session Recall",
+            "plane": "Tier 2 Longitudinal State",
+            "subtitle": "JWT-Isolated Reviewer & Audit Memory",
             "status": "READY",
-            "badge_label": f"{len(memories)} Scoped Fact(s)",
+            "badge_label": f"{len(memories)} Audit Fact(s)",
             "latency_ms": None,
             "api_surface": "aiplatform.googleapis.com/agentEngines.memories",
             "consolidates": "Mem0, Memori, Custom Memory ABAC Wrappers",
             "summary": (
-                "Recalls longitudinal service incident history at intake and persists resolved "
-                "postmortems strictly bound to verified JWT principal user_id."
+                "Recalls historical compliance reviews per candidate agent and persists "
+                "signed deployment outcomes strictly isolated by JWT reviewer user_id."
             ),
             "metrics": {
-                "principal_scope": "user_id=sre-oncall-01",
+                "principal_scope": "user_id=gov-reviewer-01",
                 "stored_memories": str(len(memories)),
                 "cross_tenant_leakage": "0 records",
             },
         },
         {
             "id": "mcp_a2a_mesh",
-            "step": 7,
-            "stage_group": "Stage 3 - ADK 2.0 Runtime, Memory & Mesh",
-            "name": "Cloud Run MCP & A2A Mesh",
-            "plane": "Governed Tool & Agent Mesh",
-            "subtitle": "/mcp Read-Only Triage Tools & /a2a Canary Rollback",
+            "step": 8,
+            "stage_group": t2_label,
+            "name": "Governance MCP & A2A Mesh",
+            "plane": "Tier 2 Governed Mesh",
+            "subtitle": "/mcp Tier-1 Audit Tools & /a2a Paved-Path Deployer",
             "status": "READY",
             "badge_label": "IAM Auth Enforced",
             "latency_ms": None,
             "api_surface": "run.googleapis.com (StreamableHTTP /mcp + JSON-RPC 2.0 /a2a)",
-            "consolidates": "Unauthenticated Webhooks & Coarse Tool Pools",
+            "consolidates": "Unauthenticated Webhooks & Manual Onboarding Scripts",
             "summary": (
-                "Hosts IAM-protected cymbal-ops-mcp-server (Golden Signals, Release Freeze, "
-                "ServiceAtlas CMDB) and remediation-a2a-agent (AG3 canary rollback executor)."
+                "Hosts IAM-protected Governance Discovery MCP Server (Manifest, Supergraph, "
+                "OTLP Trace tools) and A2A v1.0 Paved-Path Deployment Executor."
             ),
             "metrics": {
                 "mcp_server": "cymbal-ops-mcp-server (/mcp)",
@@ -512,47 +571,25 @@ def build_platform_services_snapshot(
             },
         },
         {
-            "id": "trace_wallet",
-            "step": 8,
-            "stage_group": "Stage 4 - FinOps, Trace & Eval Flywheel",
-            "name": "Cloud Trace & Atomic Wallet",
-            "plane": "Observability & FinOps",
-            "subtitle": "Kill Switch + W3C Single-Trace + BigQuery Ledger",
-            "status": "READY" if kill_status == "ACTIVE" else "BLOCKED",
-            "badge_label": f"{kill_status} | ${spent_usd:.4f}",
-            "latency_ms": None,
-            "api_surface": "cloudtrace.googleapis.com + firestore + bigquery.googleapis.com",
-            "consolidates": "Revenium, Ascerta, Disconnected Log Stores",
-            "summary": (
-                f"Kill Switch={kill_status}; Wallet=${spent_usd:.6f} spent of ${cap_usd:.2f} cap "
-                f"({resolved_cnt} resolved incidents); joins W3C spans in Cloud Trace."
-            ),
-            "metrics": {
-                "kill_switch": kill_status,
-                "wallet_spend_usd": f"${spent_usd:.6f} / ${cap_usd:.2f}",
-                "recent_w3c_traces": str(len(recent_traces)),
-            },
-        },
-        {
             "id": "eval_flywheel",
             "step": 9,
-            "stage_group": "Stage 4 - FinOps, Trace & Eval Flywheel",
-            "name": "Gen AI Eval & Optimizer",
-            "plane": "Continuous Quality Flywheel",
-            "subtitle": "503 & Change-Freeze Simulation + Prompt Optimizer",
+            "stage_group": t34_label,
+            "name": f"{terms.eval_engine_name}",
+            "plane": "Tier 3 & 4 Golden Goose",
+            "subtitle": "6-Stage Cross-Cloud Trace -> Eval -> Optimizer -> Gate",
             "status": "READY",
             "badge_label": f"Score {b_score}/100",
             "latency_ms": None,
-            "api_surface": "Vertex AI Gen AI Eval + CymbalEnvironmentSimulator",
+            "api_surface": "agentplatform.Client.evals.evaluate + gemini-3.8-flash",
             "consolidates": "Veris Simulation, LangSmith",
             "summary": (
-                f"Continuously evaluates failure traces across 8 adversarial & HTTP 503 cases; "
-                f"promoted {active_ver} ({b_score}/100 >= 90.0 gate)."
+                f"A-la-carte 6-stage engine ingesting AWS/Azure/GCP OTLP traces without lock-in; "
+                f"promoted Golden Blueprint {active_ver} ({b_score}/100 >= 90.0 gate)."
             ),
             "metrics": {
+                "trace_sources": "AWS Bedrock, Azure OpenAI, GCP Vertex (OTLP)",
                 "baseline_v1_score": "58.0 (BLOCKED)",
                 "promoted_v2_score": f"{b_score} (PASSED)",
-                "simulated_faults": "HTTP 503 + Peak Change Freeze + Base64 Injection",
             },
         },
     ]
@@ -614,12 +651,12 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     runner = InMemoryRunner(app=agent_adk_app)
 
     runtime_cfg: dict[str, str] = {
-        "architecture_mode": os.getenv("CYMBAL_PLATFORM_MODE", "google_native"),
+        "architecture_mode": os.getenv("CYMBAL_PLATFORM_MODE", "enterprise_hybrid"),
     }
 
     bff = FastAPI(
-        title="Cymbal Core Operations & Release Agent - Google Agent Platform Console",
-        version="1.1.0",
+        title="Cymbal Agent Governance, Optimization & Deployment Workbench",
+        version="2.0.0",
         docs_url=None,
         redoc_url=None,
     )
@@ -669,7 +706,6 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         if request.method not in {"GET", "POST", "HEAD"}:
             return JSONResponse({"detail": "Method not allowed"}, status_code=405)
 
-        # Fetch Metadata resource isolation (reject cross-site API/subresource calls pre-auth)
         sec_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
         if sec_site and sec_site not in {"same-origin", "same-site", "none"}:
             sec_mode = (request.headers.get("sec-fetch-mode") or "").strip().lower()
@@ -766,8 +802,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             if (active_pdir / "synthesizer_v2_optimized.txt").is_file()
             else PROMPTS_DIR / "synthesizer_v2_optimized.txt"
         )
+        bp_file = active_pdir / "enterprise_golden_blueprint_v2.json"
         v1_txt = v1_file.read_text(encoding="utf-8")
         v2_txt = v2_file.read_text(encoding="utf-8")
+        bp_json = (
+            json.loads(bp_file.read_text(encoding="utf-8"))
+            if bp_file.is_file()
+            else None
+        )
         runtime_env = build_runtime_environment(request)
 
         platform_services = build_platform_services_snapshot(
@@ -775,7 +817,9 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             mem_bank=mem_bank,
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
-            last_event="All 9 Google Agent Platform services online and ready for incident triage",
+            last_event=(
+                f"4-Tier Coexistence ready ({profile.terminology.platform_name} + Google Agent Platform)"
+            ),
         )
 
         return {
@@ -783,7 +827,8 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "runtime_environment": runtime_env,
             "architecture_mode": runtime_cfg["architecture_mode"],
             "tenant": profile.model_dump(),
-            "incidents": INCIDENT_PRESETS,
+            "candidates": CANDIDATE_PRESETS,
+            "incidents": CANDIDATE_PRESETS,
             "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "identity_posture": inspect_zero_secret_posture().__dict__,
@@ -791,12 +836,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "active": pointer,
                 "v1_prompt": v1_txt,
                 "v2_prompt": v2_txt,
+                "golden_blueprint": bp_json,
             },
             "tco_default": calculate_guardrail_tco(daily_turns=10_000_000, tokens_per_turn=1000),
             "recent_traces": tracer.list_recent_traces(limit=10),
+            "recent_otlp_exports": tracer.list_recent_otlp_exports(limit=5),
             "recent_ledger": store.recent_ledger_rows(limit=10),
             "recent_memories": mem_bank.retrieve_memories(
-                verified_user_id="sre-oncall-01", limit=5
+                verified_user_id="gov-reviewer-01", limit=5
             ),
             "platform_services": platform_services,
         }
@@ -807,9 +854,9 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         profile = load_tenant_profile()
         runtime_cfg["architecture_mode"] = req.architecture_mode
         obo_note = (
-            "Hybrid coexistence active: ADR-011 dual-token azp correlation + single-guardrail passthrough enabled"
+            f"4-Tier A-La-Carte Coexistence active: {profile.terminology.gateway_name} + OTLP + ADR-011 OBO"
             if req.architecture_mode == "enterprise_hybrid"
-            else "Google-Native Full Platform mode active across all 9 services"
+            else "Full GCP-Native Paved-Path mode active across all 9 services"
         )
         return {
             "architecture_mode": runtime_cfg["architecture_mode"],
@@ -820,17 +867,20 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 tracer=tracer,
                 architecture_mode=runtime_cfg["architecture_mode"],
                 last_event=obo_note,
-                flow_sequence=["agent_identity", "model_armor", "agent_gateway", "agent_runtime"],
+                flow_sequence=["agent_identity", "agent_registry", "agent_gateway", "model_armor", "agent_runtime"],
                 active_edges=["identity->armor", "armor->gateway", "gateway->runtime"],
             ),
         }
 
+    @bff.post("/api/agent/audit")
     @bff.post("/api/agent/triage")
-    async def start_agent_triage(req: TriageStartRequest, request: Request) -> Any:
+    async def start_governance_audit(req: TriageStartRequest, request: Request) -> Any:
         _verify_csrf(request)
         t0 = time.perf_counter()
         trace_id = tracer.new_trace_id()
         sess_preview_id = f"sess-{trace_id[:10]}"
+        cand_id = (req.candidate_id or req.incident_id or "CAND-101").strip()
+        agent_name = (req.agent_name or req.service_name or "billing-dispute-assistant").strip()
 
         try:
             store.assert_agent_active("cymbal-ops-release-agent")
@@ -901,7 +951,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 mem_bank=mem_bank,
                 tracer=tracer,
                 architecture_mode=req.architecture_mode,
-                last_event=f"Blocked fail-closed by Model Armor ({exc.audit_record.action_taken})",
+                last_event=f"Blocked fail-closed by Dynamic Model Armor ({exc.audit_record.action_taken})",
                 trace_id=trace_id,
                 flow_sequence=["agent_identity", "model_armor", "trace_wallet"],
                 active_edges=["identity->armor", "runtime->trace"],
@@ -920,15 +970,17 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     "agent_runtime": {
                         "status": "STANDBY",
                         "badge_label": "Protected (Unreached)",
-                        "summary": "Malicious prompt stopped before ADK 2.0 Workflow execution.",
+                        "summary": "Malicious payload stopped before ADK 2.0 Governance Workflow.",
                     },
                 },
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=400)
 
         init_state: dict[str, Any] = {
-            "incident_id": req.incident_id,
-            "service_name": req.service_name,
+            "candidate_id": cand_id,
+            "incident_id": cand_id,
+            "agent_name": agent_name,
+            "service_name": agent_name,
             "app_id": req.app_id,
             "architecture_mode": req.architecture_mode,
             "trace_id": trace_id,
@@ -940,7 +992,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         session = await runner.session_service.create_session(
             app_name="cymbal_web_agent_app",
-            user_id="sre-oncall-01",
+            user_id="gov-reviewer-01",
             state=init_state,
         )
 
@@ -949,7 +1001,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         wf_t0 = time.perf_counter()
         async for ev in runner.run_async(
-            user_id="sre-oncall-01",
+            user_id="gov-reviewer-01",
             session_id=session.id,
             new_message=types.Content(
                 role="user", parts=[types.Part(text=verdict.sanitized_text)]
@@ -968,7 +1020,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         updated = await runner.session_service.get_session(
             app_name="cymbal_web_agent_app",
-            user_id="sre-oncall-01",
+            user_id="gov-reviewer-01",
             session_id=session.id,
         )
         st = updated.state if updated else {}
@@ -979,23 +1031,23 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             session_id=session.id,
             trace_id=trace_id,
             architecture_mode=req.architecture_mode,
-            input_tokens=520,
-            output_tokens=260,
-            outcome="AGENT_TRIAGE_SYNTHESIZED",
-            incident_id=req.incident_id,
+            input_tokens=540,
+            output_tokens=280,
+            outcome="GOVERNANCE_AUDIT_SYNTHESIZED",
+            incident_id=cand_id,
             incident_resolved=pending_approval is None,
         )
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         tracer.record_span(
             trace_id=trace_id,
             session_id=session.id,
-            span_name="cymbal_agent.workflow_triage",
+            span_name="governance_workbench.audit_and_paved_path",
             stage="adk_workflow_graph",
             duration_ms=total_ms,
             architecture_mode=req.architecture_mode,
             cmdb_app_id=req.app_id,
             attributes={
-                "incident.id": req.incident_id,
+                "candidate.id": cand_id,
                 "hitl.paused": pending_approval is not None,
                 "pii.masked_inline": verdict.pii_masked,
             },
@@ -1008,7 +1060,11 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         )
         assessment = st.get("incident_assessment") or {}
         recalled_cnt = int(st.get("recalled_facts_count", 1))
-        z_str = f"z={sandbox_obj['z_score']} sigma" if sandbox_obj else "gVisor verified"
+        readiness_str = (
+            f"readiness={sandbox_obj['readiness_score']}/100"
+            if sandbox_obj and "readiness_score" in sandbox_obj
+            else "gVisor verified"
+        )
 
         service_overrides: dict[str, dict[str, Any]] = {
             "agent_identity": {
@@ -1020,102 +1076,90 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 ),
                 "latency_ms": 1.8,
                 "summary": (
-                    f"Authenticated workload via {st.get('spiffe_id', 'SPIFFE SVID')} with zero static secrets."
+                    f"Verified workload SPIFFE posture and ADR-011 OIDC azp correlation for {cand_id}."
+                ),
+            },
+            "agent_registry": {
+                "status": "VERIFIED",
+                "badge_label": f"Blueprint {_load_prompt_pointer().get('active_version', 'v2')} Bound",
+                "latency_ms": 2.1,
+                "summary": (
+                    f"Checked Tier-1 Catalog & Supergraph metadata for {cand_id} ({req.app_id})."
+                ),
+            },
+            "agent_gateway": {
+                "status": "VERIFIED",
+                "badge_label": "3x Read-Only Audit Allowed",
+                "latency_ms": 4.2,
+                "summary": (
+                    "Enforced UAP Policy V2 CEL: allowed 3 readOnlyHint=true governance MCP tools "
+                    "while keeping force_bypass_governance_gate blocked (403)."
+                ),
+            },
+            "trace_wallet": {
+                "status": "VERIFIED",
+                "badge_label": f"OTLP + {ledger_row['total_cost_nano_usd']} nUSD",
+                "latency_ms": 5.1,
+                "summary": (
+                    f"Dual-exported W3C + OTLP span {trace_id[:12]}... and settled "
+                    f"{ledger_row['total_cost_nano_usd']} nano-USD in wallet_ledger."
                 ),
             },
             "model_armor": {
                 "status": "MASKED_PII" if verdict.pii_masked else "VERIFIED",
-                "badge_label": "Inline SDP Masked" if verdict.pii_masked else "ALLOWED_CLEAN",
+                "badge_label": "Inline SDP Masked" if verdict.pii_masked else "Dynamic Policy Ready",
                 "latency_ms": verdict.latency_ms,
                 "summary": verdict.summary,
                 "metrics": {
                     "action": verdict.action_taken,
                     "pii_types_masked": ", ".join(verdict.pii_types_masked) or "None",
-                    "unpacked_layers": str(verdict.unpacked_layers),
+                    "policy_key": verdict.dynamic_policy_key,
                 },
-            },
-            "agent_gateway": {
-                "status": "VERIFIED",
-                "badge_label": "3x Read-Only MCP Allowed",
-                "latency_ms": 4.2,
-                "summary": (
-                    "Enforced UAP Policy V2 CEL over /26 PSC-I attachment: allowed 3 readOnlyHint=true "
-                    "MCP triage tools while keeping destructive tools blocked."
-                ),
-            },
-            "agent_registry": {
-                "status": "VERIFIED",
-                "badge_label": f"Prompt {_load_prompt_pointer().get('active_version', 'v2')} Bound",
-                "latency_ms": 2.1,
-                "summary": (
-                    f"Resolved cymbal-ops-mcp-server tool-spec and governed synthesizer instruction "
-                    f"({_load_prompt_pointer().get('active_version', 'v2')})."
-                ),
             },
             "agent_runtime": {
                 "status": "PAUSED_HITL" if pending_approval else "VERIFIED",
                 "badge_label": (
                     f"Paused: {pending_approval['interrupt_id']}"
                     if pending_approval
-                    else f"Completed ({z_str})"
+                    else f"Completed ({readiness_str})"
                 ),
                 "latency_ms": wf_ms,
                 "summary": (
-                    f"Parallel 3-way fan-out -> JoinNode -> gVisor ({z_str}) -> "
+                    f"Parallel 3-way MCP audit -> JoinNode -> gVisor ({readiness_str}) -> "
                     + (
-                        f"Paused at RequestInput('{pending_approval['interrupt_id']}') awaiting human AG3 approval."
+                        f"Paused at RequestInput('{pending_approval['interrupt_id']}') awaiting AG3 Reviewer sign-off."
                         if pending_approval
-                        else f"Synthesized {assessment.get('risk_level', 'AG1')} advisory outcome."
+                        else f"Verified {assessment.get('risk_level', 'AG1')} advisory readiness."
                     )
                 ),
-                "metrics": {
-                    "incident_id": req.incident_id,
-                    "gvisor_z_score": str(sandbox_obj["z_score"]) if sandbox_obj else "n/a",
-                    "route": str(assessment.get("recommended_route", "info_or_ag1")),
-                },
             },
             "memory_bank": {
                 "status": "VERIFIED",
                 "badge_label": (
-                    f"Recalled {recalled_cnt} Fact(s)"
+                    f"Recalled {recalled_cnt} Review(s)"
                     if pending_approval
                     else "Recalled + Persisted"
                 ),
                 "latency_ms": 6.4,
                 "summary": (
-                    f"Recalled {recalled_cnt} JWT-scoped incident memory fact(s) for {req.service_name}"
-                    + ("" if pending_approval else " and persisted advisory postmortem.")
+                    f"Recalled {recalled_cnt} JWT-isolated compliance fact(s) for {agent_name}."
                 ),
             },
             "mcp_a2a_mesh": {
                 "status": "ACTIVE" if pending_approval else "VERIFIED",
-                "badge_label": "3x MCP Done | A2A Standby" if pending_approval else "3x MCP Triage Complete",
+                "badge_label": "3x MCP Audit Done | A2A Ready",
                 "latency_ms": 8.9,
                 "summary": (
-                    "Executed query_golden_signal_metrics, check_release_and_change_freeze, and "
-                    "lookup_service_topology_and_runbook in parallel."
+                    "Executed inspect_candidate_agent_manifest, verify_tier1_intake_and_supergraph, "
+                    "and fetch_production_otel_traces in parallel."
                 ),
-            },
-            "trace_wallet": {
-                "status": "VERIFIED",
-                "badge_label": f"Settled {ledger_row['total_cost_nano_usd']} nUSD",
-                "latency_ms": 5.1,
-                "summary": (
-                    f"Joined W3C trace {trace_id[:12]}... in Cloud Trace and settled "
-                    f"{ledger_row['total_cost_nano_usd']} nano-USD in BigQuery wallet_ledger."
-                ),
-                "metrics": {
-                    "trace_id": trace_id[:16] + "...",
-                    "turn_cost_nano_usd": str(ledger_row["total_cost_nano_usd"]),
-                    "cost_per_resolved_incident": f"{ledger_row['cost_per_resolved_incident_nano_usd']} nUSD",
-                },
             },
             "eval_flywheel": {
                 "status": "VERIFIED",
-                "badge_label": f"Guard {assessment.get('risk_level', 'AG3')} Policy",
+                "badge_label": f"Enforcing {assessment.get('risk_level', 'AG3')} Gate",
                 "latency_ms": None,
                 "summary": (
-                    "Promoted v2 instruction actively enforced change-freeze and degraded-telemetry rules during synthesis."
+                    "Synthesized Dynamic Guardrail JSON + Terraform Paved-Path HCL under promoted v2 rules."
                 ),
             },
         }
@@ -1126,29 +1170,20 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             tracer=tracer,
             architecture_mode=req.architecture_mode,
             last_event=(
-                f"Triage {req.incident_id}: Paused at SENTINEL AG3 HITL checkpoint ({pending_approval['interrupt_id']})"
+                f"Audit {cand_id}: Paused at AG3 Governance Reviewer Gate ({pending_approval['interrupt_id']})"
                 if pending_approval
-                else f"Triage {req.incident_id}: Completed AG1 advisory workflow and persisted memory"
+                else f"Audit {cand_id}: Completed AG1 compliance verification"
             ),
             trace_id=trace_id,
             flow_sequence=[
                 "agent_identity",
-                "model_armor",
-                "trace_wallet",
                 "agent_registry",
                 "agent_gateway",
+                "trace_wallet",
+                "model_armor",
                 "mcp_a2a_mesh",
                 "memory_bank",
                 "agent_runtime",
-            ],
-            active_edges=[
-                "identity->armor",
-                "armor->gateway",
-                "registry->gateway",
-                "gateway->runtime",
-                "runtime->memory",
-                "gateway->mesh",
-                "runtime->trace",
             ],
             overrides=service_overrides,
         )
@@ -1170,7 +1205,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "recent_memories": mem_bank.retrieve_memories(
-                verified_user_id="sre-oncall-01", limit=5
+                verified_user_id="gov-reviewer-01", limit=5
             ),
             "platform_services": platform_services,
         }
@@ -1211,7 +1246,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         )
         messages: list[str] = []
         async for ev in runner.run_async(
-            user_id="sre-oncall-01",
+            user_id="gov-reviewer-01",
             session_id=req.session_id,
             new_message=types.Content(role="user", parts=[part]),
         ):
@@ -1222,14 +1257,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         updated = await runner.session_service.get_session(
             app_name="cymbal_web_agent_app",
-            user_id="sre-oncall-01",
+            user_id="gov-reviewer-01",
             session_id=req.session_id,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Workflow session not found.")
         st = updated.state
         trace_id = str(st.get("trace_id") or tracer.new_trace_id())
-        inc_id = str(st.get("incident_id") or "INC-4092")
+        cand_id = str(st.get("candidate_id") or st.get("incident_id") or "CAND-101")
 
         store.reserve_preflight_budget("wallet-cymbal-ops")
         ledger_row = store.settle_turn_spend(
@@ -1238,34 +1273,44 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             session_id=req.session_id,
             trace_id=trace_id,
             architecture_mode=runtime_cfg["architecture_mode"],
-            input_tokens=210,
-            output_tokens=140,
-            outcome="AG3_HITL_RESUMED_AND_RESOLVED" if req.approved else "AG3_HELD_MANUAL",
-            incident_id=inc_id,
+            input_tokens=220,
+            output_tokens=150,
+            outcome="AG3_PAVED_PATH_DEPLOYED" if req.approved else "AG3_HELD_GOVERNANCE_FREEZE",
+            incident_id=cand_id,
             incident_resolved=req.approved,
         )
         resume_ms = round((time.perf_counter() - t0) * 1000, 2)
         tracer.record_span(
             trace_id=trace_id,
             session_id=req.session_id,
-            span_name="cymbal_agent.ag3_hitl_resume_and_a2a",
+            span_name="governance_workbench.ag3_resume_and_a2a_deploy",
             stage="hitl_resume",
             duration_ms=resume_ms,
             architecture_mode=runtime_cfg["architecture_mode"],
             attributes={
                 "ag3.approved": req.approved,
                 "ag3.approver": req.approver_principal,
+                "candidate.id": cand_id,
             },
         )
 
-        rem_outcome = st.get("remediation_outcome") or {}
-        memories = mem_bank.retrieve_memories(verified_user_id="sre-oncall-01", limit=5)
+        rem_outcome = dict(st.get("remediation_outcome") or {})
+        memories = mem_bank.retrieve_memories(verified_user_id="gov-reviewer-01", limit=5)
 
         resume_overrides: dict[str, dict[str, Any]] = {
             "agent_identity": {
                 "status": "VERIFIED",
-                "badge_label": "Approver + SPIFFE Bound",
+                "badge_label": "Reviewer + SPIFFE Bound",
                 "latency_ms": 1.4,
+            },
+            "agent_registry": {
+                "status": "VERIFIED" if req.approved else "STANDBY",
+                "badge_label": (
+                    f"Enrolled {rem_outcome.get('golden_blueprint_id', 'Blueprint')}"
+                    if req.approved
+                    else "Registry Held"
+                ),
+                "latency_ms": 4.1 if req.approved else None,
             },
             "agent_runtime": {
                 "status": "VERIFIED",
@@ -1273,39 +1318,30 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "latency_ms": resume_ms,
                 "summary": (
                     f"Resumed durable checkpoint '{req.interrupt_id}' with decision "
-                    f"{'APPROVED' if req.approved else 'HELD_FOR_EXCEPTION'} by {req.approver_principal}."
+                    f"{'APPROVED_DEPLOY' if req.approved else 'HELD_FOR_EXCEPTION'} by {req.approver_principal}."
                 ),
             },
             "agent_gateway": {
                 "status": "VERIFIED",
-                "badge_label": "A2A Approval Header Verified" if req.approved else "Mutating A2A Withheld",
+                "badge_label": "A2A Approval Verified" if req.approved else "Deployment Withheld",
                 "latency_ms": 3.4,
-                "summary": (
-                    "Verified X-Cymbal-AG3-Approval-Id header under UAP Policy V2 CEL before routing /a2a."
-                    if req.approved
-                    else "Change-freeze hold honored; zero mutating A2A calls dispatched."
-                ),
             },
             "mcp_a2a_mesh": {
                 "status": "VERIFIED" if req.approved else "STANDBY",
-                "badge_label": "A2A Canary Rolled Back" if req.approved else "Held Pending VP Ticket",
+                "badge_label": "A2A Paved-Path Deployed" if req.approved else "Held Pending VP Ticket",
                 "latency_ms": 11.6 if req.approved else None,
-                "summary": str(rem_outcome.get("summary") or "Completed HITL remediation branch."),
+                "summary": str(rem_outcome.get("summary") or "Completed HITL deployment branch."),
             },
             "memory_bank": {
                 "status": "VERIFIED",
-                "badge_label": "Postmortem Persisted",
+                "badge_label": "Audit Trail Persisted",
                 "latency_ms": 7.2,
-                "summary": f"Persisted longitudinal resolution fact for {inc_id} (sre-oncall-01).",
+                "summary": f"Persisted longitudinal compliance record for {cand_id}.",
             },
             "trace_wallet": {
                 "status": "VERIFIED",
-                "badge_label": f"CPRI {ledger_row['cost_per_resolved_incident_nano_usd']} nUSD",
+                "badge_label": f"Settled {ledger_row['cost_per_resolved_incident_nano_usd']} nUSD",
                 "latency_ms": 4.8,
-                "summary": (
-                    f"Updated BigQuery cost_per_resolved_incident="
-                    f"{ledger_row['cost_per_resolved_incident_nano_usd']} nano-USD on trace {trace_id[:12]}..."
-                ),
             },
         }
 
@@ -1315,20 +1351,23 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
             last_event=(
-                f"Resumed {inc_id}: A2A canary rollback completed (post-rollback p99=298ms) & Memory Bank updated"
+                f"Deployed {cand_id}: Enrolled Golden Blueprint & Terraform Paved Path across Tier-1 + GCP"
                 if req.approved
-                else f"Resumed {inc_id}: Execution safely held pending VP Change-Freeze Exception"
+                else f"Held {cand_id}: Blueprint promotion paused pending VP Governance-Freeze Exception"
             ),
             trace_id=trace_id,
             flow_sequence=(
-                ["agent_identity", "agent_runtime", "agent_gateway", "mcp_a2a_mesh", "memory_bank", "trace_wallet"]
+                [
+                    "agent_identity",
+                    "agent_runtime",
+                    "agent_gateway",
+                    "mcp_a2a_mesh",
+                    "agent_registry",
+                    "memory_bank",
+                    "trace_wallet",
+                ]
                 if req.approved
                 else ["agent_identity", "agent_runtime", "memory_bank", "trace_wallet"]
-            ),
-            active_edges=(
-                ["gateway->runtime", "gateway->mesh", "runtime->memory", "runtime->trace"]
-                if req.approved
-                else ["runtime->memory", "runtime->trace"]
             ),
             overrides=resume_overrides,
         )
@@ -1358,9 +1397,8 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             mem_bank=mem_bank,
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=f"Global Kill Switch set to {req.status} in Firestore cymbal_agents",
+            last_event=f"Global Kill Switch set to {req.status} across Tier-1 & Agent Runtime",
             flow_sequence=["trace_wallet", "agent_runtime", "agent_gateway"],
-            active_edges=["runtime->trace", "gateway->runtime"],
         )
         return {"agent_state": updated, "platform_services": snap}
 
@@ -1380,7 +1418,6 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             architecture_mode=runtime_cfg["architecture_mode"],
             last_event=f"Atomic Nano-USD Wallet ceiling updated to ${cap_usd:.6f}",
             flow_sequence=["trace_wallet", "agent_runtime"],
-            active_edges=["runtime->trace"],
             overrides={
                 "trace_wallet": {
                     "status": "VERIFIED" if req.monthly_cap_nano_usd >= 3_500_000 else "MASKED_PII",
@@ -1400,7 +1437,11 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.post("/api/steward/guardrail-test")
     async def test_guardrail_live(req: GuardrailTestRequest, request: Request) -> dict[str, Any]:
         _verify_csrf(request)
-        verdict = guard.inspect_text(req.sample_text, direction="USER_PROMPT")
+        verdict = guard.inspect_text(
+            req.sample_text,
+            direction="USER_PROMPT",
+            dynamic_policy=req.dynamic_policy,
+        )
         trace_id = tracer.new_trace_id()
         store.record_guardrail_audit(
             trace_id=trace_id,
@@ -1412,7 +1453,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         tracer.record_span(
             trace_id=trace_id,
             session_id="steward-threat-lab",
-            span_name="threat_lab.model_armor_inspect",
+            span_name="threat_lab.dynamic_model_armor_inspect",
             stage="guardrail_test",
             duration_ms=verdict.latency_ms,
             architecture_mode=runtime_cfg["architecture_mode"],
@@ -1420,6 +1461,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "allowed": verdict.allowed,
                 "action": verdict.action_taken,
                 "pii_masked": verdict.pii_masked,
+                "dynamic_policy_key": verdict.dynamic_policy_key,
             },
         )
 
@@ -1433,21 +1475,28 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             mem_bank=mem_bank,
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=f"Model Armor Threat Lab verdict: {verdict.action_taken} ({verdict.latency_ms}ms)",
+            last_event=(
+                f"Dynamic Model Armor Router [{verdict.dynamic_policy_key}]: "
+                f"{verdict.action_taken} ({verdict.latency_ms}ms)"
+            ),
             trace_id=trace_id,
             flow_sequence=["agent_identity", "model_armor", "trace_wallet"],
-            active_edges=["identity->armor", "runtime->trace"],
             overrides={
                 "model_armor": {
                     "status": ma_status,
                     "badge_label": verdict.action_taken,
                     "latency_ms": verdict.latency_ms,
                     "summary": verdict.summary,
+                    "metrics": {
+                        "resolved_template": verdict.template_id.split("/")[-1],
+                        "dynamic_policy_key": verdict.dynamic_policy_key,
+                        "ensemble_role": verdict.ensemble_role,
+                    },
                 },
                 "trace_wallet": {
                     "status": "VERIFIED",
-                    "badge_label": "Audit Logged",
-                    "summary": f"Recorded guardrail audit row and W3C span {trace_id[:12]}...",
+                    "badge_label": "OTLP + Audit Logged",
+                    "summary": f"Recorded guardrail audit row and OTLP span {trace_id[:12]}...",
                 },
             },
         )
@@ -1463,6 +1512,9 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "injection_detected": verdict.injection_detected,
             "unpacked_layers": verdict.unpacked_layers,
             "latency_ms": verdict.latency_ms,
+            "dynamic_policy_key": verdict.dynamic_policy_key,
+            "resolved_template": verdict.template_id.split("/")[-1],
+            "ensemble_role": verdict.ensemble_role,
             "summary": verdict.summary,
             "platform_services": snap,
         }
@@ -1486,7 +1538,6 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             architecture_mode=runtime_cfg["architecture_mode"],
             last_event="Verified SPIFFE zero-secret posture & ADR-011 azp OBO token correlation",
             flow_sequence=["agent_identity", "agent_gateway"],
-            active_edges=["identity->armor", "armor->gateway"],
             overrides={
                 "agent_identity": {
                     "status": "VERIFIED",
@@ -1526,7 +1577,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             mem_bank=mem_bank,
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=f"Live Capability Proof #{proof_id}: {'PASS' if res['passed'] else 'FAIL'} in {res['latency_ms']}ms",
+            last_event=f"Modular Proof #{proof_id}: {'PASS' if res['passed'] else 'FAIL'} in {res['latency_ms']}ms",
             flow_sequence=exercised,
             overrides=ov,
         )
@@ -1550,15 +1601,33 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             mem_bank=mem_bank,
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=f"All {summary['passed_count']}/{summary['total_count']} Google Agent Platform proofs verified live",
+            last_event=f"All {summary['passed_count']}/{summary['total_count']} Modular Coexistence Proofs passed live",
             overrides=ov,
         )
         return summary
 
     @bff.post("/api/steward/closed-loop-eval")
-    async def trigger_closed_loop(request: Request) -> dict[str, Any]:
+    async def trigger_closed_loop(
+        request: Request,
+        body: ClosedLoopTriggerRequest | None = None,
+    ) -> dict[str, Any]:
         _verify_csrf(request)
-        res = await execute_closed_loop_flywheel(live_cloud=live_cloud)
+        custom_traces = None
+        if body and body.custom_traces_json:
+            try:
+                parsed = json.loads(body.custom_traces_json)
+                if isinstance(parsed, list):
+                    custom_traces = parsed
+                elif isinstance(parsed, dict) and isinstance(parsed.get("traces"), list):
+                    custom_traces = parsed["traces"]
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid custom_traces_json: {exc}"
+                ) from exc
+
+        res = await execute_closed_loop_flywheel(
+            live_cloud=live_cloud, custom_traces=custom_traces
+        )
         v2_score = res["v2_candidate"]["behavior_score"]
         res["platform_services"] = build_platform_services_snapshot(
             store=store,
@@ -1566,24 +1635,31 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
             last_event=(
-                f"Closed-Loop Flywheel promoted v2 (behavior_score={v2_score}) in {res['elapsed_seconds']}s"
+                f"6-Stage Closed-Loop Flywheel promoted Golden Blueprint v2 "
+                f"(behavior_score={v2_score}) in {res['elapsed_seconds']}s"
             ),
-            flow_sequence=["trace_wallet", "eval_flywheel", "model_armor", "agent_registry", "agent_runtime"],
-            active_edges=["runtime->trace", "trace->eval", "eval->registry", "registry->gateway", "gateway->runtime"],
+            flow_sequence=[
+                "trace_wallet",
+                "eval_flywheel",
+                "model_armor",
+                "agent_registry",
+                "agent_runtime",
+            ],
             overrides={
                 "eval_flywheel": {
                     "status": "VERIFIED",
                     "badge_label": f"v1 (58) -> v2 ({v2_score})",
                     "latency_ms": round(res["elapsed_seconds"] * 1000, 1),
                     "summary": (
-                        f"Blocked flawed v1 (58.0), synthesized v2 with Gemini 3.8 Flash, and passed "
-                        f"{res['v2_candidate']['cases_passed']}/{res['v2_candidate']['cases_total']} simulations."
+                        f"Ingested cross-cloud OTLP spans, scored v1=58.0 (BLOCKED), synthesized v2 "
+                        f"+ few-shots, and passed {res['v2_candidate']['cases_passed']}/"
+                        f"{res['v2_candidate']['cases_total']} gVisor simulations."
                     ),
                 },
                 "agent_registry": {
                     "status": "VERIFIED",
-                    "badge_label": f"Promoted v2 ({v2_score})",
-                    "summary": "Promoted v2 prompt and eval_gate=passed in Agent Registry and Firestore.",
+                    "badge_label": f"Blueprint v2 ({v2_score})",
+                    "summary": "Committed Golden Blueprint v2 across Enterprise Catalog, Agent Registry, and Firestore.",
                 },
             },
         )
@@ -1595,6 +1671,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "recent_traces": tracer.list_recent_traces(limit=12),
+            "recent_otlp_exports": tracer.list_recent_otlp_exports(limit=6),
             "recent_ledger": store.recent_ledger_rows(limit=12),
             "recent_guardrail_audits": store.recent_guardrail_audits(limit=12),
             "platform_services": build_platform_services_snapshot(
@@ -1602,7 +1679,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 mem_bank=mem_bank,
                 tracer=tracer,
                 architecture_mode=runtime_cfg["architecture_mode"],
-                last_event="Refreshed live Cloud Trace, Firestore, and BigQuery governance telemetry",
+                last_event="Refreshed live OTLP, Cloud Trace, Firestore, and BigQuery governance telemetry",
             ),
         }
 

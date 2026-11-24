@@ -1,0 +1,25 @@
+{
+  "blueprint_id": "bp-governance-synthesizer-v2",
+  "catalog_target": "enterprise_agent_registry_and_gcp_agent_registry",
+  "prompt_version": "v2",
+  "behavior_score": 96.4,
+  "a_la_carte_trace_sources": [
+    "aws_bedrock_otlp",
+    "azure_openai_otlp",
+    "gcp_vertex_otlp"
+  ],
+  "remediated_failure_clusters": [
+    "governance_freeze_bypass",
+    "unhandled_mcp_503_fault",
+    "missing_dynamic_sdp_and_tool_scope"
+  ],
+  "few_shot_exemplars_count": 2,
+  "tier1_hooks": {
+    "gateway_routed": true,
+    "otlp_langfuse_exporter": true,
+    "spiffe_oidc_wif": true,
+    "dynamic_model_armor_router": true,
+    "kill_switch_armed": true
+  },
+  "committed_at": "2026-11-24T18:18:03.050585+00:00"
+}

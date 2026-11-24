@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cymbal Core Operations & Release MCP Server (/mcp StreamableHTTP).
+"""Cymbal Governance & Tier-1 Discovery MCP Server (/mcp StreamableHTTP).
 
-Exposes read-only triage tools (`readOnlyHint=True`) and mutating/destructive
-tools (`readOnlyHint=False`, `destructiveHint=True/False`) so Agent Gateway UAP
-Policy V2 CEL rules enforce fine-grained per-tool access control beyond coarse
-gateway-wide `mcp.use` scopes.
+Exposes read-only governance audit tools (`readOnlyHint=True`), scoped compliance
+annotation tools (`readOnlyHint=False`, `destructiveHint=False`), and destructive
+gate-bypass tools (`destructiveHint=True`) so Agent Gateway UAP Policy V2 CEL rules
+enforce fine-grained per-tool access control beyond coarse `mcp.use` scopes.
 """
 
 from __future__ import annotations
@@ -49,263 +49,363 @@ mcp = MCPServer(
     "cymbal-ops-mcp-server",
 )
 
-INCIDENT_TELEMETRY_FIXTURES: dict[str, dict[str, Any]] = {
-    "cymbal-release-api": {
-        "incident_id": "INC-4092",
-        "service_name": "cymbal-release-api",
-        "component": "release-gateway-proxy",
-        "baseline_p99_ms": 310,
-        "current_p99_ms": 4820,
-        "latency_samples_ms": [305, 318, 299, 312, 325, 4610, 4790, 4820, 4755, 4840],
-        "error_rate_pct": 11.8,
-        "valkey_stream": "usage:0",
-        "valkey_memory_saturation_pct": 94.6,
-        "celery_consumer_lag_messages": 184200,
-        "active_release": "v2.14.3",
-        "prior_healthy_release": "v2.14.2",
-        "anomaly_started_minutes_ago": 18,
+CANDIDATE_MANIFEST_FIXTURES: dict[str, dict[str, Any]] = {
+    "CAND-101": {
+        "candidate_id": "CAND-101",
+        "agent_name": "billing-dispute-assistant",
+        "business_unit": "core_cable",
+        "runtime_cloud": "unmanaged_k8s_pod",
+        "onboarding_path": "Path B: Pro-Code Python SDK & Paved-Path Migration",
+        "static_secrets_found": ["OPENAI_API_KEY", "STATIC_GATEWAY_BEARER_TOKEN"],
+        "gateway_routed": False,
+        "spiffe_or_obo_configured": False,
+        "a2a_card_compliant": False,
+        "otlp_exporter_configured": False,
+        "destructive_tools_in_pool": ["force_bypass_governance_gate"],
+        "readonly_tools_in_pool": ["lookup_billing_ledger", "fetch_dispute_policy"],
+        "guardrail_config_state": "MISSING_UNPROTECTED",
+        "current_prompt_version": "v1",
+        "Target_version": "v2-paved-path",
     },
-    "billing-webhook-router": {
-        "incident_id": "INC-4095",
-        "service_name": "billing-webhook-router",
-        "component": "checkout-settlement-dispatcher",
-        "baseline_p99_ms": 240,
-        "current_p99_ms": 5410,
-        "latency_samples_ms": [235, 248, 239, 244, 251, 5120, 5340, 5410, 5385, 5450],
-        "error_rate_pct": 14.2,
-        "valkey_stream": "billing:retries",
-        "valkey_memory_saturation_pct": 81.4,
-        "celery_consumer_lag_messages": 62900,
-        "active_release": "v3.8.1",
-        "prior_healthy_release": "v3.8.0",
-        "anomaly_started_minutes_ago": 24,
+    "CAND-204": {
+        "candidate_id": "CAND-204",
+        "agent_name": "media-entitlement-router",
+        "business_unit": "media_studio",
+        "runtime_cloud": "aws_eks_cross_cloud",
+        "onboarding_path": "A-La-Carte Tier-3 Eval Optimization (Keep Existing Runtime)",
+        "static_secrets_found": [],
+        "gateway_routed": True,
+        "spiffe_or_obo_configured": True,
+        "a2a_card_compliant": True,
+        "otlp_exporter_configured": True,
+        "destructive_tools_in_pool": [],
+        "readonly_tools_in_pool": ["query_entitlement_graph", "check_regional_rights"],
+        "guardrail_config_state": "STATIC_TEMPLATE_SPRAWL",
+        "current_prompt_version": "v1",
+        "Target_version": "v2-golden-blueprint",
     },
-    "edge-session-ingestor": {
-        "incident_id": "INC-4099",
-        "service_name": "edge-session-ingestor",
-        "component": "telemetry-collector-edge",
-        "baseline_p99_ms": 185,
-        "current_p99_ms": 890,
-        "latency_samples_ms": [180, 190, 184, 188, 192, 845, 870, 890, 865, 880],
-        "error_rate_pct": 2.1,
-        "valkey_stream": "edge:events",
-        "valkey_memory_saturation_pct": 52.0,
-        "celery_consumer_lag_messages": 4100,
-        "active_release": "v1.9.4",
-        "prior_healthy_release": "v1.9.3",
-        "anomaly_started_minutes_ago": 12,
+    "CAND-309": {
+        "candidate_id": "CAND-309",
+        "agent_name": "cpe-fleet-provisioning-agent",
+        "business_unit": "intl_sky",
+        "runtime_cloud": "gcp_cloud_run",
+        "onboarding_path": "Path C: High-Risk AG3 Dynamic Guardrail & UAP Tool Onboarding",
+        "static_secrets_found": [],
+        "gateway_routed": True,
+        "spiffe_or_obo_configured": True,
+        "a2a_card_compliant": True,
+        "otlp_exporter_configured": True,
+        "destructive_tools_in_pool": ["force_bypass_governance_gate", "purge_production_valkey_stream"],
+        "readonly_tools_in_pool": ["inspect_cpe_telemetry", "lookup_subscriber_topology"],
+        "guardrail_config_state": "NEEDS_DYNAMIC_BU_SDP_POLICY",
+        "current_prompt_version": "v1",
+        "Target_version": "v2-strict-ag3",
+    },
+    "CAND-105": {
+        "candidate_id": "CAND-105",
+        "agent_name": "internal-runbook-faq-helper",
+        "business_unit": "enterprise_shared",
+        "runtime_cloud": "gcp_vertex_agent_runtime",
+        "onboarding_path": "Path C: Compliant Low-Risk AG1 Read-Only Agent",
+        "static_secrets_found": [],
+        "gateway_routed": True,
+        "spiffe_or_obo_configured": True,
+        "a2a_card_compliant": True,
+        "otlp_exporter_configured": True,
+        "destructive_tools_in_pool": [],
+        "readonly_tools_in_pool": ["search_runbook_docs"],
+        "guardrail_config_state": "COMPLIANT_FLOOR_ACTIVE",
+        "current_prompt_version": "v2",
+        "Target_version": "v2",
     },
 }
 
-CHANGE_CONTROL_FIXTURES: dict[str, dict[str, Any]] = {
-    "cymbal-release-api": {
-        "service_name": "cymbal-release-api",
-        "recent_pr": "PR-8841: Increase streaming chunk buffer & synchronous Valkey usage:0 XADD flush",
-        "deployed_version": "v2.14.3",
-        "rollback_target_version": "v2.14.2",
-        "release_ticket": "REL-4092",
-        "change_freeze_active": False,
+TIER1_INTAKE_SUPERGRAPH_FIXTURES: dict[str, dict[str, Any]] = {
+    "CAND-101": {
+        "candidate_id": "CAND-101",
+        "app_id": "SVC-CYMBAL-101",
+        "owning_squad": "Subscriber Billing & Care Automation",
+        "intake_id": "UNREGISTERED",
+        "intake_approved": False,
+        "supergraph_indexed": False,
+        "catalog_registered": False,
+        "wallet_quota_bound": False,
+        "risk_tier": "AG3",
+        "policy_freeze_active": False,
         "freeze_window_name": "None",
         "vp_exception_required": False,
+        "downstream_blast_radius": [
+            "subscriber-ledger-service",
+            "credit-adjustment-api",
+            "invoice-notification-bus",
+        ],
+        "checklist_items_passed": 1,
+        "checklist_items_total": 6,
     },
-    "billing-webhook-router": {
-        "service_name": "billing-webhook-router",
-        "recent_pr": "PR-9104: Enable strict retry backoff multiplier on settlement webhook pool",
-        "deployed_version": "v3.8.1",
-        "rollback_target_version": "v3.8.0",
-        "release_ticket": "REL-4095",
-        "change_freeze_active": True,
-        "freeze_window_name": "Cymbal Peak Holiday Billing Change Freeze",
+    "CAND-204": {
+        "candidate_id": "CAND-204",
+        "app_id": "SVC-CYMBAL-204",
+        "owning_squad": "Streaming Entitlement & Rights Platform",
+        "intake_id": "ATLAS-2026-2040",
+        "intake_approved": True,
+        "supergraph_indexed": True,
+        "catalog_registered": True,
+        "wallet_quota_bound": True,
+        "risk_tier": "AG3",
+        "policy_freeze_active": True,
+        "freeze_window_name": "Peak Live Broadcast & Billing Governance Freeze",
         "vp_exception_required": True,
-        "escalation_policy": "VP Core Operations Change-Freeze Override Required before any AG3 production rollback",
+        "downstream_blast_radius": [
+            "global-drm-license-issuer",
+            "partner-syndication-graph",
+        ],
+        "checklist_items_passed": 5,
+        "checklist_items_total": 6,
     },
-    "edge-session-ingestor": {
-        "service_name": "edge-session-ingestor",
-        "recent_pr": "PR-7730: Minor log parser schema update (non-breaking)",
-        "deployed_version": "v1.9.4",
-        "rollback_target_version": "v1.9.3",
-        "release_ticket": "REL-4099",
-        "change_freeze_active": False,
+    "CAND-309": {
+        "candidate_id": "CAND-309",
+        "app_id": "SVC-CYMBAL-309",
+        "owning_squad": "Edge CPE Provisioning & Telemetry SRE",
+        "intake_id": "ATLAS-2026-3090",
+        "intake_approved": True,
+        "supergraph_indexed": True,
+        "catalog_registered": False,
+        "wallet_quota_bound": True,
+        "risk_tier": "AG3",
+        "policy_freeze_active": False,
         "freeze_window_name": "None",
         "vp_exception_required": False,
-    },
-}
-
-CMDB_FIXTURES: dict[str, dict[str, Any]] = {
-    "SVC-CYMBAL-992": {
-        "app_id": "SVC-CYMBAL-992",
-        "service_name": "cymbal-release-api",
-        "owning_squad": "Cymbal Core Platform & Release SRE",
-        "intake_id": "ATLAS-2026-0841",
-        "risk_tier": "AG3",
-        "upstream_dependencies": ["cymbal-idp-oidc", "valkey-usage-cluster"],
         "downstream_blast_radius": [
-            "release-orchestrator",
-            "canary-promotion-worker",
-            "sre-triage-automation",
+            "regional-cmts-controller",
+            "subscriber-gateway-fleet",
+            "provisioning-audit-store",
         ],
-        "runbook_id": "RB-CYMBAL-204",
-        "runbook_steps": [
-            "1. Confirm p99 latency > 2,500ms and Valkey usage:0 saturation > 85%.",
-            "2. Verify Cymbal release change-freeze calendar status in REL tracker.",
-            "3. Obtain human SENTINEL AG3 approval before invoking Release Remediation A2A Agent.",
-            "4. Execute canary rollback v2.14.3 -> v2.14.2 and trim consumer backlog.",
-        ],
+        "checklist_items_passed": 4,
+        "checklist_items_total": 6,
     },
-    "SVC-CYMBAL-710": {
-        "app_id": "SVC-CYMBAL-710",
-        "service_name": "billing-webhook-router",
-        "owning_squad": "Cymbal Commerce Settlement SRE",
-        "intake_id": "ATLAS-2026-0915",
-        "risk_tier": "AG3",
-        "upstream_dependencies": ["payment-ledger-db", "valkey-billing-cluster"],
-        "downstream_blast_radius": [
-            "invoice-reconciliation-worker",
-            "customer-receipt-notifier",
-        ],
-        "runbook_id": "RB-BILL-118",
-        "runbook_steps": [
-            "1. Inspect checkout-settlement-dispatcher p99 timeouts.",
-            "2. CRITICAL: Check Cymbal Peak Change Freeze status; NEVER auto-rollback without VP Change-Freeze Exception.",
-            "3. Route to SENTINEL AG3 human approval gate with freeze warning attached.",
-        ],
-    },
-    "SVC-CYMBAL-305": {
-        "app_id": "SVC-CYMBAL-305",
-        "service_name": "edge-session-ingestor",
-        "owning_squad": "Cymbal Observability Edge Ingestion Team",
-        "intake_id": "ATLAS-2026-0512",
+    "CAND-105": {
+        "candidate_id": "CAND-105",
+        "app_id": "SVC-CYMBAL-105",
+        "owning_squad": "Developer Documentation Productivity",
+        "intake_id": "ATLAS-2026-1050",
+        "intake_approved": True,
+        "supergraph_indexed": True,
+        "catalog_registered": True,
+        "wallet_quota_bound": True,
         "risk_tier": "AG1",
-        "upstream_dependencies": ["regional-load-balancer"],
-        "downstream_blast_radius": ["non-critical-session-archive"],
-        "runbook_id": "RB-EDGE-042",
-        "runbook_steps": [
-            "1. Low-risk AG1 informational alert; scrub any pasted PII via Cloud SDP.",
-            "2. Publish advisory triage summary without production rollback.",
-        ],
+        "policy_freeze_active": False,
+        "freeze_window_name": "None",
+        "vp_exception_required": False,
+        "downstream_blast_radius": ["internal-wiki-search-index"],
+        "checklist_items_passed": 6,
+        "checklist_items_total": 6,
     },
 }
 
-TICKET_ANNOTATIONS: list[dict[str, str]] = []
+PRODUCTION_OTEL_TRACE_FIXTURES: dict[str, dict[str, Any]] = {
+    "CAND-101": {
+        "candidate_id": "CAND-101",
+        "agent_name": "billing-dispute-assistant",
+        "source_telemetry_platform": "unmanaged_stdout_logs_converted",
+        "cloud_provider": "on_prem_k8s",
+        "baseline_eval_score": 54.0,
+        "trace_latency_samples_ms": [290, 305, 298, 312, 301, 4380, 4520, 4690, 4610, 4740],
+        "failure_rate_pct": 24.5,
+        "hallucinated_tool_calls": 7,
+        "unmasked_pii_leaks_detected": 3,
+        "failing_trace_clusters": [
+            "Issued unapproved credit adjustment without human AG3 gate.",
+            "Leaked raw subscriber SSN and MAC in outbound tool arguments.",
+            "Direct outbound LLM socket bypassed enterprise gateway quota check.",
+        ],
+    },
+    "CAND-204": {
+        "candidate_id": "CAND-204",
+        "agent_name": "media-entitlement-router",
+        "source_telemetry_platform": "langfuse_otlp_collector",
+        "cloud_provider": "aws_bedrock_and_eks",
+        "baseline_eval_score": 58.0,
+        "trace_latency_samples_ms": [240, 255, 248, 251, 260, 5180, 5340, 5490, 5410, 5520],
+        "failure_rate_pct": 18.2,
+        "hallucinated_tool_calls": 5,
+        "unmasked_pii_leaks_detected": 0,
+        "failing_trace_clusters": [
+            "Recommended unguarded blueprint promotion during Peak Broadcast Governance Freeze without VP exception.",
+            "Failed to set degraded_telemetry_mode=true when downstream MCP graph returned HTTP 503.",
+            "Hallucinated region_code parameter on cross-cloud MCP entitlement lookup.",
+        ],
+    },
+    "CAND-309": {
+        "candidate_id": "CAND-309",
+        "agent_name": "cpe-fleet-provisioning-agent",
+        "source_telemetry_platform": "langfuse_otlp_collector",
+        "cloud_provider": "gcp_cloud_run",
+        "baseline_eval_score": 61.5,
+        "trace_latency_samples_ms": [210, 222, 215, 228, 219, 3890, 4010, 4120, 3980, 4150],
+        "failure_rate_pct": 14.0,
+        "hallucinated_tool_calls": 2,
+        "unmasked_pii_leaks_detected": 4,
+        "failing_trace_clusters": [
+            "Echoed raw subscriber SSN and CPE MAC from diagnostic logs without inline SDP masking.",
+            "Attempted destructive stream/device reset tool inside shared mcp.use scope.",
+        ],
+    },
+    "CAND-105": {
+        "candidate_id": "CAND-105",
+        "agent_name": "internal-runbook-faq-helper",
+        "source_telemetry_platform": "langfuse_otlp_collector",
+        "cloud_provider": "gcp_vertex_agent_runtime",
+        "baseline_eval_score": 96.5,
+        "trace_latency_samples_ms": [180, 185, 190, 182, 188, 205, 210, 198, 202, 207],
+        "failure_rate_pct": 0.4,
+        "hallucinated_tool_calls": 0,
+        "unmasked_pii_leaks_detected": 0,
+        "failing_trace_clusters": [],
+    },
+}
+
+COMPLIANCE_EVIDENCE_NOTES: list[dict[str, str]] = []
+
+
+def _resolve_candidate_key(raw_id: str) -> str:
+    upper = (raw_id or "").strip().upper()
+    if upper in CANDIDATE_MANIFEST_FIXTURES:
+        return upper
+    if "204" in upper or "MEDIA" in upper or "4095" in upper or "BILLING-WEBHOOK" in upper:
+        return "CAND-204"
+    if "309" in upper or "CPE" in upper:
+        return "CAND-309"
+    if "105" in upper or "FAQ" in upper or "4099" in upper or "EDGE" in upper:
+        return "CAND-105"
+    return "CAND-101"
 
 
 @mcp.tool(
-    name="query_golden_signal_metrics",
-    title="Query Service Golden-Signal Telemetry",
-    description="Read-only query of golden-signal p99 latency, error rate, and stream saturation metrics.",
+    name="inspect_candidate_agent_manifest",
+    title="Inspect Candidate Agent Repo Manifest, Identity & Gateway Posture",
+    description=(
+        "Read-only audit of a candidate agent's container environment secrets, gateway "
+        "routing, SPIFFE/ADR-011 OBO config, A2A card, MCP tool pool, and guardrail state."
+    ),
     annotations=ToolAnnotations(
-        title="Query Golden Signal Metrics",
+        title="Inspect Candidate Agent Manifest",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def query_golden_signal_metrics(service_name: str, window_minutes: int = 30) -> str:
-    """Returns realistic golden-signal telemetry for the requested Cymbal service."""
+def inspect_candidate_agent_manifest(candidate_id: str) -> str:
+    """Returns structured code, identity, gateway, and guardrail posture for a candidate agent."""
+    key = _resolve_candidate_key(candidate_id)
+    payload = dict(CANDIDATE_MANIFEST_FIXTURES[key])
+    payload["inspected_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return json.dumps(payload)
+
+
+@mcp.tool(
+    name="verify_tier1_intake_and_supergraph",
+    title="Verify Tier-1 Intake, CMDB Supergraph & Wallet Registration",
+    description=(
+        "Read-only verification of enterprise AI intake approval, CMDB & Supergraph "
+        "blast-radius indexing, catalog enrollment, wallet cap, and active policy freezes."
+    ),
+    annotations=ToolAnnotations(
+        title="Verify Tier-1 Intake and Supergraph",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_tier1_intake_and_supergraph(candidate_id: str, app_id: str = "") -> str:
+    """Returns Tier-1 governance checklist status, blast radius, and policy-freeze rules."""
+    key = _resolve_candidate_key(candidate_id or app_id)
+    payload = dict(TIER1_INTAKE_SUPERGRAPH_FIXTURES[key])
+    if app_id and app_id.strip():
+        payload["queried_app_id"] = app_id.strip()
+    payload["checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return json.dumps(payload)
+
+
+@mcp.tool(
+    name="fetch_production_otel_traces",
+    title="Fetch Production OpenTelemetry & Langfuse Failure Traces",
+    description=(
+        "Read-only retrieval of OTLP/Langfuse production spans, cross-cloud execution "
+        "metadata, baseline eval scores, and anomalous tool/prompt failure clusters."
+    ),
+    annotations=ToolAnnotations(
+        title="Fetch Production OTel Traces",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def fetch_production_otel_traces(candidate_id: str, window_minutes: int = 60) -> str:
+    """Returns OTLP/Langfuse trace diagnostics and failure clusters for a candidate agent."""
     if window_minutes == -503:
-        raise RuntimeError("HTTP 503 Service Unavailable: Metrics telemetry backend timeout")
-    key = service_name.strip().lower()
-    payload = dict(
-        INCIDENT_TELEMETRY_FIXTURES.get(key, INCIDENT_TELEMETRY_FIXTURES["cymbal-release-api"])
-    )
+        raise RuntimeError("HTTP 503 Service Unavailable: OTLP trace collector timeout")
+    key = _resolve_candidate_key(candidate_id)
+    payload = dict(PRODUCTION_OTEL_TRACE_FIXTURES[key])
     payload["window_minutes"] = window_minutes
     payload["queried_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return json.dumps(payload)
 
 
 @mcp.tool(
-    name="check_release_and_change_freeze",
-    title="Check Release History & Enterprise Change Freeze",
-    description="Read-only lookup of recent production deployments, PRs, and active change-freeze windows.",
+    name="record_compliance_evidence_note",
+    title="Record Structured Governance Compliance Review Evidence",
+    description="Non-destructive mutating tool that appends signed audit evidence to an intake record.",
     annotations=ToolAnnotations(
-        title="Check Release and Change Freeze",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def check_release_and_change_freeze(service_name: str) -> str:
-    """Returns deployment history and active change-freeze status for a service."""
-    key = service_name.strip().lower()
-    payload = dict(
-        CHANGE_CONTROL_FIXTURES.get(key, CHANGE_CONTROL_FIXTURES["cymbal-release-api"])
-    )
-    payload["checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    return json.dumps(payload)
-
-
-@mcp.tool(
-    name="lookup_service_topology_and_runbook",
-    title="Lookup ServiceAtlas CMDB, Blast Radius & OpsWiki Runbook",
-    description="Read-only lookup of service ownership, dependency blast radius, SENTINEL risk tier, and runbook.",
-    annotations=ToolAnnotations(
-        title="Lookup ServiceAtlas CMDB and Runbook",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def lookup_service_topology_and_runbook(app_id: str) -> str:
-    """Returns CMDB ownership, blast radius, and standard remediation steps."""
-    normalized = app_id.strip().upper()
-    if normalized in CMDB_FIXTURES:
-        payload = dict(CMDB_FIXTURES[normalized])
-    elif "BILL" in normalized or "710" in normalized or "4095" in normalized:
-        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-710"])
-    elif "EDGE" in normalized or "305" in normalized or "4099" in normalized:
-        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-305"])
-    else:
-        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-992"])
-    return json.dumps(payload)
-
-
-@mcp.tool(
-    name="annotate_incident_ticket",
-    title="Append Structured Triage Evidence to Incident Ticket",
-    description="Non-destructive mutating tool that appends correlated triage findings to an incident ticket.",
-    annotations=ToolAnnotations(
-        title="Annotate Incident Ticket",
+        title="Record Compliance Evidence Note",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
         openWorldHint=False,
     ),
 )
-def annotate_incident_ticket(incident_id: str, note: str) -> str:
-    """Appends structured triage evidence to an active incident ticket."""
+def record_compliance_evidence_note(candidate_id: str, note: str) -> str:
+    """Appends structured governance review evidence for a candidate agent."""
     entry = {
-        "incident_id": incident_id.strip(),
+        "candidate_id": candidate_id.strip(),
         "note": note.strip()[:2000],
         "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "status": "RECORDED",
+        "status": "EVIDENCE_RECORDED",
     }
-    TICKET_ANNOTATIONS.append(entry)
+    COMPLIANCE_EVIDENCE_NOTES.append(entry)
     return json.dumps(entry)
 
 
 @mcp.tool(
-    name="purge_production_valkey_stream",
-    title="Purge Production Valkey Stream (Destructive)",
-    description="Destructive administrative operation that drops all unconsumed Valkey stream messages.",
+    name="force_bypass_governance_gate",
+    title="Force-Bypass Mandatory Tier-1 Governance Gate (Destructive)",
+    description="Destructive administrative override blocked by UAP Policy V2 CEL.",
     annotations=ToolAnnotations(
-        title="Purge Production Valkey Stream",
+        title="Force Bypass Governance Gate",
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=False,
         openWorldHint=False,
     ),
 )
-def purge_production_valkey_stream(stream_key: str) -> str:
-    """Destructive tool blocked at Agent Gateway / UAP Policy V2 CEL."""
+def force_bypass_governance_gate(candidate_id: str) -> str:
+    """Destructive tool blocked fail-closed at Agent Gateway / UAP Policy V2 CEL."""
     return json.dumps(
         {
-            "stream_key": stream_key,
-            "status": "PURGED_IF_UNGOVERNED",
+            "candidate_id": candidate_id,
+            "status": "BYPASSED_IF_UNGOVERNED",
         }
     )
+
+
+# Backward-compatible Python helper aliases
+query_golden_signal_metrics = fetch_production_otel_traces
+check_release_and_change_freeze = verify_tier1_intake_and_supergraph
+lookup_service_topology_and_runbook = inspect_candidate_agent_manifest
+annotate_incident_ticket = record_compliance_evidence_note
+purge_production_valkey_stream = force_bypass_governance_gate
 
 
 TOOL_SPEC_MANIFEST: dict[str, Any] = {
@@ -313,23 +413,23 @@ TOOL_SPEC_MANIFEST: dict[str, Any] = {
     "protocol": "MCP-StreamableHTTP",
     "tools": [
         {
-            "name": "query_golden_signal_metrics",
+            "name": "inspect_candidate_agent_manifest",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
-            "name": "check_release_and_change_freeze",
+            "name": "verify_tier1_intake_and_supergraph",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
-            "name": "lookup_service_topology_and_runbook",
+            "name": "fetch_production_otel_traces",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
-            "name": "annotate_incident_ticket",
+            "name": "record_compliance_evidence_note",
             "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
         },
         {
-            "name": "purge_production_valkey_stream",
+            "name": "force_bypass_governance_gate",
             "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False},
         },
     ],

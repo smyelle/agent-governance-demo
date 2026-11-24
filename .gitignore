@@ -16,6 +16,8 @@
 PLAN.md
 *.zip
 scape_docs*
+docs/*SCAPE*
+*.internal.md
 
 # Environment & local tenant overrides (NEVER commit)
 .env

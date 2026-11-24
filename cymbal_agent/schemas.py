@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Strict Pydantic schemas for every ADK 2.0 Workflow node, LlmAgent, and HITL gate."""
+"""Strict Pydantic schemas for the ADK 2.0 Agent Governance, Optimization & Deployment Workflow."""
 
 from __future__ import annotations
 
@@ -21,23 +21,28 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class IncidentTriggerInput(BaseModel):
-    incident_id: str = Field(default="INC-4092", description="Incident ticket identifier.")
-    service_name: str = Field(default="cymbal-release-api", description="Impacted service name.")
-    app_id: str = Field(default="SVC-CYMBAL-992", description="ServiceAtlas CMDB identifier.")
-    operator_prompt: str = Field(
-        default="Investigate INC-4092 latency spike on cymbal-release-api and recommend governed remediation.",
-        description="On-call engineer triage request.",
+class GovernanceAuditTriggerInput(BaseModel):
+    candidate_id: str = Field(default="CAND-101", description="Candidate agent identifier.")
+    agent_name: str = Field(
+        default="billing-dispute-assistant", description="Candidate agent workload name."
     )
-    user_id: str = Field(default="sre-oncall-01", description="Authenticated JWT subject.")
-    architecture_mode: Literal["google_native", "enterprise_hybrid"] = Field(
-        default="google_native"
+    app_id: str = Field(default="SVC-CYMBAL-101", description="Enterprise CMDB & Supergraph ID.")
+    operator_prompt: str = Field(
+        default=(
+            "Audit CAND-101 (billing-dispute-assistant) against Tier-1 governance gates, "
+            "remediate security/prompt gaps, and prepare Paved-Path deployment."
+        ),
+        description="Governance reviewer or agent owner instruction.",
+    )
+    user_id: str = Field(default="gov-reviewer-01", description="Authenticated JWT subject.")
+    architecture_mode: Literal["enterprise_hybrid", "google_native"] = Field(
+        default="enterprise_hybrid"
     )
 
 
 class IntakeContextOutput(BaseModel):
-    incident_id: str
-    service_name: str
+    candidate_id: str
+    agent_name: str
     app_id: str
     sanitized_operator_prompt: str
     memory_context: str
@@ -45,112 +50,149 @@ class IntakeContextOutput(BaseModel):
     pii_masked_inline: bool = False
 
 
-class ObservabilitySignal(BaseModel):
-    incident_id: str
-    service_name: str
-    baseline_p99_ms: float
-    current_p99_ms: float
-    latency_samples_ms: list[float] = Field(default_factory=list)
-    error_rate_pct: float
-    valkey_stream: str
-    valkey_memory_saturation_pct: float
-    active_release: str
-    prior_healthy_release: str
+class ManifestSecuritySignal(BaseModel):
+    candidate_id: str
+    agent_name: str
+    business_unit: str
+    runtime_cloud: str
+    onboarding_path: str
+    static_secrets_found: list[str] = Field(default_factory=list)
+    gateway_routed: bool
+    spiffe_or_obo_configured: bool
+    a2a_card_compliant: bool
+    otlp_exporter_configured: bool
+    destructive_tools_in_pool: list[str] = Field(default_factory=list)
+    guardrail_config_state: str
+    current_prompt_version: str
+    target_version: str
+    summary: str
+
+
+class Tier1IntakeSupergraphSignal(BaseModel):
+    candidate_id: str
+    app_id: str
+    owning_squad: str
+    intake_id: str
+    intake_approved: bool
+    supergraph_indexed: bool
+    catalog_registered: bool
+    wallet_quota_bound: bool
+    risk_tier: str
+    policy_freeze_active: bool
+    freeze_window_name: str
+    vp_exception_required: bool
+    downstream_blast_radius: list[str] = Field(default_factory=list)
+    checklist_items_passed: int
+    checklist_items_total: int
+    summary: str
+
+
+class ProductionTraceEvalSignal(BaseModel):
+    candidate_id: str
+    agent_name: str
+    source_telemetry_platform: str
+    cloud_provider: str
+    baseline_eval_score: float
+    trace_latency_samples_ms: list[float] = Field(default_factory=list)
+    failure_rate_pct: float
+    hallucinated_tool_calls: int
+    unmasked_pii_leaks_detected: int
+    failing_trace_clusters: list[str] = Field(default_factory=list)
     degraded_503: bool = False
     summary: str
 
 
-class ReleaseChangeSignal(BaseModel):
-    service_name: str
-    deployed_version: str
-    rollback_target_version: str
-    release_ticket: str
-    recent_pr: str
-    change_freeze_active: bool
-    freeze_window_name: str
-    vp_exception_required: bool
-    summary: str
-
-
-class CmdbRunbookSignal(BaseModel):
+class CorrelatedGovernanceBundle(BaseModel):
+    candidate_id: str
+    agent_name: str
     app_id: str
-    owning_squad: str
-    intake_id: str
-    risk_tier: str
-    downstream_blast_radius: list[str] = Field(default_factory=list)
-    runbook_id: str
-    runbook_steps: list[str] = Field(default_factory=list)
-    summary: str
-
-
-class CorrelatedSignalsBundle(BaseModel):
-    incident_id: str
-    service_name: str
-    app_id: str
-    observability: ObservabilitySignal
-    release_change: ReleaseChangeSignal
-    cmdb_runbook: CmdbRunbookSignal
+    manifest_security: ManifestSecuritySignal
+    tier1_supergraph: Tier1IntakeSupergraphSignal
+    production_traces: ProductionTraceEvalSignal
     sandbox_code_prompt: str
 
 
-class SandboxAnomalyOutput(BaseModel):
+class SandboxReadinessOutput(BaseModel):
+    readiness_score: float
     z_score: float
     p99_delta_multiplier: float
-    saturation_breach: bool
+    blast_radius_breach: bool
     sandbox_runtime: str = "gvisor_builtin_code_executor"
     calculation_summary: str
 
 
-class IncidentAssessment(BaseModel):
-    incident_id: str
-    service_name: str
+class GovernanceRemediationAssessment(BaseModel):
+    candidate_id: str
+    agent_name: str
     app_id: str
-    root_cause_summary: str
+    governance_gaps_summary: str
     risk_level: Literal["AG1", "AG3"]
-    recommended_route: Literal["info_or_ag1", "remediation_ag3"]
-    change_freeze_detected: bool = False
+    recommended_route: Literal["advisory_ag1", "deploy_ag3_gate"]
+    policy_freeze_detected: bool = False
     vp_exception_required: bool = False
     degraded_telemetry_mode: bool = False
-    target_rollback_from: str = "v2.14.3"
-    target_rollback_to: str = "v2.14.2"
+    from_version: str = "v1"
+    to_version: str = "v2-golden-blueprint"
+    dynamic_guardrail_spec: str = ""
+    terraform_paved_path_hcl: str = ""
     remediation_plan: str
     citations: list[str] = Field(default_factory=list)
 
 
-class ApprovalGatePayload(BaseModel):
+class GovernanceApprovalGatePayload(BaseModel):
     interrupt_id: str
-    incident_id: str
-    service_name: str
+    candidate_id: str
+    agent_name: str
     app_id: str
     risk_level: str
     from_version: str
     to_version: str
-    change_freeze_active: bool
+    policy_freeze_active: bool
     vp_exception_required: bool
     remediation_plan: str
+    terraform_paved_path_hcl: str = ""
 
 
-class RollbackApprovalDecision(BaseModel):
+class GovernanceReviewerDecision(BaseModel):
     approved: bool
-    approver_principal: str = Field(default="sre-lead-approver")
+    approver_principal: str = Field(default="gov-steward-lead")
     vp_exception_ticket: str | None = Field(default=None)
-    reason: str = Field(default="Verified golden signals and blast radius.")
+    reason: str = Field(
+        default="Verified Tier-1 compliance hooks, dynamic guardrail spec, and Golden Blueprint."
+    )
 
 
-class RemediationOutcome(BaseModel):
-    status: Literal["ROLLED_BACK", "HELD_FOR_MANUAL_EXCEPTION", "ADVISORY_ONLY"]
-    incident_id: str
-    service_name: str
+class DeploymentRemediationOutcome(BaseModel):
+    status: Literal[
+        "DEPLOYED_PAVED_PATH",
+        "HELD_FOR_GOVERNANCE_EXCEPTION",
+        "ADVISORY_COMPLIANT_AG1",
+    ]
+    candidate_id: str
+    agent_name: str
     task_id: str
-    post_rollback_p99_ms: float | None = None
-    slo_recovered: bool = False
+    golden_blueprint_id: str | None = None
+    post_deploy_readiness_score: float | None = None
+    compliance_verified: bool = False
+    terraform_paved_path_hcl: str = ""
     summary: str
 
 
-class PostmortemMemoryRecord(BaseModel):
-    incident_id: str
-    service_name: str
+class GovernanceAuditMemoryRecord(BaseModel):
+    candidate_id: str
+    agent_name: str
     final_status: str
     memory_persisted: bool
     trace_id: str
     executive_summary: str
+
+
+# Aliases preserving clean imports across existing runtime entrypoints
+IncidentTriggerInput = GovernanceAuditTriggerInput
+CorrelatedSignalsBundle = CorrelatedGovernanceBundle
+SandboxAnomalyOutput = SandboxReadinessOutput
+IncidentAssessment = GovernanceRemediationAssessment
+ApprovalGatePayload = GovernanceApprovalGatePayload
+RollbackApprovalDecision = GovernanceReviewerDecision
+RemediationOutcome = DeploymentRemediationOutcome
+PostmortemMemoryRecord = GovernanceAuditMemoryRecord

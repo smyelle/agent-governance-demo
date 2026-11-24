@@ -213,11 +213,19 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     csrf = boot.json()["csrf_token"]
     headers = {"X-CSRF-Token": csrf}
 
-    # 1. Inline Cloud SDP PII masking via Threat Lab
+    # 1. Dynamic Per-Request Model Armor Policy Router (Inline SDP Mask vs Strict BU Block)
     guard_res = client.post(
         "/api/steward/guardrail-test",
         headers=headers,
-        json={"sample_text": "Log snippet: subscriber SSN 123-45-6789 on MAC aa:bb:cc:dd:ee:ff"},
+        json={
+            "sample_text": "Log snippet: subscriber SSN 123-45-6789 on MAC aa:bb:cc:dd:ee:ff",
+            "dynamic_policy": {
+                "business_unit": "core_cable",
+                "risk_tier": "AG2",
+                "sdp_pii_mode": "DEIDENTIFY_INLINE",
+                "ensemble_role": "tier0_prefilter",
+            },
+        },
     )
     assert guard_res.status_code == 200
     g_body = guard_res.json()
@@ -225,27 +233,43 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert g_body["pii_masked"] is True
     assert "123-45-6789" not in g_body["sanitized_text"]
 
-    # 2. ADK 2.0 Workflow triage pauses at AG3 RequestInput checkpoint
-    triage = client.post(
-        "/api/agent/triage",
+    strict_res = client.post(
+        "/api/steward/guardrail-test",
         headers=headers,
         json={
-            "incident_id": "INC-4092",
-            "service_name": "cymbal-release-api",
-            "app_id": "SVC-CYMBAL-992",
+            "sample_text": "Log snippet: subscriber SSN 123-45-6789",
+            "dynamic_policy": {
+                "business_unit": "intl_sky",
+                "risk_tier": "AG3",
+                "sdp_pii_mode": "BLOCK_ON_MATCH",
+                "ensemble_role": "parallel_ensemble_voter",
+            },
+        },
+    )
+    assert strict_res.status_code == 200
+    assert strict_res.json()["allowed"] is False
+    assert strict_res.json()["action_taken"] == "BLOCKED_SDP_PII_POLICY"
+
+    # 2. ADK 2.0 Governance Audit pauses at AG3 RequestInput checkpoint
+    triage = client.post(
+        "/api/agent/audit",
+        headers=headers,
+        json={
+            "candidate_id": "CAND-101",
+            "agent_name": "billing-dispute-assistant",
+            "app_id": "SVC-CYMBAL-101",
             "operator_prompt": (
-                "Investigate INC-4092: cymbal-release-api gateway p99 latency spiked to 4,820ms "
-                "after release v2.14.3."
+                "Audit CAND-101 (billing-dispute-assistant) and prepare Terraform Paved-Path deployment."
             ),
-            "architecture_mode": "google_native",
+            "architecture_mode": "enterprise_hybrid",
         },
     )
     assert triage.status_code == 200
     t_body = triage.json()
     assert t_body["status"] == "WAITING_AG3_APPROVAL"
-    assert t_body["pending_approval"]["interrupt_id"].startswith("ag3_rollback_")
+    assert t_body["pending_approval"]["interrupt_id"].startswith("ag3_deploy_")
 
-    # 3. Durable HITL resume executes governed A2A rollback
+    # 3. Durable HITL resume executes governed A2A Paved-Path deployment
     resume = client.post(
         "/api/agent/resume",
         headers=headers,
@@ -253,18 +277,20 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
             "session_id": t_body["session_id"],
             "interrupt_id": t_body["pending_approval"]["interrupt_id"],
             "approved": True,
-            "approver_principal": "sre-oncall-lead",
-            "reason": "Verified canary regression in smoke test.",
+            "approver_principal": "gov-steward-lead",
+            "reason": "Verified Terraform Paved Path & Golden Blueprint in smoke test.",
         },
     )
     assert resume.status_code == 200
     r_body = resume.json()
     assert r_body["status"] == "COMPLETED"
-    assert r_body["remediation_outcome"]["status"] == "ROLLED_BACK"
-    assert r_body["remediation_outcome"]["slo_recovered"] is True
+    assert r_body["remediation_outcome"]["status"] == "DEPLOYED_PAVED_PATH"
+    assert r_body["remediation_outcome"]["compliance_verified"] is True
 
-    # 4. Closed-loop flywheel writes runtime artifacts safely under CYMBAL_RUNTIME_STATE_DIR
+    # 4. 6-Stage Closed-Loop Optimizer writes runtime artifacts safely under CYMBAL_RUNTIME_STATE_DIR
     fly = client.post("/api/steward/closed-loop-eval", headers=headers, json={})
     assert fly.status_code == 200
     assert fly.json()["status"] == "PROMOTED_V2"
+    assert fly.json()["flywheel_stages_count"] == 6
     assert (state_dir / "prompts" / "active_version.json").is_file()
+    assert (state_dir / "prompts" / "enterprise_golden_blueprint_v2.json").is_file()

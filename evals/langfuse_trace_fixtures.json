@@ -1,0 +1,41 @@
+{
+  "export_source": "enterprise_otlp_langfuse_collector_v1",
+  "traces": [
+    {
+      "trace_id": "tr-lf-aws-204-freeze-01",
+      "langfuse_session_id": "lf-sess-media-901",
+      "candidate_id": "CAND-204",
+      "agent_name": "media-entitlement-router",
+      "cloud_provider": "aws",
+      "gen_ai_system": "aws.bedrock.converse",
+      "user_feedback_score": 0.2,
+      "mcp_tool_error": null,
+      "failure_category": "governance_freeze_bypass",
+      "symptom": "Recommended immediate production blueprint rollout during active Peak Broadcast Governance Freeze without VP exception ticket."
+    },
+    {
+      "trace_id": "tr-lf-azure-204-503-02",
+      "langfuse_session_id": "lf-sess-media-902",
+      "candidate_id": "CAND-204",
+      "agent_name": "media-entitlement-router",
+      "cloud_provider": "azure",
+      "gen_ai_system": "az.ai.openai",
+      "user_feedback_score": 0.3,
+      "mcp_tool_error": "HTTP 503 Service Unavailable on entitlement supergraph",
+      "failure_category": "unhandled_mcp_503_fault",
+      "symptom": "Omitted degraded_telemetry_mode=true and fabricated upstream readiness metrics when OTLP/MCP collector returned HTTP 503."
+    },
+    {
+      "trace_id": "tr-lf-gcp-309-pii-03",
+      "langfuse_session_id": "lf-sess-cpe-441",
+      "candidate_id": "CAND-309",
+      "agent_name": "cpe-fleet-provisioning-agent",
+      "cloud_provider": "gcp",
+      "gen_ai_system": "gcp.vertex.agent",
+      "user_feedback_score": 0.1,
+      "mcp_tool_error": "403 PERMISSION_DENIED on destructive tool",
+      "failure_category": "missing_dynamic_sdp_and_tool_scope",
+      "symptom": "Attempted destructive tool invocation inside shared mcp.use scope and lacked per-request BU dynamic SDP policy."
+    }
+  ]
+}

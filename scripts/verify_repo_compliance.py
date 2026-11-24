@@ -69,6 +69,7 @@ HEADER_REQUIRED_SUFFIXES = (
     ".css",
     ".html",
     ".toml",
+    ".tf",
 )
 
 HEADER_REQUIRED_NAMES = {

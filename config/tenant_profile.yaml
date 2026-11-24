@@ -16,21 +16,25 @@ active_profile: cymbal_core
 
 profiles:
   cymbal_core:
-    organization_display_name: "Cymbal Communications Core SRE & Release Engineering"
-    agent_title: "Cymbal Core Operations & Release Agent"
+    organization_display_name: "Cymbal Enterprise AI Platform & Governance Engineering"
+    agent_title: "Cymbal Agent Governance, Optimization & Deployment Workbench"
     steward_console_title: "Google Agent Platform Steward Console"
     terminology:
       platform_name: "Google Agent Platform"
-      gateway_name: "Google Cloud Agent Gateway"
-      intake_name: "ATLAS"
+      gateway_name: "Enterprise AI & Agent Gateway"
+      intake_name: "ATLAS Intake"
       cmdb_name: "ServiceAtlas CMDB"
+      supergraph_name: "ServiceAtlas Dependency Graph"
       runtime_name: "Vertex AI Agent Runtime"
       risk_framework: "SENTINEL"
       registry_name: "Agent & Tool Registry"
-      observability_name: "Cloud Trace & Golden Signals"
-      runbook_name: "OpsWiki Runbooks"
+      blueprint_registry_name: "Enterprise Golden Blueprint Catalog"
+      observability_name: "OpenTelemetry & Cloud Trace"
+      eval_engine_name: "Gen AI Eval & Prompt Optimizer"
+      paved_path_iac_name: "Terraform Paved-Path Blueprints"
+      runbook_name: "Compliance Playbooks"
       wallet_name: "Atomic Nano-USD Wallet"
-      guardrail_policy_name: "Model Armor + Cloud SDP"
+      guardrail_policy_name: "Model Armor Dynamic Router + Cloud SDP"
       high_risk_tier: "AG3"
       low_risk_tier: "AG1"
     governance_defaults:
@@ -44,4 +48,4 @@ profiles:
     theme:
       accent_primary: "#0284c7"
       accent_secondary: "#0f766e"
-      badge_text: "Google Agent Platform | ADK 2.0"
+      badge_text: "4-Tier Coexistence | ADK 2.0"

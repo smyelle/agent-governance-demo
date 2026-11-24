@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for CymbalGovernancePlugin: Kill Switch, Wallet, ADR-011 OBO, UAP CEL, and Model Armor."""
+"""Unit tests for CymbalGovernancePlugin: Kill Switch, Wallet, ADR-011 OBO, UAP CEL, Dynamic Model Armor & OTLP."""
 
 from __future__ import annotations
 
@@ -29,8 +29,10 @@ from cymbal_agent.governance.identity_obo import (
     verify_adr011_dual_tokens,
 )
 from cymbal_agent.governance.model_armor_guard import (
+    DynamicGuardrailPolicyPayload,
     FailClosedModelArmorGuard,
     ModelArmorBlockedError,
+    compile_dynamic_policy_to_base_template,
 )
 from cymbal_agent.governance.plugin import (
     CymbalGovernancePlugin,
@@ -63,7 +65,7 @@ async def test_kill_switch_paused_blocks_before_run_and_before_tool() -> None:
         await plugin.before_run_callback(invocation_context=inv_ctx)
 
     tool_ctx = SimpleNamespace(session=SimpleNamespace(id="sess-1"), state={})
-    tool_obj = SimpleNamespace(name="query_golden_signal_metrics")
+    tool_obj = SimpleNamespace(name="inspect_candidate_agent_manifest")
     with pytest.raises(KillSwitchHaltedError):
         await plugin.before_tool_callback(tool=tool_obj, tool_args={}, tool_context=tool_ctx)
 
@@ -75,7 +77,7 @@ async def test_atomic_wallet_preflight_blocks_403_before_inference_and_tracks_cp
 
     cb_ctx = SimpleNamespace(session=SimpleNamespace(id="sess-wallet"), state={})
     llm_req = SimpleNamespace(
-        contents=[types.Content(role="user", parts=[types.Part(text="Triage INC-4092")])],
+        contents=[types.Content(role="user", parts=[types.Part(text="Audit CAND-101")])],
         config=types.GenerateContentConfig(),
     )
     with pytest.raises(WalletBudgetExceededError) as exc_info:
@@ -89,8 +91,8 @@ async def test_atomic_wallet_preflight_blocks_403_before_inference_and_tracks_cp
         trace_id="trace-ok",
         input_tokens=1000,
         output_tokens=500,
-        outcome="INCIDENT_RESOLVED",
-        incident_id="INC-4092",
+        outcome="AGENT_PAVED_PATH_DEPLOYED",
+        incident_id="CAND-101",
         incident_resolved=True,
     )
     assert row["total_cost_nano_usd"] > 0
@@ -119,12 +121,42 @@ def test_adr011_azp_correlation_fixes_pairwise_sub_and_rejects_mismatched_azp() 
 
 def test_uap_policy_v2_cel_allows_readonly_and_blocks_destructive_mcp_tool() -> None:
     assert evaluate_uap_cel_tool_policy("")["allowed"] is True
-    assert evaluate_uap_cel_tool_policy("query_golden_signal_metrics")["allowed"] is True
-    assert evaluate_uap_cel_tool_policy("annotate_incident_ticket")["allowed"] is True
+    assert evaluate_uap_cel_tool_policy("inspect_candidate_agent_manifest")["allowed"] is True
+    assert evaluate_uap_cel_tool_policy("record_compliance_evidence_note")["allowed"] is True
 
     with pytest.raises(UapToolPolicyDeniedError) as exc_info:
-        evaluate_uap_cel_tool_policy("purge_production_valkey_stream")
+        evaluate_uap_cel_tool_policy("force_bypass_governance_gate")
     assert exc_info.value.status_code == 403
+
+
+def test_dynamic_model_armor_policy_router_and_otlp_dual_export() -> None:
+    guard = FailClosedModelArmorGuard(live_api_enabled=False)
+    strict_pol = DynamicGuardrailPolicyPayload(
+        business_unit="intl_sky",
+        risk_tier="AG3",
+        sdp_pii_mode="BLOCK_ON_MATCH",
+        ensemble_role="parallel_ensemble_voter",
+    )
+    compiled = compile_dynamic_policy_to_base_template(strict_pol, project_id="demo-proj")
+    assert compiled["resolved_template"].endswith("cymbal-strict-ag3-gpp")
+
+    blocked = guard.inspect_text("Subscriber SSN 123-45-6789", dynamic_policy=strict_pol)
+    assert blocked.allowed is False
+    assert blocked.action_taken == "BLOCKED_SDP_PII_POLICY"
+
+    tracer = UnifiedTraceBridge(cloud_trace_enabled=False)
+    tid = tracer.new_trace_id()
+    tracer.record_span(
+        trace_id=tid,
+        session_id="lf-sess-01",
+        span_name="governance.audit",
+        stage="audit",
+        duration_ms=12.4,
+        architecture_mode="enterprise_hybrid",
+    )
+    envelopes = tracer.list_recent_otlp_exports(limit=5)
+    assert len(envelopes) == 1
+    assert "resourceSpans" in envelopes[0]
 
 
 @pytest.mark.asyncio

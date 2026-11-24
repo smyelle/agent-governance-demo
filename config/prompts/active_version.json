@@ -1,8 +1,8 @@
 {
   "active_version": "v2",
   "prompt_file": "synthesizer_v2_optimized.txt",
-  "behavior_score": 96.2,
+  "behavior_score": 96.4,
   "eval_gate": "passed",
   "deployment_status": "active",
-  "updated_at": "2026-11-24T14:56:03.028090+00:00"
+  "updated_at": "2026-11-24T18:18:03.050585+00:00"
 }

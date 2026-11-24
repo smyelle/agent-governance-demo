@@ -261,19 +261,19 @@ def run_functional_and_security_checks(
             }
         )
 
-        # 6. End-to-End ADK 2.0 Workflow Triage + AG3 HITL Resume
+        # 6. End-to-End ADK 2.0 Governance Audit + AG3 HITL Deployment Resume
         triage = client.post(
-            "/api/agent/triage",
+            "/api/agent/audit",
             headers=csrf_hdr,
             json={
-                "incident_id": "INC-4092",
-                "service_name": "cymbal-release-api",
-                "app_id": "SVC-CYMBAL-992",
+                "candidate_id": "CAND-101",
+                "agent_name": "billing-dispute-assistant",
+                "app_id": "SVC-CYMBAL-101",
                 "operator_prompt": (
-                    "Investigate INC-4092: cymbal-release-api p99 latency spiked to 4,820ms "
-                    "with Valkey usage:0 saturation at 94.6% after release v2.14.3."
+                    "Audit CAND-101 (billing-dispute-assistant) and prepare governed Terraform "
+                    "Paved-Path & Golden Blueprint deployment."
                 ),
-                "architecture_mode": "google_native",
+                "architecture_mode": "enterprise_hybrid",
             },
         )
         t_data = triage.json() if triage.status_code == 200 else {}
@@ -291,7 +291,7 @@ def run_functional_and_security_checks(
                     "session_id": t_data["session_id"],
                     "interrupt_id": t_data["pending_approval"]["interrupt_id"],
                     "approved": True,
-                    "approver_principal": "sre-oncall-lead",
+                    "approver_principal": "gov-steward-lead",
                     "reason": "Automated smoke test approval.",
                 },
             )
@@ -300,14 +300,14 @@ def run_functional_and_security_checks(
             resume_ok = (
                 resume.status_code == 200
                 and r_data.get("status") == "COMPLETED"
-                and rem.get("status") == "ROLLED_BACK"
-                and rem.get("slo_recovered") is True
+                and rem.get("status") == "DEPLOYED_PAVED_PATH"
+                and rem.get("compliance_verified") is True
             )
         checks.append(
             {
-                "check": "adk_workflow_triage_and_hitl_resume",
+                "check": "adk_workflow_audit_and_hitl_resume",
                 "passed": paused_ok and resume_ok,
-                "detail": f"paused_ag3={paused_ok} resumed_completed={resume_ok}",
+                "detail": f"paused_ag3={paused_ok} resumed_deployed={resume_ok}",
             }
         )
 

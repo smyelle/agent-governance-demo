@@ -34,10 +34,14 @@ class TerminologyMap(BaseModel):
     gateway_name: str
     intake_name: str
     cmdb_name: str
+    supergraph_name: str = "ServiceAtlas Supergraph"
     runtime_name: str
     risk_framework: str
     registry_name: str
+    blueprint_registry_name: str = "Golden Blueprint Registry"
     observability_name: str
+    eval_engine_name: str = "Gen AI Eval & Prompt Optimizer"
+    paved_path_iac_name: str = "Terraform Paved-Path Blueprints"
     runbook_name: str
     wallet_name: str
     guardrail_policy_name: str

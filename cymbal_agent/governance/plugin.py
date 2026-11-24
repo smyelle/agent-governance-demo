@@ -52,13 +52,26 @@ from cymbal_agent.governance.wallet_ledger import (
 READ_ONLY_MCP_TOOLS = frozenset(
     {
         "",
+        "inspect_candidate_agent_manifest",
+        "verify_tier1_intake_and_supergraph",
+        "fetch_production_otel_traces",
         "query_golden_signal_metrics",
         "check_release_and_change_freeze",
         "lookup_service_topology_and_runbook",
     }
 )
-SCOPED_NON_DESTRUCTIVE_TOOLS = frozenset({"annotate_incident_ticket"})
-DESTRUCTIVE_MCP_TOOLS = frozenset({"purge_production_valkey_stream"})
+SCOPED_NON_DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "record_compliance_evidence_note",
+        "annotate_incident_ticket",
+    }
+)
+DESTRUCTIVE_MCP_TOOLS = frozenset(
+    {
+        "force_bypass_governance_gate",
+        "purge_production_valkey_stream",
+    }
+)
 
 
 class UapToolPolicyDeniedError(PermissionError):
@@ -137,7 +150,7 @@ class CymbalGovernancePlugin(BasePlugin):
         self.agent_id = agent_id
         self.wallet_id = wallet_id
         self._default_mode = architecture_mode or os.getenv(
-            "CYMBAL_PLATFORM_MODE", "google_native"
+            "CYMBAL_PLATFORM_MODE", "enterprise_hybrid"
         )
 
     def _active_mode(self, state: Any = None) -> str:
@@ -214,6 +227,7 @@ class CymbalGovernancePlugin(BasePlugin):
         state["last_wallet_reservation_id"] = reservation_id
 
         # 2. Extract non-thought user prompt text, scrub PII inline, and run fail-closed Model Armor
+        dynamic_policy = state.get("dynamic_guardrail_policy")
         collected_texts: list[str] = []
         for content in getattr(llm_request, "contents", None) or []:
             for part in getattr(content, "parts", None) or []:
@@ -221,7 +235,11 @@ class CymbalGovernancePlugin(BasePlugin):
                     continue
                 if getattr(part, "text", None):
                     txt = str(part.text)
-                    verdict = self.guard.inspect_text(txt, direction="USER_PROMPT")
+                    verdict = self.guard.inspect_text(
+                        txt,
+                        direction="USER_PROMPT",
+                        dynamic_policy=dynamic_policy,
+                    )
                     self.store.record_guardrail_audit(
                         trace_id=trace_id,
                         session_id=session_id,

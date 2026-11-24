@@ -1,0 +1,39 @@
+{
+  "version": "v2",
+  "title": "scape-uap-per-tool-cel-policy",
+  "description": "Unified Access Policy V2 CEL enforcing empty tool.name MCP handshake allow, read_only_hint allow, and principal-scoped mutating MCP/A2A governance.",
+  "rules": [
+    {
+      "id": "allow-mcp-handshake-and-readonly-tools",
+      "effect": "ALLOW",
+      "condition": {
+        "title": "Allow MCP initialize/tools/list or readOnlyHint tools",
+        "expression": "destination.agent_registry.mcp_server.tool.name == '' || destination.agent_registry.mcp_server.tool.annotations.read_only_hint == true"
+      }
+    },
+    {
+      "id": "allow-scoped-incident-annotation",
+      "effect": "ALLOW",
+      "condition": {
+        "title": "Allow non-destructive ticket annotation only for registered DevX Copilot SPIFFE identity",
+        "expression": "destination.agent_registry.mcp_server.tool.name == 'annotate_incident_ticket' && destination.agent_registry.mcp_server.tool.annotations.destructive_hint == false && request.auth.principal.contains('devx-incident-copilot')"
+      }
+    },
+    {
+      "id": "deny-destructive-mcp-tools-by-default",
+      "effect": "DENY",
+      "condition": {
+        "title": "Block destructive MCP tools (e.g. purge_production_stream) even if caller holds coarse mcp.use scope",
+        "expression": "destination.agent_registry.mcp_server.tool.annotations.destructive_hint == true"
+      }
+    },
+    {
+      "id": "allow-governed-a2a-remediation-after-ag3-hitl",
+      "effect": "ALLOW",
+      "condition": {
+        "title": "Allow A2A Release Remediation Agent only for authorized Copilot identity with AG3 approval header",
+        "expression": "destination.agent_registry.agent.name == 'remediation-a2a-agent' && has(request.headers['x-scape-ag3-approval-id'])"
+      }
+    }
+  ]
+}

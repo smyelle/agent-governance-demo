@@ -73,6 +73,7 @@ HEADER_REQUIRED_SUFFIXES = (
 
 HEADER_REQUIRED_NAMES = {
     "Dockerfile",
+    ".dockerignore",
     ".gitignore",
     ".env.example",
 }

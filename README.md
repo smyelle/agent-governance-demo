@@ -82,14 +82,20 @@ bash infra/03_deploy_agent_gateway.sh
 
 # 5. Package & deploy Cymbal Core Operations & Release Agent to Vertex AI Agent Runtime (AGENT_IDENTITY)
 .venv/bin/python infra/04_deploy_agent_runtime.py
+
+# 6. Smoke-test locally and deploy standardized IAP/IAM-protected Web UI to Cloud Run (cymbal-ops-release-web)
+bash infra/05_deploy_web_ui.sh
 ```
 
-### Step 3: Run Verification, Closed-Loop Flywheel & Benchmark Suite
+### Step 3: Run Local Development, Smoke Tests, Closed-Loop Flywheel & Benchmark Suite
 ```bash
 # Copyright 2026 Google LLC.
 # SPDX-License-Identifier: Apache-2.0
-# Unit & ADK 2.0 Workflow Graph tests
+# Unit, ADK 2.0 Workflow Graph & Cloud Run Web Compliance tests
 .venv/bin/pytest tests/ -v
+
+# Local pre-flight Web UI smoke & security test on 127.0.0.1
+.venv/bin/python scripts/smoke_test_web_ui.py --local
 
 # 5-Stage Closed-Loop Optimization Flywheel (promotes v1 -> v2 in <90s)
 .venv/bin/python -m evals.run_closed_loop_eval
@@ -97,7 +103,7 @@ bash infra/03_deploy_agent_gateway.sh
 # 8-Capability Differential Benchmark (writes docs/GOOGLE_AGENT_PLATFORM_BENCHMARK.md)
 .venv/bin/python -m evals.run_beyond_scape_proofs
 
-# Launch the Cymbal Web Console + Live 9-Service Platform Visualization on http://127.0.0.1:8080
+# Launch the local Cymbal Web Console + Vertical 9-Service Pipeline on http://127.0.0.1:8080
 .venv/bin/python -m web.api
 ```
 

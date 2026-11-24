@@ -473,15 +473,23 @@ async def run_all_beyond_scape_proofs(*, live_cloud: bool = True) -> dict[str, A
         results.append(res)
 
     tco_10m = calculate_guardrail_tco(daily_turns=10_000_000, tokens_per_turn=1000)
-    BENCHMARK_DOC_PATH.parent.mkdir(parents=True, exist_ok=True)
     md = render_benchmark_markdown(results, tco_10m)
-    BENCHMARK_DOC_PATH.write_text(md, encoding="utf-8")
+    runtime_dir = os.getenv("CYMBAL_RUNTIME_STATE_DIR")
+    if runtime_dir or not os.access(REPO_ROOT, os.W_OK):
+        out_path = Path(runtime_dir or "/tmp/cymbal_runtime_state") / "docs" / "GOOGLE_AGENT_PLATFORM_BENCHMARK.md"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        rel_out = str(out_path)
+    else:
+        BENCHMARK_DOC_PATH.parent.mkdir(parents=True, exist_ok=True)
+        BENCHMARK_DOC_PATH.write_text(md, encoding="utf-8")
+        rel_out = str(BENCHMARK_DOC_PATH.relative_to(REPO_ROOT))
 
     return {
         "status": "PASS" if all(r["passed"] for r in results) else "FAIL",
         "passed_count": sum(1 for r in results if r["passed"]),
         "total_count": len(results),
-        "benchmark_markdown_path": str(BENCHMARK_DOC_PATH.relative_to(REPO_ROOT)),
+        "benchmark_markdown_path": rel_out,
         "tco_10m_turns_per_day": tco_10m,
         "proofs": results,
     }

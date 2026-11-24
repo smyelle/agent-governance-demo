@@ -632,6 +632,20 @@
 
     document.getElementById("mode-select").value = state.architectureMode;
     applyTenantBranding(boot.tenant);
+    if (boot.runtime_environment) {
+      const rtPill = document.getElementById("runtime-env-pill");
+      if (rtPill) {
+        let rtLabel = boot.runtime_environment.badge_label || "Local Dev (127.0.0.1)";
+        if (boot.runtime_environment.iap_verified) {
+          rtLabel += " | IAP";
+        }
+        rtPill.textContent = rtLabel;
+        rtPill.className =
+          boot.runtime_environment.target === "cloud_run"
+            ? "runtime-pill runtime-cloud-run"
+            : "runtime-pill";
+      }
+    }
     updatePlatformServices(boot.platform_services, false);
 
     renderIncidentList();

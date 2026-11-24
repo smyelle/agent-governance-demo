@@ -58,7 +58,25 @@ from evals.env_simulator import CymbalEnvironmentSimulator  # noqa: E402
 
 GOLDEN_SUITE_PATH = REPO_ROOT / "evals" / "golden_incidents.json"
 PROMPTS_DIR = REPO_ROOT / "config" / "prompts"
-ACTIVE_POINTER_PATH = PROMPTS_DIR / "active_version.json"
+
+
+def get_writable_prompts_dir() -> Path:
+    """Returns writable prompts directory (supports non-root Cloud Run containers)."""
+    runtime_dir = os.getenv("CYMBAL_RUNTIME_STATE_DIR")
+    if runtime_dir or not os.access(PROMPTS_DIR, os.W_OK):
+        base = Path(runtime_dir or "/tmp/cymbal_runtime_state") / "prompts"
+        base.mkdir(parents=True, exist_ok=True)
+        for seed_name in (
+            "active_version.json",
+            "synthesizer_v1_flawed.txt",
+            "synthesizer_v2_optimized.txt",
+        ):
+            src = PROMPTS_DIR / seed_name
+            dst = base / seed_name
+            if src.is_file() and not dst.is_file():
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        return base
+    return PROMPTS_DIR
 
 OPTIMIZED_V2_TEMPLATE = """You are the Cymbal Core Operations & Release Root-Cause Synthesizer operating under strict platform governance.
 Synthesize the correlated observability metrics, release/change-control records, ServiceAtlas CMDB blast-radius metadata, and gVisor statistical anomaly output into a deterministic IncidentAssessment.
@@ -138,7 +156,7 @@ def _synthesize_optimized_v2_prompt(
 ) -> str:
     """Uses Gemini Long-Term Flash (`gemini-3.8-flash`) to validate/refine v2 rules."""
     del location
-    v2_path = PROMPTS_DIR / "synthesizer_v2_optimized.txt"
+    v2_path = get_writable_prompts_dir() / "synthesizer_v2_optimized.txt"
     notes_comment = ""
     if live_cloud:
         try:
@@ -186,7 +204,9 @@ def _promote_in_registry_and_firestore(
         "deployment_status": "active",
         "updated_at": now_iso,
     }
-    ACTIVE_POINTER_PATH.write_text(json.dumps(pointer, indent=2) + "\n", encoding="utf-8")
+    (get_writable_prompts_dir() / "active_version.json").write_text(
+        json.dumps(pointer, indent=2) + "\n", encoding="utf-8"
+    )
 
     registry_synced = False
     firestore_synced = False
@@ -248,7 +268,7 @@ async def execute_closed_loop_flywheel(
     cases = suite["cases"]
 
     if reset_to_v1_first:
-        ACTIVE_POINTER_PATH.write_text(
+        (get_writable_prompts_dir() / "active_version.json").write_text(
             json.dumps(
                 {
                     "active_version": "v1",

@@ -82,6 +82,23 @@ body {
   white-space: nowrap;
 }
 
+.runtime-pill {
+  background: #1e293b;
+  color: #bae6fd;
+  border: 1px solid #38bdf8;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.22rem 0.62rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.runtime-pill.runtime-cloud-run {
+  background: #064e3b;
+  color: #d1fae5;
+  border-color: #34d399;
+}
+
 .selector-row {
   display: flex;
   flex-wrap: wrap;

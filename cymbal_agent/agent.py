@@ -90,6 +90,15 @@ def _build_gemini_llm(model_id: str | None = None) -> Gemini:
     )
 
 
+def _resolve_active_prompts_dir() -> Path:
+    runtime_dir = os.getenv("CYMBAL_RUNTIME_STATE_DIR")
+    if runtime_dir:
+        candidate = Path(runtime_dir) / "prompts"
+        if candidate.is_dir():
+            return candidate
+    return PROMPTS_DIR
+
+
 def load_active_synthesizer_instruction(readonly_ctx: Any = None) -> str:
     """Loads prompt text from config/prompts/active_version.json (or state override)."""
     override_version = None
@@ -97,7 +106,11 @@ def load_active_synthesizer_instruction(readonly_ctx: Any = None) -> str:
         state = getattr(readonly_ctx, "state", {}) or {}
         override_version = state.get("prompt_version_override")
 
-    pointer_path = PROMPTS_DIR / "active_version.json"
+    active_dir = _resolve_active_prompts_dir()
+    pointer_path = active_dir / "active_version.json"
+    if not pointer_path.is_file():
+        pointer_path = PROMPTS_DIR / "active_version.json"
+
     prompt_file = "synthesizer_v1_flawed.txt"
     if override_version == "v1":
         prompt_file = "synthesizer_v1_flawed.txt"
@@ -110,7 +123,9 @@ def load_active_synthesizer_instruction(readonly_ctx: Any = None) -> str:
         except Exception:
             prompt_file = "synthesizer_v1_flawed.txt"
 
-    target = PROMPTS_DIR / prompt_file
+    target = active_dir / prompt_file
+    if not target.is_file():
+        target = PROMPTS_DIR / prompt_file
     if not target.is_file():
         target = PROMPTS_DIR / "synthesizer_v2_optimized.txt"
     return target.read_text(encoding="utf-8")

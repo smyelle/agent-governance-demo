@@ -57,13 +57,16 @@ for svc_id in cymbal-ops-mcp-server remediation-a2a-agent cymbal-ops-release-age
     --quiet >/dev/null 2>&1 || true
 done
 
-echo "[4/5] Deleting Cloud Run services..."
-for run_svc in cymbal-ops-mcp-server remediation-a2a-agent cymbal-steward-web; do
+echo "[4/5] Deleting Cloud Run services, Secret Manager session key, and dedicated Web SA..."
+for run_svc in cymbal-ops-mcp-server remediation-a2a-agent cymbal-ops-release-web cymbal-steward-web; do
   gcloud run services delete "${run_svc}" \
     --region="${REGION}" \
     --project="${PROJECT_ID}" \
     --quiet >/dev/null 2>&1 || true
 done
+gcloud secrets delete cymbal-web-session-secret --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 || true
+gcloud iam service-accounts delete "cymbal-web-ui-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 || true
 
 echo "[5/5] Deleting NetworkAttachment, PSC-I Subnet, VPC, and Model Armor templates..."
 gcloud compute network-attachments delete cymbal-psci-attachment \

@@ -66,7 +66,10 @@ if str(REPO_ROOT) not in sys.path:
 load_dotenv(REPO_ROOT / ".env")
 
 from cymbal_agent.agent import build_cymbal_workflow  # noqa: E402
-from cymbal_agent.governance.gcp_auth import get_gcp_credentials  # noqa: E402
+from cymbal_agent.governance.gcp_auth import (  # noqa: E402
+    get_gcp_credentials,
+    is_cloud_managed_runtime,
+)
 from cymbal_agent.governance.identity_obo import (  # noqa: E402
     fetch_cloud_run_id_token,
     inspect_zero_secret_posture,
@@ -124,23 +127,108 @@ DEFAULT_TOPOLOGY_EDGES = [
 def _resolve_session_hmac_secret() -> bytes:
     env_secret = os.getenv("CYMBAL_BFF_SESSION_SECRET")
     if env_secret:
-        return env_secret.encode("utf-8")
+        return env_secret.strip().encode("utf-8")
     secret_file = REPO_ROOT / "jwt_secret.txt"
     if secret_file.is_file():
         return secret_file.read_text(encoding="utf-8").strip().encode("utf-8")
-    logger.debug("Generated ephemeral in-memory BFF CSRF secret for sandbox session.")
+    logger.warning("Generating ephemeral secret. Instance-isolated!")
     return secrets.token_bytes(32)
 
 
 _BFF_SECRET = _resolve_session_hmac_secret()
-_SESSION_CSRF_MAP: dict[str, tuple[str, float]] = {}
+_REVOKED_SESSIONS: set[str] = set()
 _SESSION_TTL_SECONDS = 3600.0
 _RATE_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 _RATE_LIMIT_MAX_REQUESTS = 240
 _RATE_LIMIT_WINDOW_SEC = 60.0
+_HSTS_MAX_AGE_SECONDS = int(os.getenv("CYMBAL_HSTS_MAX_AGE", "300"))
 
-# TODO(security): Integrate enterprise OIDC SSO + MFA enforcement at Cloud IAP / Load Balancer
-# front door when promoting beyond isolated sandbox evaluations.
+# TODO(security): Enforce hardware-backed WebAuthn / MFA step-up policies on Cloud Run
+# Identity-Aware Proxy (IAP) access levels when promoting beyond sandbox evaluations.
+
+
+def _is_effective_https(request: Request) -> bool:
+    """Detects HTTPS directly or behind Cloud Run Google Front End TLS termination."""
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    )
+    origin_or_ref = (
+        request.headers.get("origin") or request.headers.get("referer") or ""
+    ).lower()
+    via_local_http_proxy = origin_or_ref.startswith(
+        "http://127.0.0.1"
+    ) or origin_or_ref.startswith("http://localhost")
+    return (
+        request.url.scheme == "https" or forwarded_proto == "https"
+    ) and not via_local_http_proxy
+
+
+def _mint_signed_session_id(now_ts: float) -> str:
+    nonce = secrets.token_urlsafe(18)
+    iat = int(now_ts)
+    payload = f"{nonce}.{iat}"
+    sig = hmac.new(
+        _BFF_SECRET, f"sid:{payload}".encode("utf-8"), "sha256"
+    ).hexdigest()[:32]
+    return f"{payload}.{sig}"
+
+
+def _verify_signed_session_id(sid: str, now_ts: float) -> bool:
+    if not sid or sid in _REVOKED_SESSIONS:
+        return False
+    parts = sid.split(".")
+    if len(parts) != 3:
+        return False
+    nonce, iat_str, presented_sig = parts
+    if not nonce or not iat_str.isdigit() or len(presented_sig) != 32:
+        return False
+    iat = int(iat_str)
+    age = now_ts - iat
+    if age < -60 or age > _SESSION_TTL_SECONDS:
+        return False
+    expected_sig = hmac.new(
+        _BFF_SECRET, f"sid:{nonce}.{iat}".encode("utf-8"), "sha256"
+    ).hexdigest()[:32]
+    return hmac.compare_digest(presented_sig, expected_sig)
+
+
+def _derive_csrf_token(sid: str) -> str:
+    return hmac.new(
+        _BFF_SECRET, f"csrf:{sid}".encode("utf-8"), "sha256"
+    ).hexdigest()
+
+
+def build_runtime_environment(request: Request | None = None) -> dict[str, Any]:
+    """Builds non-PII runtime metadata for Cloud Run and local development."""
+    k_service = os.getenv("K_SERVICE", "")
+    k_revision = os.getenv("K_REVISION", "")
+    on_cloud_run = bool(k_service)
+    region = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    https_active = bool(request and _is_effective_https(request))
+    iap_verified = bool(
+        request
+        and (
+            request.headers.get("x-goog-iap-jwt-assertion")
+            or request.headers.get("x-goog-authenticated-user-email")
+        )
+    )
+    return {
+        "target": "cloud_run" if on_cloud_run else "local_dev",
+        "service_name": k_service or "cymbal-ops-release-web",
+        "revision": k_revision or "local-dev",
+        "region": region,
+        "https_enforced": https_active,
+        "iap_verified": iap_verified,
+        "iam_auth_enforced": on_cloud_run,
+        "session_backing": (
+            "secret_manager_hmac"
+            if os.getenv("CYMBAL_BFF_SESSION_SECRET")
+            else "ephemeral_sandbox_hmac"
+        ),
+        "badge_label": (
+            f"Cloud Run ({region})" if on_cloud_run else "Local Dev (127.0.0.1)"
+        ),
+    }
 
 
 class TriageStartRequest(BaseModel):
@@ -219,13 +307,26 @@ INCIDENT_PRESETS: list[dict[str, Any]] = [
 ]
 
 
+def _resolve_prompts_dir() -> Path:
+    runtime_dir = os.getenv("CYMBAL_RUNTIME_STATE_DIR")
+    if runtime_dir:
+        candidate = Path(runtime_dir) / "prompts"
+        if candidate.is_dir():
+            return candidate
+    return PROMPTS_DIR
+
+
 def _load_prompt_pointer() -> dict[str, Any]:
-    pointer_path = PROMPTS_DIR / "active_version.json"
-    if pointer_path.is_file():
-        try:
-            return json.loads(pointer_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    active_dir = _resolve_prompts_dir()
+    for pointer_path in (
+        active_dir / "active_version.json",
+        PROMPTS_DIR / "active_version.json",
+    ):
+        if pointer_path.is_file():
+            try:
+                return json.loads(pointer_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
     return {"active_version": "v2", "behavior_score": 96.2, "eval_gate": "passed"}
 
 
@@ -524,15 +625,12 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     )
 
     def _issue_or_get_session(request: Request, response: Response) -> tuple[str, str]:
-        is_https = request.url.scheme == "https"
+        is_https = _is_effective_https(request)
         cookie_name = "__Host-cymbal_sid" if is_https else "cymbal_sid"
         sid = request.cookies.get(cookie_name) or ""
         now = time.time()
-        entry = _SESSION_CSRF_MAP.get(sid)
-        if not sid or entry is None or (now - entry[1]) > _SESSION_TTL_SECONDS:
-            sid = secrets.token_urlsafe(24)
-            csrf = hmac.new(_BFF_SECRET, sid.encode("utf-8"), "sha256").hexdigest()
-            _SESSION_CSRF_MAP[sid] = (csrf, now)
+        if not _verify_signed_session_id(sid, now):
+            sid = _mint_signed_session_id(now)
             response.set_cookie(
                 key=cookie_name,
                 value=sid,
@@ -542,23 +640,28 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 samesite="strict",
                 path="/",
             )
-        else:
-            csrf = entry[0]
-            _SESSION_CSRF_MAP[sid] = (csrf, now)
+        csrf = _derive_csrf_token(sid)
         return sid, csrf
 
     def _verify_csrf(request: Request) -> None:
-        is_https = request.url.scheme == "https"
-        cookie_name = "__Host-cymbal_sid" if is_https else "cymbal_sid"
-        sid = request.cookies.get(cookie_name) or ""
+        is_https = _is_effective_https(request)
+        sid = (
+            request.cookies.get("__Host-cymbal_sid") or ""
+            if is_https
+            else (
+                request.cookies.get("cymbal_sid")
+                or request.cookies.get("__Host-cymbal_sid")
+                or ""
+            )
+        )
         presented = request.headers.get("X-CSRF-Token") or ""
-        entry = _SESSION_CSRF_MAP.get(sid)
-        if not sid or not presented or entry is None:
-            raise HTTPException(status_code=403, detail="CSRF token missing or session expired.")
-        if (time.time() - entry[1]) > _SESSION_TTL_SECONDS:
-            _SESSION_CSRF_MAP.pop(sid, None)
-            raise HTTPException(status_code=403, detail="Session expired; reload page.")
-        if not hmac.compare_digest(presented, entry[0]):
+        now = time.time()
+        if not sid or not presented or not _verify_signed_session_id(sid, now):
+            raise HTTPException(
+                status_code=403, detail="CSRF token missing or session expired."
+            )
+        expected_csrf = _derive_csrf_token(sid)
+        if not hmac.compare_digest(presented, expected_csrf):
             raise HTTPException(status_code=403, detail="CSRF token mismatch.")
 
     @bff.middleware("http")
@@ -566,7 +669,30 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         if request.method not in {"GET", "POST", "HEAD"}:
             return JSONResponse({"detail": "Method not allowed"}, status_code=405)
 
-        client_ip = request.client.host if request.client else "127.0.0.1"
+        # Fetch Metadata resource isolation (reject cross-site API/subresource calls pre-auth)
+        sec_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        if sec_site and sec_site not in {"same-origin", "same-site", "none"}:
+            sec_mode = (request.headers.get("sec-fetch-mode") or "").strip().lower()
+            sec_dest = (request.headers.get("sec-fetch-dest") or "").strip().lower()
+            allow_top_nav = (
+                sec_site == "cross-site"
+                and sec_mode == "navigate"
+                and request.method in {"GET", "HEAD"}
+                and not request.url.path.startswith("/api/")
+                and sec_dest not in {"object", "embed", "iframe"}
+            )
+            if not allow_top_nav:
+                return JSONResponse(
+                    {"detail": "Cross-site request rejected by Fetch Metadata policy"},
+                    status_code=403,
+                )
+
+        xff = request.headers.get("x-forwarded-for", "")
+        if is_cloud_managed_runtime() and xff:
+            client_ip = xff.split(",")[0].strip() or "127.0.0.1"
+        else:
+            client_ip = request.client.host if request.client else "127.0.0.1"
+
         now = time.time()
         bucket = _RATE_BUCKETS[client_ip]
         while bucket and (now - bucket[0]) > _RATE_LIMIT_WINDOW_SEC:
@@ -578,20 +704,47 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Vary"] = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), accelerometer=(), "
+            "focus-without-user-activation=()"
+        )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "default-src 'self'; script-src 'self' 'report-sample'; style-src 'self'; "
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
-            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
+        if _is_effective_https(request):
+            response.headers["Strict-Transport-Security"] = (
+                f"max-age={_HSTS_MAX_AGE_SECONDS}; includeSubDomains"
+            )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     @bff.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok", "service": "cymbal-ops-release-web"}
+    async def healthz(request: Request) -> dict[str, Any]:
+        env_meta = build_runtime_environment(request)
+        return {
+            "status": "ok",
+            "service": "cymbal-ops-release-web",
+            "target": env_meta["target"],
+            "revision": env_meta["revision"],
+        }
+
+    @bff.post("/api/session/reset")
+    async def reset_session(request: Request) -> JSONResponse:
+        _verify_csrf(request)
+        for cname in ("__Host-cymbal_sid", "cymbal_sid"):
+            val = request.cookies.get(cname)
+            if val:
+                _REVOKED_SESSIONS.add(val)
+        resp = JSONResponse({"status": "session_cleared"})
+        resp.headers["Clear-Site-Data"] = '"cookies", "storage"'
+        return resp
 
     @bff.get("/favicon.ico")
     async def favicon() -> Response:
@@ -602,8 +755,20 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         _, csrf_token = _issue_or_get_session(request, response)
         profile = load_tenant_profile()
         pointer = _load_prompt_pointer()
-        v1_txt = (PROMPTS_DIR / "synthesizer_v1_flawed.txt").read_text(encoding="utf-8")
-        v2_txt = (PROMPTS_DIR / "synthesizer_v2_optimized.txt").read_text(encoding="utf-8")
+        active_pdir = _resolve_prompts_dir()
+        v1_file = (
+            active_pdir / "synthesizer_v1_flawed.txt"
+            if (active_pdir / "synthesizer_v1_flawed.txt").is_file()
+            else PROMPTS_DIR / "synthesizer_v1_flawed.txt"
+        )
+        v2_file = (
+            active_pdir / "synthesizer_v2_optimized.txt"
+            if (active_pdir / "synthesizer_v2_optimized.txt").is_file()
+            else PROMPTS_DIR / "synthesizer_v2_optimized.txt"
+        )
+        v1_txt = v1_file.read_text(encoding="utf-8")
+        v2_txt = v2_file.read_text(encoding="utf-8")
+        runtime_env = build_runtime_environment(request)
 
         platform_services = build_platform_services_snapshot(
             store=store,
@@ -615,6 +780,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         return {
             "csrf_token": csrf_token,
+            "runtime_environment": runtime_env,
             "architecture_mode": runtime_cfg["architecture_mode"],
             "tenant": profile.model_dump(),
             "incidents": INCIDENT_PRESETS,
@@ -1456,5 +1622,13 @@ app = create_bff_app()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-    bind_host = os.getenv("BIND_HOST", "127.0.0.1")
-    uvicorn.run(app, host=bind_host, port=port)
+    cloud_runtime = is_cloud_managed_runtime()
+    default_host = "0.0.0.0" if cloud_runtime else "127.0.0.1"  # noqa: S104
+    bind_host = os.getenv("BIND_HOST", default_host)
+    uvicorn.run(
+        app,
+        host=bind_host,
+        port=port,
+        proxy_headers=cloud_runtime,
+        forwarded_allow_ips="*" if cloud_runtime else "127.0.0.1",
+    )

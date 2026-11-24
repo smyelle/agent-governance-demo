@@ -153,11 +153,11 @@ def get_gcp_credentials(project_id: str | None = None) -> tuple[Credentials, str
         )
         return creds, resolved_project or (adc_project or "")
 
-    force_cli = os.getenv("SCAPE_USE_GCLOUD_CLI_AUTH", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    force_cli = (
+        os.getenv("CYMBAL_USE_GCLOUD_CLI_AUTH")
+        or os.getenv("SCAPE_USE_GCLOUD_CLI_AUTH")
+        or ""
+    ).lower() in {"1", "true", "yes"}
     if not force_cli:
         try:
             creds, adc_project = _ORIG_GOOGLE_AUTH_DEFAULT()

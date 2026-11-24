@@ -14,9 +14,9 @@
 
 """Atomic nano-USD Wallet preflight guard & BigQuery cost-per-outcome ledger.
 
-Eliminates post-response budget overshoot (`FLOW Wallet` Valkey/Celery lag) via
-atomic Firestore pre-flight reservations and records business-outcome ROI
-(`cost_per_resolved_incident_nano_usd`) in BigQuery `scape_governance.wallet_ledger`.
+Eliminates post-response budget overshoot via atomic Firestore pre-flight
+reservations and records business-outcome ROI (`cost_per_resolved_incident_nano_usd`)
+in BigQuery `cymbal_governance.wallet_ledger`.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ import uuid
 from google.cloud import bigquery
 from google.cloud import firestore
 
-from scape_agent.governance.gcp_auth import get_gcp_credentials
-from scape_agent.governance.model_armor_guard import GuardrailVerdict
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.model_armor_guard import GuardrailVerdict
 
 # Public list-rate illustrative nano-USD constants (1 USD = 1,000,000,000 nano-USD)
 GEMINI_INPUT_TOKEN_NANO_USD = 150       # $0.15 / 1M input tokens
@@ -76,26 +76,29 @@ class AtomicWalletAndGovernanceStore:
         dataset_id: str | None = None,
         in_memory_only: bool = False,
     ) -> None:
-        self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
-        self.dataset_id = dataset_id or os.getenv("SCAPE_BQ_DATASET", "scape_governance")
+        self.project_id = (
+            project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
+        )
+        self.dataset_id = dataset_id or os.getenv("CYMBAL_BQ_DATASET", "cymbal_governance")
         self.in_memory_only = in_memory_only
         self._lock = threading.Lock()
         self._mem_agents: dict[str, dict[str, Any]] = {
-            "devx-incident-copilot": {
-                "agent_id": "devx-incident-copilot",
+            "cymbal-ops-release-agent": {
+                "agent_id": "cymbal-ops-release-agent",
+                "display_name": "Cymbal Core Operations & Release Agent",
                 "status": "ACTIVE",
-                "aegis_level": "AG3",
-                "clara_intake_id": "CLARA-2026-0841",
-                "devhub_app_id": "DEVHUB-SCAPE-992",
-                "behavior_score": 96.0,
+                "risk_tier": "AG3",
+                "intake_id": "ATLAS-2026-0841",
+                "cmdb_app_id": "SVC-CYMBAL-992",
+                "behavior_score": 96.2,
                 "active_prompt_version": "v2",
             }
         }
         self._mem_wallets: dict[str, dict[str, Any]] = {
-            "wallet-devx-ops": {
-                "wallet_id": "wallet-devx-ops",
-                "org": "enterprise-devx",
-                "account": "incident-ops-sandbox",
+            "wallet-cymbal-ops": {
+                "wallet_id": "wallet-cymbal-ops",
+                "org": "cymbal-communications",
+                "account": "core-ops-release",
                 "monthly_cap_nano_usd": 15_000_000_000,
                 "spent_nano_usd": 0,
                 "reserved_nano_usd": 0,
@@ -126,7 +129,7 @@ class AtomicWalletAndGovernanceStore:
             creds, _ = get_gcp_credentials(self.project_id)
             self._fs_client = firestore.Client(
                 project=self.project_id,
-                database=os.getenv("SCAPE_FIRESTORE_DATABASE", "(default)"),
+                database=os.getenv("CYMBAL_FIRESTORE_DATABASE", "(default)"),
                 credentials=creds,
             )
         return self._fs_client
@@ -137,20 +140,24 @@ class AtomicWalletAndGovernanceStore:
             self._bq_client = bigquery.Client(project=self.project_id, credentials=creds)
         return self._bq_client
 
-    def get_agent_state(self, agent_id: str = "devx-incident-copilot") -> dict[str, Any]:
+    def get_agent_state(self, agent_id: str = "cymbal-ops-release-agent") -> dict[str, Any]:
         if self.in_memory_only:
             with self._lock:
-                return dict(self._mem_agents.get(agent_id, self._mem_agents["devx-incident-copilot"]))
+                return dict(
+                    self._mem_agents.get(agent_id, self._mem_agents["cymbal-ops-release-agent"])
+                )
         try:
-            snap = self._fs().collection("scape_agents").document(agent_id).get()
+            snap = self._fs().collection("cymbal_agents").document(agent_id).get()
             if snap.exists:
                 return snap.to_dict() or {}
         except Exception:
             if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
                 self.in_memory_only = True
-                return dict(self._mem_agents.get(agent_id, self._mem_agents["devx-incident-copilot"]))
+                return dict(
+                    self._mem_agents.get(agent_id, self._mem_agents["cymbal-ops-release-agent"])
+                )
             raise
-        return dict(self._mem_agents["devx-incident-copilot"])
+        return dict(self._mem_agents["cymbal-ops-release-agent"])
 
     def set_agent_status(
         self,
@@ -170,25 +177,27 @@ class AtomicWalletAndGovernanceStore:
                 cur = self._mem_agents.setdefault(agent_id, {"agent_id": agent_id})
                 cur.update(updates)
                 return dict(cur)
-        ref = self._fs().collection("scape_agents").document(agent_id)
+        ref = self._fs().collection("cymbal_agents").document(agent_id)
         ref.set(updates, merge=True)
         return ref.get().to_dict() or updates
 
-    def assert_agent_active(self, agent_id: str = "devx-incident-copilot") -> dict[str, Any]:
+    def assert_agent_active(self, agent_id: str = "cymbal-ops-release-agent") -> dict[str, Any]:
         state = self.get_agent_state(agent_id)
         status = str(state.get("status", "ACTIVE")).upper()
         if status != "ACTIVE":
             raise KillSwitchHaltedError(agent_id=agent_id, status=status)
         return state
 
-    def get_wallet_state(self, wallet_id: str = "wallet-devx-ops") -> dict[str, Any]:
+    def get_wallet_state(self, wallet_id: str = "wallet-cymbal-ops") -> dict[str, Any]:
         if self.in_memory_only:
             with self._lock:
-                return dict(self._mem_wallets.get(wallet_id, self._mem_wallets["wallet-devx-ops"]))
-        snap = self._fs().collection("scape_wallets").document(wallet_id).get()
+                return dict(
+                    self._mem_wallets.get(wallet_id, self._mem_wallets["wallet-cymbal-ops"])
+                )
+        snap = self._fs().collection("cymbal_wallets").document(wallet_id).get()
         if snap.exists:
             return snap.to_dict() or {}
-        return dict(self._mem_wallets["wallet-devx-ops"])
+        return dict(self._mem_wallets["wallet-cymbal-ops"])
 
     def update_wallet_cap(
         self,
@@ -206,22 +215,26 @@ class AtomicWalletAndGovernanceStore:
             updates["reserved_nano_usd"] = 0
         if self.in_memory_only:
             with self._lock:
-                w = self._mem_wallets.setdefault(wallet_id, dict(self._mem_wallets["wallet-devx-ops"]))
+                w = self._mem_wallets.setdefault(
+                    wallet_id, dict(self._mem_wallets["wallet-cymbal-ops"])
+                )
                 w.update(updates)
                 return dict(w)
-        ref = self._fs().collection("scape_wallets").document(wallet_id)
+        ref = self._fs().collection("cymbal_wallets").document(wallet_id)
         ref.set(updates, merge=True)
         return ref.get().to_dict() or updates
 
     def reserve_preflight_budget(
         self,
-        wallet_id: str = "wallet-devx-ops",
+        wallet_id: str = "wallet-cymbal-ops",
         reserve_nano_usd: int = DEFAULT_PREFLIGHT_RESERVATION_NANO_USD,
     ) -> str:
         reservation_id = f"resv-{uuid.uuid4().hex[:12]}"
         if self.in_memory_only:
             with self._lock:
-                w = self._mem_wallets.setdefault(wallet_id, dict(self._mem_wallets["wallet-devx-ops"]))
+                w = self._mem_wallets.setdefault(
+                    wallet_id, dict(self._mem_wallets["wallet-cymbal-ops"])
+                )
                 cap = int(w.get("monthly_cap_nano_usd", 15_000_000_000))
                 spent = int(w.get("spent_nano_usd", 0))
                 reserved = int(w.get("reserved_nano_usd", 0))
@@ -232,7 +245,7 @@ class AtomicWalletAndGovernanceStore:
                 return reservation_id
 
         db = self._fs()
-        doc_ref = db.collection("scape_wallets").document(wallet_id)
+        doc_ref = db.collection("cymbal_wallets").document(wallet_id)
 
         @firestore.transactional
         def _txn_reserve(transaction: firestore.Transaction) -> None:
@@ -259,11 +272,11 @@ class AtomicWalletAndGovernanceStore:
     def settle_turn_spend(
         self,
         *,
-        wallet_id: str = "wallet-devx-ops",
-        agent_id: str = "devx-incident-copilot",
+        wallet_id: str = "wallet-cymbal-ops",
+        agent_id: str = "cymbal-ops-release-agent",
         session_id: str,
         trace_id: str,
-        scape_mode: str = "google_native",
+        architecture_mode: str = "google_native",
         model_id: str = "gemini-3.8-flash",
         input_tokens: int,
         output_tokens: int,
@@ -282,7 +295,9 @@ class AtomicWalletAndGovernanceStore:
 
         if self.in_memory_only:
             with self._lock:
-                w = self._mem_wallets.setdefault(wallet_id, dict(self._mem_wallets["wallet-devx-ops"]))
+                w = self._mem_wallets.setdefault(
+                    wallet_id, dict(self._mem_wallets["wallet-cymbal-ops"])
+                )
                 w["reserved_nano_usd"] = max(0, int(w.get("reserved_nano_usd", 0)) - reserved_nano_usd)
                 w["spent_nano_usd"] = int(w.get("spent_nano_usd", 0)) + total_cost
                 if incident_resolved:
@@ -291,7 +306,7 @@ class AtomicWalletAndGovernanceStore:
                 cpri = int(w["spent_nano_usd"] // resolved_cnt)
         else:
             db = self._fs()
-            doc_ref = db.collection("scape_wallets").document(wallet_id)
+            doc_ref = db.collection("cymbal_wallets").document(wallet_id)
 
             @firestore.transactional
             def _txn_settle(transaction: firestore.Transaction) -> tuple[int, int]:
@@ -320,13 +335,13 @@ class AtomicWalletAndGovernanceStore:
         row = {
             "event_id": f"wlt-{uuid.uuid4().hex[:14]}",
             "created_at": now_iso,
-            "org": "enterprise-devx",
-            "account": "incident-ops-sandbox",
+            "org": "cymbal-communications",
+            "account": "core-ops-release",
             "agent_id": agent_id,
             "wallet_id": wallet_id,
             "session_id": session_id,
             "trace_id": trace_id,
-            "scape_mode": scape_mode,
+            "architecture_mode": architecture_mode,
             "model_id": model_id,
             "input_tokens": int(input_tokens),
             "output_tokens": int(output_tokens),
@@ -388,7 +403,7 @@ class AtomicWalletAndGovernanceStore:
             with self._lock:
                 return list(reversed(self._mem_ledger[-limit:]))
         query = (
-            f"SELECT event_id, created_at, agent_id, session_id, trace_id, scape_mode, "
+            f"SELECT event_id, created_at, agent_id, session_id, trace_id, architecture_mode, "
             f"model_id, input_tokens, output_tokens, model_cost_nano_usd, "
             f"guardrail_cost_nano_usd, total_cost_nano_usd, outcome, incident_id, "
             f"cost_per_resolved_incident_nano_usd "

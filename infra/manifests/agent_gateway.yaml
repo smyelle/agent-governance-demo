@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: projects/${PROJECT_NUMBER}/locations/${REGION}/agentGateways/scape-agent-gateway
+name: projects/${PROJECT_NUMBER}/locations/${REGION}/agentGateways/cymbal-agent-gateway
 description: "Managed Envoy L7 Agent Gateway enforcing UAP Policy V2 CEL and SGP CONTENT_AUTHZ across MCP and A2A"
 googleManaged:
   governedAccessPath: AGENT_TO_ANYWHERE
@@ -21,7 +21,7 @@ registries:
   - "//agentregistry.googleapis.com/projects/${PROJECT_NUMBER}/locations/${REGION}"
 networkConfig:
   egress:
-    networkAttachment: projects/${PROJECT_NUMBER}/regions/${REGION}/networkAttachments/scape-psci-attachment
+    networkAttachment: projects/${PROJECT_NUMBER}/regions/${REGION}/networkAttachments/cymbal-psci-attachment
 labels:
-  architecture_layer: scape_tier1_gateway
-  managed_by: comcast_scape_reference
+  architecture_layer: tier1_gateway
+  managed_by: cymbal_agent_platform_reference

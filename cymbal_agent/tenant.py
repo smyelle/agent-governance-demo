@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tenant profile loader supporting instant enterprise white-label switching."""
+"""Configuration loader for Cymbal Core Operations & Release Agent."""
 
 from __future__ import annotations
 
@@ -56,15 +56,15 @@ class GovernanceDefaults(BaseModel):
 
 
 class ThemeConfig(BaseModel):
-    accent_primary: str = "#2563eb"
+    accent_primary: str = "#0284c7"
     accent_secondary: str = "#0f766e"
-    badge_text: str = "Enterprise Agent Reference"
+    badge_text: str = "Google Agent Platform | ADK 2.0"
 
 
 class TenantProfile(BaseModel):
     profile_key: str
     organization_display_name: str
-    copilot_title: str
+    agent_title: str
     steward_console_title: str
     terminology: TerminologyMap
     governance_defaults: GovernanceDefaults
@@ -98,9 +98,9 @@ def load_tenant_profile(
     profiles = raw.get("profiles", {})
     selected_key = (
         profile_override
-        or os.getenv("SCAPE_TENANT_PROFILE")
+        or os.getenv("CYMBAL_TENANT_PROFILE")
         or raw.get("active_profile")
-        or "comcast_devx"
+        or "cymbal_core"
     )
     if selected_key not in profiles:
         raise KeyError(

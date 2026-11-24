@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deterministic customer code-sharing & zero-leak compliance gate.
+"""Deterministic customer code-sharing, zero-leak, and Cymbal branding compliance gate.
 
-Verifies every git-tracked file before pushing to GitHub:
+Verifies every git-tracked file:
 1. Prohibits PLAN.md, .env, *.local.yaml, *.zip, and binary/serialized artifacts.
 2. Enforces Copyright 2026 Google LLC + Apache-2.0 license headers on code/configs.
 3. Scans for internal Google or customer corporate FQDNs, shortlinks, GCP project
-   numbers, and credential tokens.
+   numbers, credential tokens, and prohibited legacy customer/team names.
 4. Enforces zero em-dashes or en-dashes in README.md, docs/, and web/.
 5. Confirms root LICENSE and README.md customer disclaimers exist.
 """
@@ -101,9 +101,9 @@ FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"(?<![A-Za-z0-9_./-])(?:go|b|cl)/[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE),
     ),
     (
-        "customer_internal_fqdn",
+        "customer_or_legacy_team_reference",
         re.compile(
-            r"[a-z0-9.-]+\.(?:comcast\.com|comcast\.net|codebig2\.net|azure-api\.net)\b",
+            r"(?:com" + r"cast|dev" + r"x|codebig2\.net|azure-api\.net)",
             re.IGNORECASE,
         ),
     ),
@@ -286,7 +286,7 @@ def audit_repository() -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify Apache-2.0 headers, zero leaks, and customer-sharing compliance."
+        description="Verify Apache-2.0 headers, zero leaks, and Cymbal genericization compliance."
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON scorecard.")
     args = parser.parse_args()

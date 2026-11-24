@@ -31,7 +31,7 @@ import warnings
 from google.cloud import firestore
 import vertexai
 
-from scape_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 
 class ScopedMemoryBankClient:
@@ -44,10 +44,15 @@ class ScopedMemoryBankClient:
         reasoning_engine_name: str | None = None,
         in_memory_only: bool = False,
     ) -> None:
-        self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+        self.project_id = (
+            project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
+        )
         self.location = location or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-        self.reasoning_engine_name = reasoning_engine_name or os.getenv(
-            "SCAPE_REASONING_ENGINE_NAME", ""
+        self.reasoning_engine_name = (
+            reasoning_engine_name
+            or os.getenv("CYMBAL_REASONING_ENGINE_NAME")
+            or os.getenv("SCAPE_REASONING_ENGINE_NAME")
+            or ""
         )
         self.in_memory_only = in_memory_only
         self._lock = threading.Lock()
@@ -55,11 +60,11 @@ class ScopedMemoryBankClient:
             {
                 "memory_id": "mem-seed-4092",
                 "user_id": "sre-oncall-01",
-                "service_name": "flow-intel-api",
+                "service_name": "cymbal-release-api",
                 "incident_id": "INC-3980",
                 "fact": (
-                    "Prior incident INC-3980 on flow-intel-api showed synchronous Valkey usage:0 "
-                    "XADD flushes above 90% memory trigger Bifrost p99 spikes >4,500ms; rolling "
+                    "Prior incident INC-3980 on cymbal-release-api showed synchronous Valkey usage:0 "
+                    "XADD flushes above 90% memory trigger release-gateway p99 spikes >4,500ms; rolling "
                     "back to the prior stable minor release restored SLO in under 90 seconds."
                 ),
                 "created_at": "2026-11-18T14:20:00+00:00",
@@ -87,7 +92,7 @@ class ScopedMemoryBankClient:
             creds, _ = get_gcp_credentials(self.project_id)
             self._fs_client = firestore.Client(
                 project=self.project_id,
-                database=os.getenv("SCAPE_FIRESTORE_DATABASE", "(default)"),
+                database=os.getenv("CYMBAL_FIRESTORE_DATABASE", "(default)"),
                 credentials=creds,
             )
         return self._fs_client
@@ -158,7 +163,7 @@ class ScopedMemoryBankClient:
             try:
                 docs = (
                     self._fs()
-                    .collection("scape_memories")
+                    .collection("cymbal_memories")
                     .where(filter=firestore.FieldFilter("user_id", "==", uid))
                     .limit(limit * 2)
                     .stream()
@@ -213,7 +218,7 @@ class ScopedMemoryBankClient:
 
         if not self.in_memory_only:
             try:
-                self._fs().collection("scape_memories").document(f"{uid}__{mem_id}").set(record)
+                self._fs().collection("cymbal_memories").document(f"{uid}__{mem_id}").set(record)
             except Exception:
                 pass
         return record
@@ -234,7 +239,7 @@ class ScopedMemoryBankClient:
             try:
                 docs = (
                     self._fs()
-                    .collection("scape_memories")
+                    .collection("cymbal_memories")
                     .where(filter=firestore.FieldFilter("user_id", "==", uid))
                     .stream()
                 )

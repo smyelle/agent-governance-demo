@@ -34,8 +34,8 @@ export CLOUDSDK_METRICS_ENVIRONMENT="${CLOUDSDK_METRICS_ENVIRONMENT:+$CLOUDSDK_M
 
 PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}}"
 REGION="${GOOGLE_CLOUD_LOCATION:-${REGION:-us-central1}}"
-BUCKET_URI="${SCAPE_STAGING_BUCKET:-gs://${PROJECT_ID}-${REGION}}"
-BQ_DATASET="${SCAPE_BQ_DATASET:-scape_governance}"
+BUCKET_URI="${CYMBAL_STAGING_BUCKET:-gs://${PROJECT_ID}-${REGION}}"
+BQ_DATASET="${CYMBAL_BQ_DATASET:-cymbal_governance}"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   PYTHON_BIN="python3"
@@ -56,7 +56,7 @@ gcloud storage buckets update "${BUCKET_URI}" \
   --public-access-prevention \
   --versioning >/dev/null
 
-echo "[2/5] Provisioning Firestore Native (default) database & seeding governance state..."
+echo "[2/5] Provisioning Firestore Native (default) database & seeding Cymbal governance state..."
 if ! gcloud firestore databases describe --database="(default)" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud firestore databases create \
     --database="(default)" \
@@ -66,60 +66,43 @@ if ! gcloud firestore databases describe --database="(default)" --project="${PRO
     --quiet
 fi
 
-PYTHONPATH="${REPO_ROOT}" GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" SCAPE_USE_GCLOUD_CLI_AUTH=true "${PYTHON_BIN}" - <<'PY'
+PYTHONPATH="${REPO_ROOT}" GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" CYMBAL_USE_GCLOUD_CLI_AUTH=true "${PYTHON_BIN}" - <<'PY'
 import datetime
 import os
 from google.cloud import firestore
-from scape_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
 creds, _ = get_gcp_credentials(project_id)
 db = firestore.Client(project=project_id, database="(default)", credentials=creds)
 now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-agents_ref = db.collection("scape_agents")
-copilot_doc = agents_ref.document("devx-incident-copilot")
-if not copilot_doc.get().exists:
-    copilot_doc.set(
+agents_ref = db.collection("cymbal_agents")
+agent_doc = agents_ref.document("cymbal-ops-release-agent")
+if not agent_doc.get().exists:
+    agent_doc.set(
         {
-            "agent_id": "devx-incident-copilot",
-            "display_name": "DevX Platform & Incident Operations Copilot",
+            "agent_id": "cymbal-ops-release-agent",
+            "display_name": "Cymbal Core Operations & Release Agent",
             "status": "ACTIVE",
-            "aegis_level": "AG3",
-            "clara_intake_id": "CLARA-2026-0841",
-            "devhub_app_id": "DEVHUB-SCAPE-992",
-            "behavior_score": 58.0,
-            "active_prompt_version": "v1",
-            "eval_gate": "pending_optimization",
-            "updated_at": now_iso,
-        }
-    )
-
-cymbal_doc = agents_ref.document("cymbal-incident-copilot")
-if not cymbal_doc.get().exists:
-    cymbal_doc.set(
-        {
-            "agent_id": "cymbal-incident-copilot",
-            "display_name": "Cymbal Core Operations & Release Copilot",
-            "status": "ACTIVE",
-            "aegis_level": "SNT-3",
-            "clara_intake_id": "ATLAS-2026-0412",
-            "devhub_app_id": "SVC-CYMBAL-401",
-            "behavior_score": 96.0,
+            "risk_tier": "AG3",
+            "intake_id": "ATLAS-2026-0841",
+            "cmdb_app_id": "SVC-CYMBAL-992",
+            "behavior_score": 96.2,
             "active_prompt_version": "v2",
             "eval_gate": "passed",
             "updated_at": now_iso,
         }
     )
 
-wallets_ref = db.collection("scape_wallets")
-wallet_doc = wallets_ref.document("wallet-devx-ops")
+wallets_ref = db.collection("cymbal_wallets")
+wallet_doc = wallets_ref.document("wallet-cymbal-ops")
 if not wallet_doc.get().exists:
     wallet_doc.set(
         {
-            "wallet_id": "wallet-devx-ops",
-            "org": "enterprise-devx",
-            "account": "incident-ops-sandbox",
+            "wallet_id": "wallet-cymbal-ops",
+            "org": "cymbal-communications",
+            "account": "core-ops-release",
             "monthly_cap_nano_usd": 15_000_000_000,
             "spent_nano_usd": 0,
             "reserved_nano_usd": 0,
@@ -129,24 +112,24 @@ if not wallet_doc.get().exists:
             "updated_at": now_iso,
         }
     )
-print("[OK] Firestore scape_agents and scape_wallets verified.")
+print("[OK] Firestore cymbal_agents and cymbal_wallets verified.")
 PY
 
 echo "[3/5] Provisioning BigQuery dataset ${PROJECT_ID}:${BQ_DATASET} and governance tables..."
-PYTHONPATH="${REPO_ROOT}" GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" SCAPE_BQ_DATASET="${BQ_DATASET}" SCAPE_REGION="${REGION}" SCAPE_USE_GCLOUD_CLI_AUTH=true "${PYTHON_BIN}" - <<'PY'
+PYTHONPATH="${REPO_ROOT}" GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" CYMBAL_BQ_DATASET="${BQ_DATASET}" CYMBAL_REGION="${REGION}" CYMBAL_USE_GCLOUD_CLI_AUTH=true "${PYTHON_BIN}" - <<'PY'
 import os
 from google.cloud import bigquery
-from scape_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
-dataset_id = os.environ["SCAPE_BQ_DATASET"]
-region = os.environ["SCAPE_REGION"]
+dataset_id = os.environ["CYMBAL_BQ_DATASET"]
+region = os.environ["CYMBAL_REGION"]
 
 creds, _ = get_gcp_credentials(project_id)
 client = bigquery.Client(project=project_id, credentials=creds)
 ds_ref = bigquery.Dataset(f"{project_id}.{dataset_id}")
 ds_ref.location = region
-ds_ref.labels = {"datacloud": "antigravity", "component": "scape_governance"}
+ds_ref.labels = {"datacloud": "antigravity", "component": "cymbal_governance"}
 client.create_dataset(ds_ref, exists_ok=True)
 
 wallet_schema = [
@@ -158,7 +141,7 @@ wallet_schema = [
     bigquery.SchemaField("wallet_id", "STRING"),
     bigquery.SchemaField("session_id", "STRING"),
     bigquery.SchemaField("trace_id", "STRING"),
-    bigquery.SchemaField("scape_mode", "STRING"),
+    bigquery.SchemaField("architecture_mode", "STRING"),
     bigquery.SchemaField("model_id", "STRING"),
     bigquery.SchemaField("input_tokens", "INT64"),
     bigquery.SchemaField("output_tokens", "INT64"),
@@ -227,15 +210,14 @@ create_or_update_ma_template() {
       --rai-settings-filters="${rai_json}" \
       --template-metadata-log-operations \
       --template-metadata-log-sanitize-operations \
-      --labels="policy_tier=gpp,managed_by=scape_reference" \
+      --labels="policy_tier=gpp,managed_by=cymbal_reference" \
       --quiet >/dev/null
   fi
   echo "[OK] Model Armor template ${tpl_id} (${confidence}, fail-closed) ready."
 }
 
-create_or_update_ma_template "scape-default-medium-gpp" "MEDIUM_AND_ABOVE"
-create_or_update_ma_template "scape-strict-ag3-gpp" "LOW_AND_ABOVE"
-create_or_update_ma_template "scape-devx-default-gpp" "MEDIUM_AND_ABOVE"
+create_or_update_ma_template "cymbal-default-medium-gpp" "MEDIUM_AND_ABOVE"
+create_or_update_ma_template "cymbal-strict-ag3-gpp" "LOW_AND_ABOVE"
 
 CLOUDSDK_API_ENDPOINT_OVERRIDES_MODELARMOR="https://modelarmor.googleapis.com/" gcloud model-armor floorsettings update \
   --full-uri="projects/${PROJECT_ID}/locations/global/floorSetting" \
@@ -250,18 +232,18 @@ CLOUDSDK_API_ENDPOINT_OVERRIDES_MODELARMOR="https://modelarmor.googleapis.com/" 
 
 echo "[OK] Model Armor Global Floor Settings enforced on ${PROJECT_ID}."
 
-echo "[5/5] Provisioning scape-vpc, /26 PSC-I subnet (10.10.1.0/26), and NetworkAttachment..."
-if ! gcloud compute networks describe scape-vpc --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud compute networks create scape-vpc \
+echo "[5/5] Provisioning cymbal-vpc, /26 PSC-I subnet (10.10.1.0/26), and NetworkAttachment..."
+if ! gcloud compute networks describe cymbal-vpc --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute networks create cymbal-vpc \
     --project="${PROJECT_ID}" \
     --subnet-mode=custom \
     --quiet
 fi
 
-if ! gcloud compute networks subnets describe scape-psci-subnet --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud compute networks subnets create scape-psci-subnet \
+if ! gcloud compute networks subnets describe cymbal-psci-subnet --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute networks subnets create cymbal-psci-subnet \
     --project="${PROJECT_ID}" \
-    --network=scape-vpc \
+    --network=cymbal-vpc \
     --region="${REGION}" \
     --range="10.10.1.0/26" \
     --purpose=PRIVATE \
@@ -269,12 +251,12 @@ if ! gcloud compute networks subnets describe scape-psci-subnet --region="${REGI
     --quiet
 fi
 
-if ! gcloud compute network-attachments describe scape-psci-attachment --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud compute network-attachments create scape-psci-attachment \
+if ! gcloud compute network-attachments describe cymbal-psci-attachment --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute network-attachments create cymbal-psci-attachment \
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
     --connection-preference=ACCEPT_AUTOMATIC \
-    --subnets=scape-psci-subnet \
+    --subnets=cymbal-psci-subnet \
     --description="PSC-Interface attachment for Agent Runtime & Agent Gateway" \
     --quiet
 fi

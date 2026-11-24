@@ -17,11 +17,11 @@
 Proves two critical enterprise identity guarantees:
 1. `google_native`: Zero static API keys or sidecar secrets in `os.environ`;
    downstream Cloud Run MCP/A2A calls use platform-minted OIDC / SPIFFE tokens.
-2. `comcast_hybrid`: Enforces `ADR-011` dual-token correlation
+2. `enterprise_hybrid`: Enforces `ADR-011` dual-token correlation
    (`Authorization: Bearer <T-gw>` + `X-User-Authorization: Bearer <T-mcp>`)
    by asserting `T-mcp.azp == T-gw.azp` and `T-mcp.tid == T-gw.tid` with strict
-   algorithm and expiration validation, resolving `ADR-008`'s pairwise `sub`
-   mismatch across Microsoft Entra two-app OBO flows.
+   algorithm and expiration validation, resolving `ADR-008` pairwise `sub`
+   mismatch across external IdP two-app OBO flows.
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ FORBIDDEN_STATIC_SECRET_ENV_NAMES = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "AZURE_OPENAI_API_KEY",
-    "CODEBIG2_SAT_TOKEN",
+    "STATIC_GATEWAY_BEARER_TOKEN",
     "VAULT_TOKEN",
-    "LANGFUSE_SECRET_KEY",
+    "OTLP_COLLECTOR_SECRET_KEY",
 )
 
 EXPECTED_JWT_ALGORITHM = "HS256"
@@ -55,7 +55,7 @@ _OIDC_CACHE_TTL_SECONDS = 2700.0
 
 def _get_obo_verification_secret() -> str:
     global _EPHEMERAL_OBO_SIGNING_KEY
-    env_key = os.getenv("SCAPE_OBO_HMAC_KEY")
+    env_key = os.getenv("CYMBAL_OBO_HMAC_KEY")
     if env_key:
         return env_key
     if _EPHEMERAL_OBO_SIGNING_KEY is None:
@@ -79,17 +79,16 @@ class ContainerIdentityPosture:
 
 def inspect_zero_secret_posture(
     project_id: str | None = None,
-    agent_id: str = "devx-incident-copilot",
+    agent_id: str = "cymbal-ops-release-agent",
     env_mapping: dict[str, str] | None = None,
 ) -> ContainerIdentityPosture:
     """Inspects runtime environment to verify zero static bearer/API secrets exist."""
     env = env_mapping if env_mapping is not None else dict(os.environ)
     leaked = [k for k in FORBIDDEN_STATIC_SECRET_ENV_NAMES if env.get(k)]
-    proj = project_id or env.get("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+    del project_id
+    trust_domain = env.get("CYMBAL_TRUST_DOMAIN", "cymbal-agent-platform.svc.id.goog")
     engine_id = env.get("GOOGLE_CLOUD_AGENT_ENGINE_ID", agent_id)
-    spiffe_id = (
-        f"spiffe://{proj}.svc.id.goog/ns/agent-runtime/sa/{engine_id}"
-    )
+    spiffe_id = f"spiffe://{trust_domain}/ns/agent-runtime/sa/{engine_id}"
     compliant = len(leaked) == 0
     return ContainerIdentityPosture(
         identity_mode="AGENT_IDENTITY_SPIFFE_SVID",
@@ -108,9 +107,9 @@ def inspect_zero_secret_posture(
 
 def mint_demo_adr011_token_pair(
     *,
-    client_azp: str = "entra-app-copilot-client-992",
+    client_azp: str = "cymbal-idp-agent-client-992",
     mcp_azp: str | None = None,
-    tenant_id: str = "tenant-enterprise-01",
+    tenant_id: str = "tenant-cymbal-01",
     gw_pairwise_sub: str = "pairwise-sub-for-gateway-resource-aaa111",
     mcp_pairwise_sub: str = "pairwise-sub-for-mcp-resource-bbb222",
     ttl_seconds: int = 900,
@@ -120,8 +119,8 @@ def mint_demo_adr011_token_pair(
     secret = _get_obo_verification_secret()
     t_gw = jwt.encode(
         {
-            "iss": f"https://login.enterprise-idp.example/{tenant_id}/v2.0",
-            "aud": "api://flow-intel-gateway",
+            "iss": f"https://login.cymbal-idp.example/{tenant_id}/v2.0",
+            "aud": "api://cymbal-ai-gateway",
             "sub": gw_pairwise_sub,
             "azp": client_azp,
             "tid": tenant_id,
@@ -134,8 +133,8 @@ def mint_demo_adr011_token_pair(
     )
     t_mcp = jwt.encode(
         {
-            "iss": f"https://login.enterprise-idp.example/{tenant_id}/v2.0",
-            "aud": "api://scape-devx-mcp-server",
+            "iss": f"https://login.cymbal-idp.example/{tenant_id}/v2.0",
+            "aud": "api://cymbal-ops-mcp-server",
             "sub": mcp_pairwise_sub,
             "azp": mcp_azp or client_azp,
             "tid": tenant_id,
@@ -157,7 +156,7 @@ def verify_adr011_dual_tokens(
 
     Explicitly rejects `alg=none`, enforces hardcoded `EXPECTED_JWT_ALGORITHM`,
     validates `exp`, demonstrates why legacy `ADR-008` (`sub == sub`) fails on
-    Microsoft Entra pairwise subjects, and enforces `azp` + `tid` correlation.
+    pairwise subjects, and enforces `azp` + `tid` correlation.
     """
     raw_gw = authorization_bearer.removeprefix("Bearer ").strip()
     raw_mcp = x_user_authorization_bearer.removeprefix("Bearer ").strip()

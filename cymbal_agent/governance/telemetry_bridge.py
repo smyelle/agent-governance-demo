@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified W3C Traceparent plane & optional Langfuse OTLP dual-exporter.
+"""Unified W3C Traceparent plane & optional OTLP dual-exporter.
 
 Joins Gateway policy decisions, Model Armor sanitization spans, ADK 2.0 graph
 nodes, MCP/A2A downstream hops, and nano-USD Wallet settlements into a single
 W3C `trace_id` + `session_id` trace waterfall, writing directly to Google Cloud
-Trace (`cloudtrace.googleapis.com`) and optionally dual-exporting OTLP HTTP to
-`LANGFUSE_OTLP_ENDPOINT` in `comcast_hybrid` mode.
+Trace (`cloudtrace.googleapis.com`) and optionally dual-exporting OTLP headers
+in `enterprise_hybrid` mode.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import uuid
 from google.cloud import trace_v2
 from google.protobuf import wrappers_pb2
 
-from scape_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 
 def _truncatable(text: str, limit: int = 256) -> trace_v2.TruncatableString:
@@ -50,13 +50,16 @@ class UnifiedTraceBridge:
         project_id: str | None = None,
         cloud_trace_enabled: bool | None = None,
     ) -> None:
-        self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+        self.project_id = (
+            project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
+        )
         if cloud_trace_enabled is None:
-            self.cloud_trace_enabled = os.getenv("SCAPE_CLOUD_TRACE_LIVE", "true").lower() in {
-                "1",
-                "true",
-                "yes",
-            }
+            flag = (
+                os.getenv("CYMBAL_CLOUD_TRACE_LIVE")
+                or os.getenv("SCAPE_CLOUD_TRACE_LIVE")
+                or "true"
+            )
+            self.cloud_trace_enabled = flag.lower() in {"1", "true", "yes"}
         else:
             self.cloud_trace_enabled = cloud_trace_enabled
         self._lock = threading.Lock()
@@ -93,20 +96,20 @@ class UnifiedTraceBridge:
         stage: str,
         duration_ms: float,
         attributes: dict[str, Any] | None = None,
-        scape_mode: str = "google_native",
-        devhub_app_id: str = "DEVHUB-SCAPE-992",
+        architecture_mode: str = "google_native",
+        cmdb_app_id: str = "SVC-CYMBAL-992",
     ) -> dict[str, Any]:
         span_id = uuid.uuid4().hex[:16]
         end_epoch = time.time()
         start_epoch = max(0.0, end_epoch - (max(duration_ms, 0.5) / 1000.0))
         attrs = dict(attributes or {})
         attrs.setdefault("gen_ai.system", "gcp.vertex.agent")
-        attrs.setdefault("scape.session_id", session_id)
-        attrs.setdefault("scape.mode", scape_mode)
-        attrs.setdefault("comcast.devhub_app_id", devhub_app_id)
-        if scape_mode == "comcast_hybrid":
-            attrs["http.header.X-Langfuse-Session-Id"] = session_id
-            attrs["http.header.X-Project-Id"] = devhub_app_id
+        attrs.setdefault("cymbal.session_id", session_id)
+        attrs.setdefault("cymbal.architecture_mode", architecture_mode)
+        attrs.setdefault("cymbal.cmdb_app_id", cmdb_app_id)
+        if architecture_mode == "enterprise_hybrid":
+            attrs["http.header.X-Trace-Session-Id"] = session_id
+            attrs["http.header.X-Service-App-Id"] = cmdb_app_id
 
         span_entry = {
             "trace_id": trace_id,
@@ -126,8 +129,8 @@ class UnifiedTraceBridge:
                 trace_bundle = {
                     "trace_id": trace_id,
                     "session_id": session_id,
-                    "scape_mode": scape_mode,
-                    "devhub_app_id": devhub_app_id,
+                    "architecture_mode": architecture_mode,
+                    "cmdb_app_id": cmdb_app_id,
                     "created_at": span_entry["recorded_at"],
                     "spans": [],
                 }

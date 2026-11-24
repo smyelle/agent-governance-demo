@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ADK 2.0 `Workflow` Graph: DevX Platform & Incident Operations Copilot.
+"""ADK 2.0 `Workflow` Graph: Cymbal Core Operations & Release Agent.
 
 Implements every ADK 2.0 (`google-adk >= 2.14.0`) engineering invariant:
 - Graph runtime via `Workflow`, `FunctionNode`, `JoinNode`, and `START`.
-- Parallel 3-way fan-out `(observability_triage_agent, jira_change_agent,
+- Parallel 3-way fan-out `(observability_triage_agent, release_change_agent,
   cmdb_runbook_agent)` immediately followed by `JoinNode(name="correlate_incident_signals")`.
 - Analytical `BuiltInCodeExecutor()` gVisor sandbox node computing z-score and
   p99 latency regression multipliers without external MicroVMs.
@@ -47,28 +47,28 @@ from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 from google.adk.workflow import FunctionNode, JoinNode, START
 import httpx
 
-from scape_agent.governance.gcp_auth import install_local_gcloud_auth_bridge
-from scape_agent.governance.identity_obo import fetch_cloud_run_id_token
-from scape_agent.governance.model_armor_guard import mask_inline_pii
-from scape_agent.governance.plugin import ScapeGovernancePlugin
-from scape_agent.memory.memory_bank import ScopedMemoryBankClient
-from scape_agent.schemas import (
+from cymbal_agent.governance.gcp_auth import install_local_gcloud_auth_bridge
+from cymbal_agent.governance.identity_obo import fetch_cloud_run_id_token
+from cymbal_agent.governance.model_armor_guard import mask_inline_pii
+from cymbal_agent.governance.plugin import CymbalGovernancePlugin
+from cymbal_agent.memory.memory_bank import ScopedMemoryBankClient
+from cymbal_agent.schemas import (
     ApprovalGatePayload,
     CmdbRunbookSignal,
     CorrelatedSignalsBundle,
     IncidentAssessment,
     IntakeContextOutput,
-    JiraChangeSignal,
     ObservabilitySignal,
     PostmortemMemoryRecord,
+    ReleaseChangeSignal,
     RemediationOutcome,
     RollbackApprovalDecision,
     SandboxAnomalyOutput,
 )
-from services.devx_mcp_server.server import (
-    check_jira_and_change_freeze as local_check_jira,
-    lookup_devhub_and_runbook as local_lookup_cmdb,
-    query_conduit_metrics as local_query_metrics,
+from services.cymbal_ops_mcp_server.server import (
+    check_release_and_change_freeze as local_check_release,
+    lookup_service_topology_and_runbook as local_lookup_cmdb,
+    query_golden_signal_metrics as local_query_metrics,
 )
 
 # Enforce ADK 2.0 Enterprise Gemini transport defaults
@@ -86,7 +86,7 @@ def _build_gemini_llm(model_id: str | None = None) -> Gemini:
     """Builds a Gemini 3.x LLM bound to Vertex AI global endpoint."""
     return Gemini(
         model=model_id or DEFAULT_GEMINI_MODEL,
-        client_kwargs={"location": os.getenv("SCAPE_GEMINI_LOCATION", "global")},
+        client_kwargs={"location": os.getenv("CYMBAL_GEMINI_LOCATION", "global")},
     )
 
 
@@ -121,12 +121,15 @@ def build_remote_mcp_toolset(
     tool_filter: list[str] | None = None,
 ) -> McpToolset:
     """Constructs an ADK 2.0 McpToolset with Cloud Run OIDC header injection."""
-    resolved_url = mcp_url or os.getenv(
-        "SCAPE_MCP_URL", "https://devx-mcp-server.run.app/mcp"
+    resolved_url = (
+        mcp_url
+        or os.getenv("CYMBAL_MCP_URL")
+        or os.getenv("SCAPE_MCP_URL")
+        or "https://cymbal-ops-mcp-server.run.app/mcp"
     )
 
     def _oidc_headers(_readonly_ctx: Any) -> dict[str, str]:
-        headers = {"X-Scape-Agent-Id": "devx-incident-copilot"}
+        headers = {"X-Cymbal-Agent-Id": "cymbal-ops-release-agent"}
         tok = fetch_cloud_run_id_token(resolved_url)
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
@@ -158,15 +161,15 @@ def _infer_incident_target(raw_text: str, state: Any) -> tuple[str, str, str]:
         elif "4099" in inc_id or "EDGE" in text_upper or "PII" in text_upper:
             svc = "edge-session-ingestor"
         else:
-            svc = "flow-intel-api"
+            svc = "cymbal-release-api"
 
     if not app_id:
         if svc == "billing-webhook-router":
-            app_id = "DEVHUB-BILL-710"
+            app_id = "SVC-CYMBAL-710"
         elif svc == "edge-session-ingestor":
-            app_id = "DEVHUB-EDGE-305"
+            app_id = "SVC-CYMBAL-305"
         else:
-            app_id = "DEVHUB-SCAPE-992"
+            app_id = "SVC-CYMBAL-992"
 
     return inc_id, svc, app_id
 
@@ -185,7 +188,7 @@ def compute_deterministic_anomaly_stats(samples: list[float]) -> tuple[float, fl
     return z_score, mult
 
 
-def build_scape_workflow(
+def build_cymbal_workflow(
     *,
     memory_bank: ScopedMemoryBankClient | None = None,
     use_live_llm: bool = True,
@@ -193,7 +196,7 @@ def build_scape_workflow(
     mcp_fault_injector: Any = None,
     a2a_client_override: Any = None,
 ) -> Workflow:
-    """Builds the typed ADK 2.0 Incident Operations Copilot Workflow graph."""
+    """Builds the typed ADK 2.0 Cymbal Core Operations & Release Agent Workflow graph."""
     mem_client = memory_bank or ScopedMemoryBankClient()
 
     async def intake_and_memory_node(
@@ -235,17 +238,18 @@ def build_scape_workflow(
                 "app_id": app_id,
                 "sanitized_operator_prompt": sanitized_prompt,
                 "memory_context": mem_text,
+                "recalled_facts_count": len(memories),
                 "pii_masked_inline": bool(pii_types),
             },
         )
         yield Event(output=out)
 
     async def observability_triage_fn(ctx: Context) -> ObservabilitySignal:
-        svc = str(ctx.state.get("service_name") or "flow-intel-api")
+        svc = str(ctx.state.get("service_name") or "cymbal-release-api")
         inc_id = str(ctx.state.get("incident_id") or "INC-4092")
         try:
             if mcp_fault_injector is not None:
-                raw_json = mcp_fault_injector("query_conduit_metrics", {"service_name": svc})
+                raw_json = mcp_fault_injector("query_golden_signal_metrics", {"service_name": svc})
             else:
                 raw_json = local_query_metrics(service_name=svc, window_minutes=30)
             d = json.loads(raw_json)
@@ -280,49 +284,49 @@ def build_scape_workflow(
                 active_release="unknown",
                 prior_healthy_release="unknown",
                 degraded_503=True,
-                summary=f"DEGRADED_503: Conduit metrics MCP tool unavailable ({exc}); rely on Jira/CMDB/Memory signals.",
+                summary=f"DEGRADED_503: Golden-signal metrics MCP tool unavailable ({exc}); rely on Release/CMDB/Memory signals.",
             )
 
-    async def jira_change_fn(ctx: Context) -> JiraChangeSignal:
-        svc = str(ctx.state.get("service_name") or "flow-intel-api")
+    async def release_change_fn(ctx: Context) -> ReleaseChangeSignal:
+        svc = str(ctx.state.get("service_name") or "cymbal-release-api")
         if mcp_fault_injector is not None:
-            raw_json = mcp_fault_injector("check_jira_and_change_freeze", {"service_name": svc})
+            raw_json = mcp_fault_injector("check_release_and_change_freeze", {"service_name": svc})
         else:
-            raw_json = local_check_jira(service_name=svc)
+            raw_json = local_check_release(service_name=svc)
         d = json.loads(raw_json)
-        return JiraChangeSignal(
+        return ReleaseChangeSignal(
             service_name=svc,
             deployed_version=str(d["deployed_version"]),
             rollback_target_version=str(d["rollback_target_version"]),
-            jira_ticket=str(d["jira_ticket"]),
+            release_ticket=str(d["release_ticket"]),
             recent_pr=str(d["recent_pr"]),
             change_freeze_active=bool(d["change_freeze_active"]),
             freeze_window_name=str(d.get("freeze_window_name", "None")),
             vp_exception_required=bool(d.get("vp_exception_required", False)),
             summary=(
-                f"Jira {d['jira_ticket']}: deployed {d['deployed_version']} (rollback target {d['rollback_target_version']}); "
+                f"Release {d['release_ticket']}: deployed {d['deployed_version']} (rollback target {d['rollback_target_version']}); "
                 f"change_freeze_active={d['change_freeze_active']} ({d.get('freeze_window_name', 'None')})."
             ),
         )
 
     async def cmdb_runbook_fn(ctx: Context) -> CmdbRunbookSignal:
-        app_id = str(ctx.state.get("app_id") or "DEVHUB-SCAPE-992")
+        app_id = str(ctx.state.get("app_id") or "SVC-CYMBAL-992")
         if mcp_fault_injector is not None:
-            raw_json = mcp_fault_injector("lookup_devhub_and_runbook", {"app_id": app_id})
+            raw_json = mcp_fault_injector("lookup_service_topology_and_runbook", {"app_id": app_id})
         else:
             raw_json = local_lookup_cmdb(app_id=app_id)
         d = json.loads(raw_json)
         return CmdbRunbookSignal(
             app_id=str(d["app_id"]),
             owning_squad=str(d["owning_squad"]),
-            clara_intake_id=str(d["clara_intake_id"]),
-            aegis_risk_tier=str(d["aegis_risk_tier"]),
+            intake_id=str(d["intake_id"]),
+            risk_tier=str(d["risk_tier"]),
             downstream_blast_radius=[str(x) for x in d.get("downstream_blast_radius", [])],
-            ama_runbook_id=str(d["ama_runbook_id"]),
-            ama_runbook_steps=[str(x) for x in d.get("ama_runbook_steps", [])],
+            runbook_id=str(d["runbook_id"]),
+            runbook_steps=[str(x) for x in d.get("runbook_steps", [])],
             summary=(
-                f"{d['app_id']} ({d['aegis_risk_tier']}, intake {d['clara_intake_id']}), "
-                f"blast_radius={d.get('downstream_blast_radius', [])}, runbook={d['ama_runbook_id']}."
+                f"{d['app_id']} ({d['risk_tier']}, intake {d['intake_id']}), "
+                f"blast_radius={d.get('downstream_blast_radius', [])}, runbook={d['runbook_id']}."
             ),
         )
 
@@ -332,40 +336,40 @@ def build_scape_workflow(
             model=_build_gemini_llm(),
             mode="single_turn",
             instruction=(
-                "Call `query_conduit_metrics` for service `{service_name?}` (window_minutes=30) "
+                "Call `query_golden_signal_metrics` for service `{service_name?}` (window_minutes=30) "
                 "and return the structured ObservabilitySignal."
             ),
-            tools=[build_remote_mcp_toolset(tool_filter=["query_conduit_metrics"])],
+            tools=[build_remote_mcp_toolset(tool_filter=["query_golden_signal_metrics"])],
             output_schema=ObservabilitySignal,
             output_key="obs_signal",
         )
-        jira_node: Any = Agent(
-            name="jira_change_agent",
+        release_node: Any = Agent(
+            name="release_change_agent",
             model=_build_gemini_llm(),
             mode="single_turn",
             instruction=(
-                "Call `check_jira_and_change_freeze` for service `{service_name?}` "
-                "and return the structured JiraChangeSignal."
+                "Call `check_release_and_change_freeze` for service `{service_name?}` "
+                "and return the structured ReleaseChangeSignal."
             ),
-            tools=[build_remote_mcp_toolset(tool_filter=["check_jira_and_change_freeze"])],
-            output_schema=JiraChangeSignal,
-            output_key="jira_signal",
+            tools=[build_remote_mcp_toolset(tool_filter=["check_release_and_change_freeze"])],
+            output_schema=ReleaseChangeSignal,
+            output_key="release_signal",
         )
         cmdb_node: Any = Agent(
             name="cmdb_runbook_agent",
             model=_build_gemini_llm(),
             mode="single_turn",
             instruction=(
-                "Call `lookup_devhub_and_runbook` for app_id `{app_id?}` "
+                "Call `lookup_service_topology_and_runbook` for app_id `{app_id?}` "
                 "and return the structured CmdbRunbookSignal."
             ),
-            tools=[build_remote_mcp_toolset(tool_filter=["lookup_devhub_and_runbook"])],
+            tools=[build_remote_mcp_toolset(tool_filter=["lookup_service_topology_and_runbook"])],
             output_schema=CmdbRunbookSignal,
             output_key="cmdb_signal",
         )
     else:
         obs_node = FunctionNode(func=observability_triage_fn, name="observability_triage_agent")
-        jira_node = FunctionNode(func=jira_change_fn, name="jira_change_agent")
+        release_node = FunctionNode(func=release_change_fn, name="release_change_agent")
         cmdb_node = FunctionNode(func=cmdb_runbook_fn, name="cmdb_runbook_agent")
 
     correlate_join = JoinNode(name="correlate_incident_signals")
@@ -377,8 +381,8 @@ def build_scape_workflow(
         obs = ObservabilitySignal.model_validate(
             joined.get("observability_triage_agent") or ctx.state.get("obs_signal")
         )
-        jira = JiraChangeSignal.model_validate(
-            joined.get("jira_change_agent") or ctx.state.get("jira_signal")
+        rel = ReleaseChangeSignal.model_validate(
+            joined.get("release_change_agent") or ctx.state.get("release_signal")
         )
         cmdb = CmdbRunbookSignal.model_validate(
             joined.get("cmdb_runbook_agent") or ctx.state.get("cmdb_signal")
@@ -389,7 +393,7 @@ def build_scape_workflow(
             service_name=obs.service_name,
             app_id=cmdb.app_id,
             observability=obs,
-            jira_change=jira,
+            release_change=rel,
             cmdb_runbook=cmdb,
             sandbox_code_prompt=(
                 f"Compute statistical z-score and p99 regression multiplier for latency samples "
@@ -463,20 +467,20 @@ def build_scape_workflow(
             active_prompt = load_active_synthesizer_instruction(ctx)
             is_v2 = "Change-Freeze Verification Gate" in active_prompt
 
-            risk: Any = "AG3" if bundle.cmdb_runbook.aegis_risk_tier == "AG3" else "AG1"
+            risk: Any = "AG3" if bundle.cmdb_runbook.risk_tier == "AG3" else "AG1"
             route: Any = "remediation_ag3" if risk == "AG3" else "info_or_ag1"
-            freeze_hit = bundle.jira_change.change_freeze_active
+            freeze_hit = bundle.release_change.change_freeze_active
 
             if freeze_hit and is_v2:
                 plan = (
-                    f"HOLD FOR VP CHANGE-FREEZE EXCEPTION: Active {bundle.jira_change.freeze_window_name} "
-                    f"detected on {bundle.jira_change.jira_ticket}. Require VP exception ticket before "
-                    f"canary rollback {bundle.jira_change.deployed_version} -> {bundle.jira_change.rollback_target_version}."
+                    f"HOLD FOR VP CHANGE-FREEZE EXCEPTION: Active {bundle.release_change.freeze_window_name} "
+                    f"detected on {bundle.release_change.release_ticket}. Require VP exception ticket before "
+                    f"canary rollback {bundle.release_change.deployed_version} -> {bundle.release_change.rollback_target_version}."
                 )
             else:
                 plan = (
-                    f"Execute immediate canary rollback {bundle.jira_change.deployed_version} -> "
-                    f"{bundle.jira_change.rollback_target_version} on {bundle.service_name}."
+                    f"Execute immediate canary rollback {bundle.release_change.deployed_version} -> "
+                    f"{bundle.release_change.rollback_target_version} on {bundle.service_name}."
                 )
 
             assessment = IncidentAssessment(
@@ -485,21 +489,21 @@ def build_scape_workflow(
                 app_id=bundle.app_id,
                 root_cause_summary=(
                     f"Correlated regression on {bundle.service_name} ({bundle.app_id}) after "
-                    f"{bundle.jira_change.deployed_version}: {bundle.observability.summary}"
+                    f"{bundle.release_change.deployed_version}: {bundle.observability.summary}"
                 ),
                 risk_level=risk,
                 recommended_route=route,
                 change_freeze_detected=freeze_hit if is_v2 else False,
                 vp_exception_required=(freeze_hit and is_v2),
                 degraded_telemetry_mode=bundle.observability.degraded_503 if is_v2 else False,
-                target_rollback_from=bundle.jira_change.deployed_version,
-                target_rollback_to=bundle.jira_change.rollback_target_version,
+                target_rollback_from=bundle.release_change.deployed_version,
+                target_rollback_to=bundle.release_change.rollback_target_version,
                 remediation_plan=plan,
                 citations=[
                     bundle.incident_id,
                     bundle.app_id,
-                    bundle.jira_change.jira_ticket,
-                    bundle.jira_change.deployed_version,
+                    bundle.release_change.release_ticket,
+                    bundle.release_change.deployed_version,
                 ],
             )
             ctx.state["incident_assessment"] = assessment.model_dump()
@@ -533,7 +537,9 @@ def build_scape_workflow(
         func=route_assessment_fn, name="route_incident_assessment"
     )
 
-    async def aegis_ag3_approval_gate(ctx: Context) -> AsyncGenerator[Event | RequestInput, None]:
+    async def sentinel_ag3_approval_gate(
+        ctx: Context,
+    ) -> AsyncGenerator[Event | RequestInput, None]:
         assessment = IncidentAssessment.model_validate(ctx.state["incident_assessment"])
         bundle = CorrelatedSignalsBundle.model_validate(ctx.state["correlated_bundle_dict"])
         attempt = int(ctx.state.get("ag3_gate_attempt", 1))
@@ -550,14 +556,14 @@ def build_scape_workflow(
                 risk_level=assessment.risk_level,
                 from_version=assessment.target_rollback_from,
                 to_version=assessment.target_rollback_to,
-                change_freeze_active=bundle.jira_change.change_freeze_active,
-                vp_exception_required=bundle.jira_change.vp_exception_required,
+                change_freeze_active=bundle.release_change.change_freeze_active,
+                vp_exception_required=bundle.release_change.vp_exception_required,
                 remediation_plan=assessment.remediation_plan,
             )
             yield RequestInput(
                 interrupt_id=interrupt_id,
                 message=(
-                    f"AEGIS AG3 Human Approval Required for {assessment.incident_id}: "
+                    f"SENTINEL AG3 Human Approval Required for {assessment.incident_id}: "
                     f"Rollback {assessment.service_name} ({assessment.target_rollback_from} -> {assessment.target_rollback_to})."
                 ),
                 payload=gate_payload.model_dump(),
@@ -571,7 +577,7 @@ def build_scape_workflow(
         next_route = "approved" if decision.approved else "rejected"
         yield Event(
             message=(
-                f"[AEGIS AG3 Gate] Decision={next_route.upper()} by {decision.approver_principal} "
+                f"[SENTINEL AG3 Gate] Decision={next_route.upper()} by {decision.approver_principal} "
                 f"(reason: {decision.reason})."
             ),
             route=next_route,
@@ -579,8 +585,8 @@ def build_scape_workflow(
         )
 
     approval_gate_node = FunctionNode(
-        func=aegis_ag3_approval_gate,
-        name="aegis_ag3_approval_gate",
+        func=sentinel_ag3_approval_gate,
+        name="sentinel_ag3_approval_gate",
         rerun_on_resume=True,
     )
 
@@ -611,9 +617,9 @@ def build_scape_workflow(
                             "to_version": assessment.target_rollback_to,
                             "approval_id": approval_id,
                             "approver_principal": decision.approver_principal,
-                            "change_freeze_active": bundle.jira_change.change_freeze_active,
+                            "change_freeze_active": bundle.release_change.change_freeze_active,
                             "vp_exception_ticket": decision.vp_exception_ticket
-                            or ("VP-EXC-4095" if bundle.jira_change.change_freeze_active else None),
+                            or ("VP-EXC-4095" if bundle.release_change.change_freeze_active else None),
                         }
                     },
                 }
@@ -623,12 +629,16 @@ def build_scape_workflow(
         if a2a_client_override is not None:
             resp_json = await a2a_client_override(rpc_body, approval_id)
         else:
-            a2a_base = os.getenv("SCAPE_A2A_URL", "").rstrip("/")
+            a2a_base = (
+                os.getenv("CYMBAL_A2A_URL") or os.getenv("SCAPE_A2A_URL") or ""
+            ).rstrip("/")
             if a2a_base and "run.app" in a2a_base and "remediation-a2a-agent.run.app" not in a2a_base:
                 headers = {
-                    "X-Scape-AG3-Approval-Id": approval_id,
-                    "X-Scape-Caller-Identity": str(
-                        ctx.state.get("spiffe_id", "spiffe://agent-identity/devx-incident-copilot")
+                    "X-Cymbal-AG3-Approval-Id": approval_id,
+                    "X-Cymbal-Caller-Identity": str(
+                        ctx.state.get(
+                            "spiffe_id", "spiffe://agent-identity/cymbal-ops-release-agent"
+                        )
                     ),
                 }
                 tok = fetch_cloud_run_id_token(a2a_base)
@@ -639,12 +649,12 @@ def build_scape_workflow(
                     resp.raise_for_status()
                     resp_json = resp.json()
             else:
-                from services.remediation_a2a_agent.app import handle_a2a_rpc, JsonRpcA2ARequest
+                from services.remediation_a2a_agent.app import JsonRpcA2ARequest, handle_a2a_rpc
 
                 resp_json = await handle_a2a_rpc(
                     JsonRpcA2ARequest.model_validate(rpc_body),
-                    x_scape_ag3_approval_id=approval_id,
-                    x_scape_caller_identity="spiffe://agent-identity/devx-incident-copilot",
+                    x_cymbal_ag3_approval_id=approval_id,
+                    x_cymbal_caller_identity="spiffe://agent-identity/cymbal-ops-release-agent",
                 )
 
         result = resp_json.get("result", {})
@@ -761,7 +771,7 @@ def build_scape_workflow(
         pre_synth_chain: tuple[Any, ...] = (
             START,
             intake_fn_node,
-            (obs_node, jira_node, cmdb_node),
+            (obs_node, release_node, cmdb_node),
             correlate_join,
             normalize_signals_node,
             gvisor_code_agent,
@@ -777,7 +787,7 @@ def build_scape_workflow(
         pre_synth_chain = (
             START,
             intake_fn_node,
-            (obs_node, jira_node, cmdb_node),
+            (obs_node, release_node, cmdb_node),
             correlate_join,
             normalize_signals_node,
             finalize_sandbox_node,
@@ -790,10 +800,10 @@ def build_scape_workflow(
         )
 
     return Workflow(
-        name="scape_devx_incident_copilot",
+        name="cymbal_ops_release_agent",
         description=(
-            "Enterprise DevX & Incident Operations Copilot built on ADK 2.0 Workflow graph, "
-            "parallel MCP triage, gVisor code execution, resumable AEGIS AG3 HITL, A2A v1.0 "
+            "Cymbal Core Operations & Release Agent built on ADK 2.0 Workflow graph, "
+            "parallel MCP triage, gVisor code execution, resumable SENTINEL AG3 HITL, A2A v1.0 "
             "remediation, and JWT-scoped Vertex AI Memory Bank."
         ),
         edges=[
@@ -812,10 +822,10 @@ def build_scape_workflow(
     )
 
 
-governance_plugin = ScapeGovernancePlugin()
-root_agent = build_scape_workflow(use_live_llm=True, use_remote_mcp=False)
+governance_plugin = CymbalGovernancePlugin()
+root_agent = build_cymbal_workflow(use_live_llm=True, use_remote_mcp=False)
 app = App(
-    name="scape_devx_copilot",
+    name="cymbal_ops_release_app",
     root_agent=root_agent,
     resumability_config=ResumabilityConfig(is_resumable=True),
     plugins=[governance_plugin],

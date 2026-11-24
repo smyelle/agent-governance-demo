@@ -52,9 +52,9 @@ for sa_role in \
     --quiet >/dev/null
 done
 
-echo "[1/4] Deploying IAM-authenticated DevX Domain MCP Server (devx-mcp-server) to Cloud Run..."
-gcloud run deploy devx-mcp-server \
-  --source="${REPO_ROOT}/services/devx_mcp_server" \
+echo "[1/4] Deploying IAM-authenticated Cymbal Operations MCP Server (cymbal-ops-mcp-server) to Cloud Run..."
+gcloud run deploy cymbal-ops-mcp-server \
+  --source="${REPO_ROOT}/services/cymbal_ops_mcp_server" \
   --region="${REGION}" \
   --project="${PROJECT_ID}" \
   --no-allow-unauthenticated \
@@ -64,9 +64,9 @@ gcloud run deploy devx-mcp-server \
   --max-instances=5 \
   --quiet
 
-MCP_BASE_URL="$(gcloud run services describe devx-mcp-server --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
+MCP_BASE_URL="$(gcloud run services describe cymbal-ops-mcp-server --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
 MCP_URL="${MCP_BASE_URL}/mcp"
-echo "[OK] DevX MCP Server deployed at ${MCP_URL}"
+echo "[OK] Cymbal Operations MCP Server deployed at ${MCP_URL}"
 
 echo "[2/4] Deploying IAM-authenticated Release Remediation A2A v1.0 Agent (remediation-a2a-agent) to Cloud Run..."
 gcloud run deploy remediation-a2a-agent \
@@ -84,15 +84,14 @@ A2A_BASE_URL="$(gcloud run services describe remediation-a2a-agent --region="${R
 gcloud run services update remediation-a2a-agent \
   --region="${REGION}" \
   --project="${PROJECT_ID}" \
-  --set-env-vars="SCAPE_A2A_URL=${A2A_BASE_URL}" \
+  --set-env-vars="CYMBAL_A2A_URL=${A2A_BASE_URL}" \
   --quiet >/dev/null
 echo "[OK] Remediation A2A Agent deployed at ${A2A_BASE_URL}"
 
 echo "[3/4] Granting least-privilege roles/run.invoker bindings (no public allUsers)..."
-COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 AIPLATFORM_SA="service-${PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
 
-for svc in devx-mcp-server remediation-a2a-agent; do
+for svc in cymbal-ops-mcp-server remediation-a2a-agent; do
   gcloud run services add-iam-policy-binding "${svc}" \
     --region="${REGION}" \
     --project="${PROJECT_ID}" \
@@ -119,7 +118,7 @@ import json
 spec = {
     "tools": [
         {
-            "name": "query_conduit_metrics",
+            "name": "query_golden_signal_metrics",
             "description": "Read-only query of golden-signal p99 latency, error rate, and stream saturation metrics.",
             "inputSchema": {
                 "type": "object",
@@ -130,7 +129,7 @@ spec = {
                 "required": ["service_name"]
             },
             "annotations": {
-                "title": "Query Conduit Metrics",
+                "title": "Query Golden Signal Metrics",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -138,15 +137,15 @@ spec = {
             }
         },
         {
-            "name": "check_jira_and_change_freeze",
-            "description": "Read-only lookup of recent deployments, PRs, and active enterprise change-freeze windows.",
+            "name": "check_release_and_change_freeze",
+            "description": "Read-only lookup of recent deployments, PRs, and active Cymbal change-freeze windows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"service_name": {"type": "string"}},
                 "required": ["service_name"]
             },
             "annotations": {
-                "title": "Check Jira and Change Freeze",
+                "title": "Check Release and Change Freeze",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -154,15 +153,15 @@ spec = {
             }
         },
         {
-            "name": "lookup_devhub_and_runbook",
-            "description": "Read-only lookup of service ownership, blast radius, AEGIS risk tier, and runbook.",
+            "name": "lookup_service_topology_and_runbook",
+            "description": "Read-only lookup of ServiceAtlas CMDB ownership, blast radius, SENTINEL risk tier, and OpsWiki runbook.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"app_id": {"type": "string"}},
                 "required": ["app_id"]
             },
             "annotations": {
-                "title": "Lookup DevHub CMDB and Runbook",
+                "title": "Lookup ServiceAtlas CMDB and Runbook",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -210,28 +209,28 @@ print(json.dumps(spec))
 PY
 )"
 
-if gcloud agent-registry services describe scape-devx-mcp-server --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud agent-registry services update scape-devx-mcp-server \
+if gcloud agent-registry services describe cymbal-ops-mcp-server --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud agent-registry services update cymbal-ops-mcp-server \
     --location="${REGION}" \
     --project="${PROJECT_ID}" \
-    --display-name="SCAPE DevX Domain MCP Server" \
-    --description="Governed MCP StreamableHTTP server exposing Conduit, Jira Change-Freeze, and DevHub CMDB tools with explicit readOnlyHint/destructiveHint annotations." \
+    --display-name="Cymbal Core Operations MCP Server" \
+    --description="Governed MCP StreamableHTTP server exposing Golden Signals, Release Change-Freeze, and ServiceAtlas CMDB tools with explicit readOnlyHint/destructiveHint annotations." \
     --interfaces="protocolBinding=JSONRPC,url=${MCP_URL}" \
     --mcp-server-spec-type=tool-spec \
     --mcp-server-spec-content="${MCP_TOOL_SPEC_JSON}" \
     --quiet >/dev/null
 else
-  gcloud agent-registry services create scape-devx-mcp-server \
+  gcloud agent-registry services create cymbal-ops-mcp-server \
     --location="${REGION}" \
     --project="${PROJECT_ID}" \
-    --display-name="SCAPE DevX Domain MCP Server" \
-    --description="Governed MCP StreamableHTTP server exposing Conduit, Jira Change-Freeze, and DevHub CMDB tools with explicit readOnlyHint/destructiveHint annotations." \
+    --display-name="Cymbal Core Operations MCP Server" \
+    --description="Governed MCP StreamableHTTP server exposing Golden Signals, Release Change-Freeze, and ServiceAtlas CMDB tools with explicit readOnlyHint/destructiveHint annotations." \
     --interfaces="protocolBinding=JSONRPC,url=${MCP_URL}" \
     --mcp-server-spec-type=tool-spec \
     --mcp-server-spec-content="${MCP_TOOL_SPEC_JSON}" \
     --quiet >/dev/null
 fi
-echo "[OK] Registered scape-devx-mcp-server in Agent Registry."
+echo "[OK] Registered cymbal-ops-mcp-server in Agent Registry."
 
 A2A_CARD_JSON="$(A2A_BASE_URL="${A2A_BASE_URL}" python3 - <<'PY'
 import json
@@ -240,7 +239,7 @@ base = os.environ["A2A_BASE_URL"].rstrip("/")
 card = {
     "protocolVersion": "0.3.0",
     "name": "remediation-a2a-agent",
-    "description": "Governed A2A Release Remediation Agent executing AG3-approved canary rollbacks and SLO verification.",
+    "description": "Governed A2A Cymbal Release Remediation Agent executing AG3-approved canary rollbacks and SLO verification.",
     "url": f"{base}/a2a",
     "version": "1.0.0",
     "capabilities": {
@@ -254,8 +253,8 @@ card = {
         {
             "id": "execute_canary_rollback",
             "name": "Execute Governed Canary Rollback",
-            "description": "Rolls back degraded service release after human AEGIS AG3 approval.",
-            "tags": ["sre", "rollback", "aegis-ag3"],
+            "description": "Rolls back degraded service release after human SENTINEL AG3 approval.",
+            "tags": ["sre", "rollback", "sentinel-ag3"],
         }
     ],
 }
@@ -271,16 +270,16 @@ fi
 gcloud agent-registry services create remediation-a2a-agent \
   --location="${REGION}" \
   --project="${PROJECT_ID}" \
-  --display-name="Release Remediation A2A Agent" \
-  --description="A2A specialist agent executing AEGIS AG3-approved canary rollbacks." \
+  --display-name="Cymbal Release Remediation A2A Agent" \
+  --description="A2A specialist agent executing SENTINEL AG3-approved canary rollbacks." \
   --agent-spec-type=a2a-agent-card \
   --agent-spec-content="${A2A_CARD_JSON}" \
   --quiet >/dev/null 2>&1 || \
 gcloud agent-registry services create remediation-a2a-agent \
   --location="${REGION}" \
   --project="${PROJECT_ID}" \
-  --display-name="Release Remediation A2A Agent" \
-  --description="A2A specialist agent executing AEGIS AG3-approved canary rollbacks." \
+  --display-name="Cymbal Release Remediation A2A Agent" \
+  --description="A2A specialist agent executing SENTINEL AG3-approved canary rollbacks." \
   --agent-spec-type=no-spec \
   --interfaces="protocolBinding=HTTP_JSON,url=${A2A_BASE_URL}/a2a" \
   --quiet >/dev/null
@@ -294,16 +293,15 @@ from pathlib import Path
 
 env_path = Path(os.environ["REPO_ROOT"]) / ".env"
 lines = env_path.read_text(encoding="utf-8").splitlines()
-kv = {}
 out = []
 for line in lines:
     if "=" in line and not line.strip().startswith("#"):
         k, _ = line.split("=", 1)
-        if k in {"SCAPE_MCP_URL", "SCAPE_A2A_URL"}:
+        if k in {"CYMBAL_MCP_URL", "CYMBAL_A2A_URL"}:
             continue
     out.append(line)
-out.append(f"SCAPE_MCP_URL={os.environ['MCP_URL']}")
-out.append(f"SCAPE_A2A_URL={os.environ['A2A_BASE_URL']}")
+out.append(f"CYMBAL_MCP_URL={os.environ['MCP_URL']}")
+out.append(f"CYMBAL_A2A_URL={os.environ['A2A_BASE_URL']}")
 env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 fi

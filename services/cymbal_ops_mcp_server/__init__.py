@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DevX Domain MCP Server package."""
+"""Cymbal Core Operations MCP Server package."""

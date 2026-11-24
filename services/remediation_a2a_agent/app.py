@@ -15,7 +15,7 @@
 """Standalone A2A v1.0 Release Remediation Agent Service.
 
 Serves `GET /.well-known/agent-card.json` and `POST /a2a` (JSON-RPC 2.0
-`message/send`). Enforces caller identity and human AEGIS AG3 approval metadata
+`message/send`). Enforces caller identity and human SENTINEL AG3 approval metadata
 before executing simulated canary rollback and post-rollback SLO verification.
 """
 
@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import datetime
 import os
-import uuid
 from typing import Any
+import uuid
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 app = FastAPI(
-    title="Release Remediation A2A v1.0 Agent",
+    title="Cymbal Release Remediation A2A v1.0 Agent",
     version="1.0.0",
     docs_url=None,
     redoc_url=None,
@@ -61,7 +61,7 @@ def build_agent_card(base_url: str) -> dict[str, Any]:
     return {
         "protocolVersion": "1.0",
         "name": "remediation-a2a-agent",
-        "displayName": "Release Remediation & Canary Rollback Agent",
+        "displayName": "Cymbal Release Remediation & Canary Rollback Agent",
         "description": "Governed A2A v1.0 specialist agent executing AG3-approved canary rollbacks and Valkey stream trims.",
         "url": f"{base_url.rstrip('/')}/a2a",
         "version": "1.0.0",
@@ -79,8 +79,8 @@ def build_agent_card(base_url: str) -> dict[str, Any]:
             {
                 "id": "execute_canary_rollback",
                 "name": "Execute Governed Canary Rollback",
-                "description": "Rolls back a degraded service release after human AEGIS AG3 approval and verifies SLO recovery.",
-                "tags": ["sre", "rollback", "aegis-ag3", "canary"],
+                "description": "Rolls back a degraded service release after human SENTINEL AG3 approval and verifies SLO recovery.",
+                "tags": ["sre", "rollback", "sentinel-ag3", "canary"],
             },
             {
                 "id": "trim_stream_backlog",
@@ -111,34 +111,38 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/.well-known/agent-card.json")
 async def get_agent_card(request: Request) -> dict[str, Any]:
-    public_url = os.getenv("SCAPE_A2A_URL") or str(request.base_url).rstrip("/")
+    public_url = (
+        os.getenv("CYMBAL_A2A_URL")
+        or os.getenv("SCAPE_A2A_URL")
+        or str(request.base_url).rstrip("/")
+    )
     return build_agent_card(public_url)
 
 
 @app.post("/a2a")
 async def handle_a2a_rpc(
     rpc: JsonRpcA2ARequest,
-    x_scape_ag3_approval_id: str | None = Header(default=None),
-    x_scape_caller_identity: str | None = Header(default=None),
+    x_cymbal_ag3_approval_id: str | None = Header(default=None),
+    x_cymbal_caller_identity: str | None = Header(default=None),
 ) -> dict[str, Any]:
     message = rpc.params.get("message") or {}
     metadata = message.get("metadata") or rpc.params.get("metadata") or {}
 
     raw_payload = dict(metadata.get("rollback_request") or rpc.params.get("rollback_request") or {})
-    if x_scape_ag3_approval_id and "approval_id" not in raw_payload:
-        raw_payload["approval_id"] = x_scape_ag3_approval_id
+    if x_cymbal_ag3_approval_id and "approval_id" not in raw_payload:
+        raw_payload["approval_id"] = x_cymbal_ag3_approval_id
 
     if not raw_payload.get("approval_id"):
         raise HTTPException(
             status_code=403,
-            detail="AEGIS AG3 human approval token missing; remediation denied fail-closed.",
+            detail="SENTINEL AG3 human approval token missing; remediation denied fail-closed.",
         )
 
     cmd = RollbackCommandPayload.model_validate(raw_payload)
     if cmd.change_freeze_active and not cmd.vp_exception_ticket:
         raise HTTPException(
             status_code=403,
-            detail="Active Enterprise Change Freeze requires VP exception ticket before rollback.",
+            detail="Active Cymbal Change Freeze requires VP exception ticket before rollback.",
         )
 
     task_id = f"a2a-rem-{uuid.uuid4().hex[:10]}"
@@ -152,7 +156,9 @@ async def handle_a2a_rpc(
         "active_version_now": cmd.to_version,
         "approval_id": cmd.approval_id,
         "approver_principal": cmd.approver_principal,
-        "caller_spiffe_or_oidc": x_scape_caller_identity or "spiffe://agent-identity/devx-incident-copilot",
+        "caller_spiffe_or_oidc": (
+            x_cymbal_caller_identity or "spiffe://agent-identity/cymbal-ops-release-agent"
+        ),
         "vp_exception_ticket": cmd.vp_exception_ticket,
         "post_rollback_metrics": {
             "p99_latency_ms": 298,

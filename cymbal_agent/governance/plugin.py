@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ADK 2.0 `ScapeGovernancePlugin(BasePlugin)` enforcing unified platform controls.
+"""ADK 2.0 `CymbalGovernancePlugin(BasePlugin)` enforcing unified platform controls.
 
-Enforces across both `SCAPE_MODE=google_native` and `SCAPE_MODE=comcast_hybrid`:
+Enforces across both `CYMBAL_PLATFORM_MODE=google_native` and `enterprise_hybrid`:
 1. Zero-Bypass Kill Switch (`ACTIVE` / `PAUSED` / `DISABLED`) across model, MCP, and A2A.
 2. Zero-Secret `AGENT_IDENTITY` posture + `ADR-011` dual-token `azp` correlation.
 3. Atomic nano-USD Wallet preflight reservation (`HTTP 403 budget_exceeded`) +
@@ -35,16 +35,16 @@ from typing import Any
 from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 
-from scape_agent.governance.identity_obo import (
+from cymbal_agent.governance.identity_obo import (
     inspect_zero_secret_posture,
     verify_adr011_dual_tokens,
 )
-from scape_agent.governance.model_armor_guard import (
+from cymbal_agent.governance.model_armor_guard import (
     FailClosedModelArmorGuard,
     ModelArmorBlockedError,
 )
-from scape_agent.governance.telemetry_bridge import UnifiedTraceBridge
-from scape_agent.governance.wallet_ledger import (
+from cymbal_agent.governance.telemetry_bridge import UnifiedTraceBridge
+from cymbal_agent.governance.wallet_ledger import (
     AtomicWalletAndGovernanceStore,
     DEFAULT_PREFLIGHT_RESERVATION_NANO_USD,
 )
@@ -52,9 +52,9 @@ from scape_agent.governance.wallet_ledger import (
 READ_ONLY_MCP_TOOLS = frozenset(
     {
         "",
-        "query_conduit_metrics",
-        "check_jira_and_change_freeze",
-        "lookup_devhub_and_runbook",
+        "query_golden_signal_metrics",
+        "check_release_and_change_freeze",
+        "lookup_service_topology_and_runbook",
     }
 )
 SCOPED_NON_DESTRUCTIVE_TOOLS = frozenset({"annotate_incident_ticket"})
@@ -77,7 +77,7 @@ class UapToolPolicyDeniedError(PermissionError):
 
 def evaluate_uap_cel_tool_policy(
     tool_name: str,
-    principal: str = "spiffe://comcast-scape.svc.id.goog/ns/agent-runtime/sa/devx-incident-copilot",
+    principal: str = "spiffe://cymbal-agent-platform.svc.id.goog/ns/agent-runtime/sa/cymbal-ops-release-agent",
     read_only_hint: bool | None = None,
     destructive_hint: bool | None = None,
 ) -> dict[str, Any]:
@@ -102,7 +102,7 @@ def evaluate_uap_cel_tool_policy(
             rule_id="deny-destructive-mcp-tools-by-default",
         )
 
-    if clean in SCOPED_NON_DESTRUCTIVE_TOOLS and "devx-incident-copilot" in principal:
+    if clean in SCOPED_NON_DESTRUCTIVE_TOOLS and "cymbal-ops-release-agent" in principal:
         return {
             "allowed": True,
             "rule_id": "allow-scoped-incident-annotation",
@@ -116,19 +116,19 @@ def evaluate_uap_cel_tool_policy(
     )
 
 
-class ScapeGovernancePlugin(BasePlugin):
+class CymbalGovernancePlugin(BasePlugin):
     """Unified ADK 2.0 governance plugin for model, tool, identity, and wallet gates."""
 
     def __init__(
         self,
         *,
-        name: str = "scape_governance_plugin",
+        name: str = "cymbal_governance_plugin",
         store: AtomicWalletAndGovernanceStore | None = None,
         guard: FailClosedModelArmorGuard | None = None,
         tracer: UnifiedTraceBridge | None = None,
-        agent_id: str = "devx-incident-copilot",
-        wallet_id: str = "wallet-devx-ops",
-        scape_mode: str | None = None,
+        agent_id: str = "cymbal-ops-release-agent",
+        wallet_id: str = "wallet-cymbal-ops",
+        architecture_mode: str | None = None,
     ) -> None:
         super().__init__(name=name)
         self.store = store or AtomicWalletAndGovernanceStore()
@@ -136,12 +136,14 @@ class ScapeGovernancePlugin(BasePlugin):
         self.tracer = tracer or UnifiedTraceBridge()
         self.agent_id = agent_id
         self.wallet_id = wallet_id
-        self._default_mode = scape_mode or os.getenv("SCAPE_MODE", "google_native")
+        self._default_mode = architecture_mode or os.getenv(
+            "CYMBAL_PLATFORM_MODE", "google_native"
+        )
 
     def _active_mode(self, state: Any = None) -> str:
-        if state and isinstance(state, dict) and state.get("scape_mode"):
-            return str(state["scape_mode"])
-        return os.getenv("SCAPE_MODE", self._default_mode)
+        if state and isinstance(state, dict) and state.get("architecture_mode"):
+            return str(state["architecture_mode"])
+        return os.getenv("CYMBAL_PLATFORM_MODE", self._default_mode)
 
     def _ensure_trace_id(self, state: Any) -> str:
         try:
@@ -164,7 +166,7 @@ class ScapeGovernancePlugin(BasePlugin):
         state["zero_secret_posture"] = posture.summary
         state["spiffe_id"] = posture.spiffe_id
 
-        if mode == "comcast_hybrid":
+        if mode == "enterprise_hybrid":
             t_gw = state.get("authorization_bearer")
             t_mcp = state.get("x_user_authorization_bearer")
             if t_gw and t_mcp:
@@ -177,12 +179,12 @@ class ScapeGovernancePlugin(BasePlugin):
             span_name="governance.before_run_gate",
             stage="kill_switch_and_identity",
             duration_ms=(time.perf_counter() - t0) * 1000,
-            scape_mode=mode,
+            architecture_mode=mode,
             attributes={
-                "scape.agent_id": self.agent_id,
-                "scape.agent_status": agent_doc.get("status", "ACTIVE"),
-                "scape.spiffe_id": posture.spiffe_id,
-                "scape.zero_secret_compliant": posture.zero_secret_compliant,
+                "cymbal.agent_id": self.agent_id,
+                "cymbal.agent_status": agent_doc.get("status", "ACTIVE"),
+                "cymbal.spiffe_id": posture.spiffe_id,
+                "cymbal.zero_secret_compliant": posture.zero_secret_compliant,
             },
         )
         return None
@@ -234,7 +236,7 @@ class ScapeGovernancePlugin(BasePlugin):
                             span_name="governance.model_armor.prompt_blocked",
                             stage="guardrail_block",
                             duration_ms=(time.perf_counter() - t0) * 1000,
-                            scape_mode=mode,
+                            architecture_mode=mode,
                             attributes={
                                 "guardrail.template": verdict.template_id,
                                 "guardrail.action": verdict.action_taken,
@@ -248,9 +250,9 @@ class ScapeGovernancePlugin(BasePlugin):
                         state["pii_masked_inline"] = True
                     collected_texts.append(part.text)
 
-        # 3. Comcast Hybrid VMG 2.0 Bifrost passthrough: set adjustable Gemini safety_settings=OFF
-        # so Model Armor / VMG 2.0 acts as the single deterministic policy plane without double-filtering.
-        if mode == "comcast_hybrid" and getattr(llm_request, "config", None) is not None:
+        # 3. Hybrid gateway passthrough: set adjustable Gemini safety_settings=OFF so
+        # Model Armor acts as the single deterministic policy plane without double-filtering.
+        if mode == "enterprise_hybrid" and getattr(llm_request, "config", None) is not None:
             llm_request.config.safety_settings = [
                 types.SafetySetting(
                     category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -269,7 +271,7 @@ class ScapeGovernancePlugin(BasePlugin):
                     threshold=types.HarmBlockThreshold.OFF,
                 ),
             ]
-            state["hybrid_bifrost_safety_off_applied"] = True
+            state["hybrid_gateway_safety_off_applied"] = True
 
         self.tracer.record_span(
             trace_id=trace_id,
@@ -277,11 +279,11 @@ class ScapeGovernancePlugin(BasePlugin):
             span_name="governance.before_model_guard",
             stage="wallet_preflight_and_model_armor",
             duration_ms=(time.perf_counter() - t0) * 1000,
-            scape_mode=mode,
+            architecture_mode=mode,
             attributes={
                 "wallet.reservation_id": reservation_id,
                 "prompt.segments_scanned": len(collected_texts),
-                "scape.hybrid_safety_off": mode == "comcast_hybrid",
+                "cymbal.hybrid_safety_off": mode == "enterprise_hybrid",
             },
         )
         return None
@@ -297,7 +299,6 @@ class ScapeGovernancePlugin(BasePlugin):
 
         content = getattr(llm_response, "content", None)
         for part in getattr(content, "parts", None) or []:
-            # Skip internal reasoning tokens per Section 4.2 Rule 4
             if getattr(part, "thought", False):
                 continue
             if getattr(part, "text", None):
@@ -328,7 +329,7 @@ class ScapeGovernancePlugin(BasePlugin):
             agent_id=self.agent_id,
             session_id=session_id,
             trace_id=trace_id,
-            scape_mode=mode,
+            architecture_mode=mode,
             model_id=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             input_tokens=in_tok,
             output_tokens=out_tok,
@@ -344,7 +345,7 @@ class ScapeGovernancePlugin(BasePlugin):
             span_name="gen_ai.model_inference_and_settlement",
             stage="after_model_settlement",
             duration_ms=(time.perf_counter() - t0) * 1000,
-            scape_mode=mode,
+            architecture_mode=mode,
             attributes={
                 "gen_ai.request.model": ledger_row["model_id"],
                 "gen_ai.usage.input_tokens": in_tok,
@@ -369,7 +370,7 @@ class ScapeGovernancePlugin(BasePlugin):
         principal = str(
             state.get(
                 "spiffe_id",
-                f"spiffe://comcast-scape.svc.id.goog/ns/agent-runtime/sa/{self.agent_id}",
+                f"spiffe://cymbal-agent-platform.svc.id.goog/ns/agent-runtime/sa/{self.agent_id}",
             )
         )
         decision = evaluate_uap_cel_tool_policy(tool_name=tool_name, principal=principal)
@@ -380,7 +381,7 @@ class ScapeGovernancePlugin(BasePlugin):
             span_name=f"uap.tool_authz.{tool_name or 'mcp_handshake'}",
             stage="uap_cel_tool_gate",
             duration_ms=(time.perf_counter() - t0) * 1000,
-            scape_mode=mode,
+            architecture_mode=mode,
             attributes={
                 "mcp.tool.name": tool_name,
                 "uap.rule_id": decision["rule_id"],

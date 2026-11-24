@@ -23,14 +23,16 @@ from pydantic import BaseModel, Field
 
 class IncidentTriggerInput(BaseModel):
     incident_id: str = Field(default="INC-4092", description="Incident ticket identifier.")
-    service_name: str = Field(default="flow-intel-api", description="Impacted service name.")
-    app_id: str = Field(default="DEVHUB-SCAPE-992", description="CMDB application identifier.")
+    service_name: str = Field(default="cymbal-release-api", description="Impacted service name.")
+    app_id: str = Field(default="SVC-CYMBAL-992", description="ServiceAtlas CMDB identifier.")
     operator_prompt: str = Field(
-        default="Investigate INC-4092 latency spike on flow-intel-api and recommend governed remediation.",
+        default="Investigate INC-4092 latency spike on cymbal-release-api and recommend governed remediation.",
         description="On-call engineer triage request.",
     )
     user_id: str = Field(default="sre-oncall-01", description="Authenticated JWT subject.")
-    scape_mode: Literal["google_native", "comcast_hybrid"] = Field(default="google_native")
+    architecture_mode: Literal["google_native", "enterprise_hybrid"] = Field(
+        default="google_native"
+    )
 
 
 class IntakeContextOutput(BaseModel):
@@ -58,11 +60,11 @@ class ObservabilitySignal(BaseModel):
     summary: str
 
 
-class JiraChangeSignal(BaseModel):
+class ReleaseChangeSignal(BaseModel):
     service_name: str
     deployed_version: str
     rollback_target_version: str
-    jira_ticket: str
+    release_ticket: str
     recent_pr: str
     change_freeze_active: bool
     freeze_window_name: str
@@ -73,11 +75,11 @@ class JiraChangeSignal(BaseModel):
 class CmdbRunbookSignal(BaseModel):
     app_id: str
     owning_squad: str
-    clara_intake_id: str
-    aegis_risk_tier: str
+    intake_id: str
+    risk_tier: str
     downstream_blast_radius: list[str] = Field(default_factory=list)
-    ama_runbook_id: str
-    ama_runbook_steps: list[str] = Field(default_factory=list)
+    runbook_id: str
+    runbook_steps: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -86,7 +88,7 @@ class CorrelatedSignalsBundle(BaseModel):
     service_name: str
     app_id: str
     observability: ObservabilitySignal
-    jira_change: JiraChangeSignal
+    release_change: ReleaseChangeSignal
     cmdb_runbook: CmdbRunbookSignal
     sandbox_code_prompt: str
 

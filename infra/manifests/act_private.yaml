@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: projects/${PROJECT_NUMBER}/locations/${REGION}/agentConnectivityTemplates/scape-act-private
+name: projects/${PROJECT_NUMBER}/locations/${REGION}/agentConnectivityTemplates/cymbal-act-private
 agentCompute: CLOUD_RUN
 deploymentModel: CENTRALIZED
 egressNetworkConfig:
-  networkAttachment: projects/${PROJECT_NUMBER}/regions/${REGION}/networkAttachments/scape-psci-attachment
+  networkAttachment: projects/${PROJECT_NUMBER}/regions/${REGION}/networkAttachments/cymbal-psci-attachment
 labels:
-  architecture_layer: scape_tier1_network
-  managed_by: comcast_scape_reference
+  architecture_layer: tier1_network
+  managed_by: cymbal_agent_platform_reference

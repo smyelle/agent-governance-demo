@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DevX Domain MCP Server (/mcp StreamableHTTP) with explicit MCP tool annotations.
+"""Cymbal Core Operations & Release MCP Server (/mcp StreamableHTTP).
 
 Exposes read-only triage tools (`readOnlyHint=True`) and mutating/destructive
 tools (`readOnlyHint=False`, `destructiveHint=True/False`) so Agent Gateway UAP
-Policy V2 CEL rules can enforce fine-grained per-tool access control beyond
-coarse gateway-wide `mcp.use` scopes.
+Policy V2 CEL rules enforce fine-grained per-tool access control beyond coarse
+gateway-wide `mcp.use` scopes.
 """
 
 from __future__ import annotations
@@ -46,14 +46,14 @@ except ImportError:  # pragma: no cover - fallback for mcp 1.x environments
     _MCP_V2 = False
 
 mcp = MCPServer(
-    "scape-devx-mcp-server",
+    "cymbal-ops-mcp-server",
 )
 
 INCIDENT_TELEMETRY_FIXTURES: dict[str, dict[str, Any]] = {
-    "flow-intel-api": {
+    "cymbal-release-api": {
         "incident_id": "INC-4092",
-        "service_name": "flow-intel-api",
-        "component": "bifrost-modelgw-proxy",
+        "service_name": "cymbal-release-api",
+        "component": "release-gateway-proxy",
         "baseline_p99_ms": 310,
         "current_p99_ms": 4820,
         "latency_samples_ms": [305, 318, 299, 312, 325, 4610, 4790, 4820, 4755, 4840],
@@ -98,12 +98,12 @@ INCIDENT_TELEMETRY_FIXTURES: dict[str, dict[str, Any]] = {
 }
 
 CHANGE_CONTROL_FIXTURES: dict[str, dict[str, Any]] = {
-    "flow-intel-api": {
-        "service_name": "flow-intel-api",
-        "recent_pr": "PR-8841: Increase Bifrost streaming chunk buffer & synchronous Valkey usage:0 XADD flush",
+    "cymbal-release-api": {
+        "service_name": "cymbal-release-api",
+        "recent_pr": "PR-8841: Increase streaming chunk buffer & synchronous Valkey usage:0 XADD flush",
         "deployed_version": "v2.14.3",
         "rollback_target_version": "v2.14.2",
-        "jira_ticket": "CCP-XAI-4092",
+        "release_ticket": "REL-4092",
         "change_freeze_active": False,
         "freeze_window_name": "None",
         "vp_exception_required": False,
@@ -113,18 +113,18 @@ CHANGE_CONTROL_FIXTURES: dict[str, dict[str, Any]] = {
         "recent_pr": "PR-9104: Enable strict retry backoff multiplier on settlement webhook pool",
         "deployed_version": "v3.8.1",
         "rollback_target_version": "v3.8.0",
-        "jira_ticket": "CCP-XAI-4095",
+        "release_ticket": "REL-4095",
         "change_freeze_active": True,
-        "freeze_window_name": "Enterprise Peak Holiday Billing Change Freeze",
+        "freeze_window_name": "Cymbal Peak Holiday Billing Change Freeze",
         "vp_exception_required": True,
-        "escalation_policy": "VP Platform Operations Change-Freeze Override Required before any AG3 production rollback",
+        "escalation_policy": "VP Core Operations Change-Freeze Override Required before any AG3 production rollback",
     },
     "edge-session-ingestor": {
         "service_name": "edge-session-ingestor",
         "recent_pr": "PR-7730: Minor log parser schema update (non-breaking)",
         "deployed_version": "v1.9.4",
         "rollback_target_version": "v1.9.3",
-        "jira_ticket": "CCP-XAI-4099",
+        "release_ticket": "REL-4099",
         "change_freeze_active": False,
         "freeze_window_name": "None",
         "vp_exception_required": False,
@@ -132,54 +132,54 @@ CHANGE_CONTROL_FIXTURES: dict[str, dict[str, Any]] = {
 }
 
 CMDB_FIXTURES: dict[str, dict[str, Any]] = {
-    "DEVHUB-SCAPE-992": {
-        "app_id": "DEVHUB-SCAPE-992",
-        "service_name": "flow-intel-api",
-        "owning_squad": "DevX AI Platform Gateway Squad",
-        "clara_intake_id": "CLARA-2026-0841",
-        "aegis_risk_tier": "AG3",
-        "upstream_dependencies": ["enterprise-idp-oidc", "valkey-usage-cluster"],
+    "SVC-CYMBAL-992": {
+        "app_id": "SVC-CYMBAL-992",
+        "service_name": "cymbal-release-api",
+        "owning_squad": "Cymbal Core Platform & Release SRE",
+        "intake_id": "ATLAS-2026-0841",
+        "risk_tier": "AG3",
+        "upstream_dependencies": ["cymbal-idp-oidc", "valkey-usage-cluster"],
         "downstream_blast_radius": [
-            "incident-ops-copilot",
-            "developer-pr-assistant",
+            "release-orchestrator",
+            "canary-promotion-worker",
             "sre-triage-automation",
         ],
-        "ama_runbook_id": "RB-DEVX-204",
-        "ama_runbook_steps": [
+        "runbook_id": "RB-CYMBAL-204",
+        "runbook_steps": [
             "1. Confirm p99 latency > 2,500ms and Valkey usage:0 saturation > 85%.",
-            "2. Verify enterprise change-freeze calendar status in CCP-XAI Jira.",
-            "3. Obtain human AEGIS AG3 approval before invoking Release Remediation A2A Agent.",
+            "2. Verify Cymbal release change-freeze calendar status in REL tracker.",
+            "3. Obtain human SENTINEL AG3 approval before invoking Release Remediation A2A Agent.",
             "4. Execute canary rollback v2.14.3 -> v2.14.2 and trim consumer backlog.",
         ],
     },
-    "DEVHUB-BILL-710": {
-        "app_id": "DEVHUB-BILL-710",
+    "SVC-CYMBAL-710": {
+        "app_id": "SVC-CYMBAL-710",
         "service_name": "billing-webhook-router",
-        "owning_squad": "Core Commerce Settlement SRE",
-        "clara_intake_id": "CLARA-2026-0915",
-        "aegis_risk_tier": "AG3",
+        "owning_squad": "Cymbal Commerce Settlement SRE",
+        "intake_id": "ATLAS-2026-0915",
+        "risk_tier": "AG3",
         "upstream_dependencies": ["payment-ledger-db", "valkey-billing-cluster"],
         "downstream_blast_radius": [
             "invoice-reconciliation-worker",
             "customer-receipt-notifier",
         ],
-        "ama_runbook_id": "RB-BILL-118",
-        "ama_runbook_steps": [
+        "runbook_id": "RB-BILL-118",
+        "runbook_steps": [
             "1. Inspect checkout-settlement-dispatcher p99 timeouts.",
-            "2. CRITICAL: Check Enterprise Peak Change Freeze status; NEVER auto-rollback without VP Change-Freeze Exception.",
-            "3. Route to AEGIS AG3 human approval gate with freeze warning attached.",
+            "2. CRITICAL: Check Cymbal Peak Change Freeze status; NEVER auto-rollback without VP Change-Freeze Exception.",
+            "3. Route to SENTINEL AG3 human approval gate with freeze warning attached.",
         ],
     },
-    "DEVHUB-EDGE-305": {
-        "app_id": "DEVHUB-EDGE-305",
+    "SVC-CYMBAL-305": {
+        "app_id": "SVC-CYMBAL-305",
         "service_name": "edge-session-ingestor",
-        "owning_squad": "Observability Edge Ingestion Team",
-        "clara_intake_id": "CLARA-2026-0512",
-        "aegis_risk_tier": "AG1",
+        "owning_squad": "Cymbal Observability Edge Ingestion Team",
+        "intake_id": "ATLAS-2026-0512",
+        "risk_tier": "AG1",
         "upstream_dependencies": ["regional-load-balancer"],
         "downstream_blast_radius": ["non-critical-session-archive"],
-        "ama_runbook_id": "RB-EDGE-042",
-        "ama_runbook_steps": [
+        "runbook_id": "RB-EDGE-042",
+        "runbook_steps": [
             "1. Low-risk AG1 informational alert; scrub any pasted PII via Cloud SDP.",
             "2. Publish advisory triage summary without production rollback.",
         ],
@@ -190,24 +190,24 @@ TICKET_ANNOTATIONS: list[dict[str, str]] = []
 
 
 @mcp.tool(
-    name="query_conduit_metrics",
-    title="Query Conduit & COP Service Telemetry",
+    name="query_golden_signal_metrics",
+    title="Query Service Golden-Signal Telemetry",
     description="Read-only query of golden-signal p99 latency, error rate, and stream saturation metrics.",
     annotations=ToolAnnotations(
-        title="Query Conduit Metrics",
+        title="Query Golden Signal Metrics",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def query_conduit_metrics(service_name: str, window_minutes: int = 30) -> str:
-    """Returns realistic golden-signal telemetry for the requested DevX service."""
+def query_golden_signal_metrics(service_name: str, window_minutes: int = 30) -> str:
+    """Returns realistic golden-signal telemetry for the requested Cymbal service."""
     if window_minutes == -503:
-        raise RuntimeError("HTTP 503 Service Unavailable: Conduit ClickHouse backend timeout")
+        raise RuntimeError("HTTP 503 Service Unavailable: Metrics telemetry backend timeout")
     key = service_name.strip().lower()
     payload = dict(
-        INCIDENT_TELEMETRY_FIXTURES.get(key, INCIDENT_TELEMETRY_FIXTURES["flow-intel-api"])
+        INCIDENT_TELEMETRY_FIXTURES.get(key, INCIDENT_TELEMETRY_FIXTURES["cymbal-release-api"])
     )
     payload["window_minutes"] = window_minutes
     payload["queried_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -215,50 +215,50 @@ def query_conduit_metrics(service_name: str, window_minutes: int = 30) -> str:
 
 
 @mcp.tool(
-    name="check_jira_and_change_freeze",
-    title="Check Jira Releases & Enterprise Change Freeze",
+    name="check_release_and_change_freeze",
+    title="Check Release History & Enterprise Change Freeze",
     description="Read-only lookup of recent production deployments, PRs, and active change-freeze windows.",
     annotations=ToolAnnotations(
-        title="Check Jira and Change Freeze",
+        title="Check Release and Change Freeze",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def check_jira_and_change_freeze(service_name: str) -> str:
+def check_release_and_change_freeze(service_name: str) -> str:
     """Returns deployment history and active change-freeze status for a service."""
     key = service_name.strip().lower()
     payload = dict(
-        CHANGE_CONTROL_FIXTURES.get(key, CHANGE_CONTROL_FIXTURES["flow-intel-api"])
+        CHANGE_CONTROL_FIXTURES.get(key, CHANGE_CONTROL_FIXTURES["cymbal-release-api"])
     )
     payload["checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return json.dumps(payload)
 
 
 @mcp.tool(
-    name="lookup_devhub_and_runbook",
-    title="Lookup DevHub CMDB, Blast Radius & AMA Runbook",
-    description="Read-only lookup of service ownership, dependency blast radius, AEGIS risk tier, and runbook.",
+    name="lookup_service_topology_and_runbook",
+    title="Lookup ServiceAtlas CMDB, Blast Radius & OpsWiki Runbook",
+    description="Read-only lookup of service ownership, dependency blast radius, SENTINEL risk tier, and runbook.",
     annotations=ToolAnnotations(
-        title="Lookup DevHub CMDB and Runbook",
+        title="Lookup ServiceAtlas CMDB and Runbook",
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def lookup_devhub_and_runbook(app_id: str) -> str:
+def lookup_service_topology_and_runbook(app_id: str) -> str:
     """Returns CMDB ownership, blast radius, and standard remediation steps."""
     normalized = app_id.strip().upper()
     if normalized in CMDB_FIXTURES:
         payload = dict(CMDB_FIXTURES[normalized])
-    elif "BILL" in normalized or "4095" in normalized:
-        payload = dict(CMDB_FIXTURES["DEVHUB-BILL-710"])
-    elif "EDGE" in normalized or "4099" in normalized:
-        payload = dict(CMDB_FIXTURES["DEVHUB-EDGE-305"])
+    elif "BILL" in normalized or "710" in normalized or "4095" in normalized:
+        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-710"])
+    elif "EDGE" in normalized or "305" in normalized or "4099" in normalized:
+        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-305"])
     else:
-        payload = dict(CMDB_FIXTURES["DEVHUB-SCAPE-992"])
+        payload = dict(CMDB_FIXTURES["SVC-CYMBAL-992"])
     return json.dumps(payload)
 
 
@@ -309,19 +309,19 @@ def purge_production_valkey_stream(stream_key: str) -> str:
 
 
 TOOL_SPEC_MANIFEST: dict[str, Any] = {
-    "serverName": "scape-devx-mcp-server",
+    "serverName": "cymbal-ops-mcp-server",
     "protocol": "MCP-StreamableHTTP",
     "tools": [
         {
-            "name": "query_conduit_metrics",
+            "name": "query_golden_signal_metrics",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
-            "name": "check_jira_and_change_freeze",
+            "name": "check_release_and_change_freeze",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
-            "name": "lookup_devhub_and_runbook",
+            "name": "lookup_service_topology_and_runbook",
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
         },
         {
@@ -337,7 +337,7 @@ TOOL_SPEC_MANIFEST: dict[str, Any] = {
 
 
 async def healthz(_request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "scape-devx-mcp-server"})
+    return JSONResponse({"status": "ok", "service": "cymbal-ops-mcp-server"})
 
 
 async def tools_metadata(_request: Request) -> JSONResponse:

@@ -16,8 +16,8 @@
 
 Implements:
 1. 3-step NFKC + URL-decode + bounded Base64/Hex recursive unpacker (max_depth=3).
-2. Inline PII redaction (SSN, MAC address, payment card, email) so pasted SRE
-   incident logs are safely masked inline rather than leaking or crashing.
+2. Inline PII redaction (SSN, MAC address, payment card) so pasted SRE incident
+   logs are safely masked inline rather than leaking or crashing.
 3. Multi-URL phishing / malicious URI inspection (up to 40 URLs per payload).
 4. Live Google Cloud Model Armor (`modelarmor.<region>.rep.googleapis.com`)
    `sanitize_user_prompt` and `sanitize_model_response` calls with strict
@@ -40,7 +40,7 @@ import urllib.parse
 from google.api_core.client_options import ClientOptions
 from google.cloud import modelarmor_v1
 
-from scape_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials
 
 SSN_RE = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 MAC_RE = re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\b")
@@ -64,7 +64,7 @@ PROMPT_INJECTION_PATTERNS = (
     re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions", re.IGNORECASE),
     re.compile(r"disregard\s+(?:all\s+)?safety\s+(?:rules|guardrails|policies)", re.IGNORECASE),
     re.compile(r"exfiltrate\s+(?:secrets|tokens|env|credentials)", re.IGNORECASE),
-    re.compile(r"bypass\s+aegis\s+ag3\s+approval", re.IGNORECASE),
+    re.compile(r"bypass\s+(?:sentinel|aegis)?\s*ag3\s+approval", re.IGNORECASE),
     re.compile(r"system\s*override\s*:\s*execute\s+unapproved", re.IGNORECASE),
 )
 
@@ -170,20 +170,28 @@ class FailClosedModelArmorGuard:
         live_api_enabled: bool | None = None,
         simulate_outage: bool = False,
     ) -> None:
-        self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+        self.project_id = (
+            project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
+        )
         self.location = location or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
         default_tpl = (
-            f"projects/{self.project_id}/locations/{self.location}/templates/scape-default-medium-gpp"
+            f"projects/{self.project_id}/locations/{self.location}/templates/cymbal-default-medium-gpp"
         )
-        self.template_id = template_id or os.getenv("SCAPE_MODEL_ARMOR_DEFAULT_TEMPLATE", default_tpl)
+        self.template_id = (
+            template_id
+            or os.getenv("CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE")
+            or os.getenv("SCAPE_MODEL_ARMOR_DEFAULT_TEMPLATE")
+            or default_tpl
+        )
         if "<PROJECT_ID>" in self.template_id:
             self.template_id = default_tpl
         if live_api_enabled is None:
-            self.live_api_enabled = os.getenv("SCAPE_MODEL_ARMOR_LIVE", "true").lower() in {
-                "1",
-                "true",
-                "yes",
-            }
+            flag = (
+                os.getenv("CYMBAL_MODEL_ARMOR_LIVE")
+                or os.getenv("SCAPE_MODEL_ARMOR_LIVE")
+                or "true"
+            )
+            self.live_api_enabled = flag.lower() in {"1", "true", "yes"}
         else:
             self.live_api_enabled = live_api_enabled
         self.simulate_outage = simulate_outage
@@ -252,7 +260,6 @@ class FailClosedModelArmorGuard:
         if self.live_api_enabled:
             try:
                 client = self._get_client()
-                # Scan the unpacked + PII-masked text via live Model Armor regional REP
                 scan_payload = expanded_corpus[:16000]
                 if direction == "MODEL_RESPONSE":
                     req = modelarmor_v1.SanitizeModelResponseRequest(
@@ -308,8 +315,6 @@ class FailClosedModelArmorGuard:
                             masked_text = str(deid_res.data.text)
             except Exception as exc:
                 if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") and "401" in str(exc):
-                    # Pure SPIFFE AGENT_IDENTITY pods without OAuth SA fallback rely on
-                    # deterministic 3-step unpacker + inline PII/URL/injection checks.
                     ma_inv_result = "SUCCESS"
                 else:
                     latency = round((time.perf_counter() - start) * 1000, 2)

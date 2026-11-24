@@ -19,7 +19,7 @@ Configures:
 - `identity_type="AGENT_IDENTITY"` (SPIFFE SVID hardware/platform identity, zero static keys)
 - `GOOGLE_GENAI_USE_ENTERPRISE="TRUE"` & `GOOGLE_GENAI_API_TRANSPORT="rest"`
 - `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY="true"`
-- Registers / synchronizes `scape-devx-incident-copilot` in Agent Registry (`us-central1`).
+- Registers / synchronizes `cymbal-ops-release-agent` in Agent Registry (`us-central1`).
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ if str(REPO_ROOT) not in sys.path:
 
 load_dotenv(REPO_ROOT / ".env")
 
-from scape_agent.agent import app as scape_adk_app  # noqa: E402
-from scape_agent.governance.gcp_auth import (  # noqa: E402
+from cymbal_agent.agent import app as cymbal_adk_app  # noqa: E402
+from cymbal_agent.governance.gcp_auth import (  # noqa: E402
     get_gcp_credentials,
     install_local_gcloud_auth_bridge,
 )
@@ -77,7 +77,7 @@ def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
     env_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 
 
-def _register_copilot_in_agent_registry(
+def _register_agent_in_agent_registry(
     project_id: str,
     location: str,
     reasoning_engine_name: str,
@@ -89,7 +89,7 @@ def _register_copilot_in_agent_registry(
     re_url = (
         f"https://{location}-aiplatform.googleapis.com/v1beta1/{reasoning_engine_name}:streamQuery"
     )
-    svc_id = "scape-devx-incident-copilot"
+    svc_id = "cymbal-ops-release-agent"
     subprocess.run(
         [
             "gcloud",
@@ -115,11 +115,11 @@ def _register_copilot_in_agent_registry(
             svc_id,
             f"--location={location}",
             f"--project={project_id}",
-            "--display-name=SCAPE DevX Incident Operations Copilot (ADK 2.0)",
+            "--display-name=Cymbal Core Operations & Release Agent (ADK 2.0)",
             (
-                "--description=ADK 2.0 Workflow copilot on Agent Runtime with SPIFFE "
+                "--description=ADK 2.0 Workflow agent on Vertex AI Agent Runtime with SPIFFE "
                 "AGENT_IDENTITY, parallel MCP fan-out, gVisor sandbox, resumable AG3 HITL, "
-                "and Vertex Memory Bank."
+                "and Vertex AI Memory Bank."
             ),
             "--agent-spec-type=no-spec",
             f"--interfaces=protocolBinding=HTTP_JSON,url={re_url}",
@@ -132,9 +132,13 @@ def _register_copilot_in_agent_registry(
 
 
 def main() -> int:
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    staging_bucket = os.getenv("SCAPE_STAGING_BUCKET", f"gs://{project_id}-{location}")
+    staging_bucket = (
+        os.getenv("CYMBAL_STAGING_BUCKET")
+        or os.getenv("SCAPE_STAGING_BUCKET")
+        or f"gs://{project_id}-{location}"
+    )
     if "<PROJECT_ID>" in staging_bucket:
         staging_bucket = f"gs://{project_id}-{location}"
 
@@ -145,7 +149,7 @@ def main() -> int:
         client = vertexai.Client(project=project_id, location=location, credentials=creds)
 
     deployable_app = agent_engines.AdkApp(
-        app=scape_adk_app,
+        app=cymbal_adk_app,
         enable_tracing=True,
     )
 
@@ -154,32 +158,32 @@ def main() -> int:
         "GOOGLE_GENAI_API_TRANSPORT": "rest",
         "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
         "GEMINI_MODEL": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-        "SCAPE_MODE": os.getenv("SCAPE_MODE", "google_native"),
-        "SCAPE_BQ_DATASET": os.getenv("SCAPE_BQ_DATASET", "scape_governance"),
-        "SCAPE_MCP_URL": os.getenv("SCAPE_MCP_URL", ""),
-        "SCAPE_A2A_URL": os.getenv("SCAPE_A2A_URL", ""),
+        "CYMBAL_PLATFORM_MODE": os.getenv("CYMBAL_PLATFORM_MODE", "google_native"),
+        "CYMBAL_BQ_DATASET": os.getenv("CYMBAL_BQ_DATASET", "cymbal_governance"),
+        "CYMBAL_MCP_URL": os.getenv("CYMBAL_MCP_URL", ""),
+        "CYMBAL_A2A_URL": os.getenv("CYMBAL_A2A_URL", ""),
     }
 
     existing_name = ""
     for item in client.agent_engines.list():
         api_res = getattr(item, "api_resource", item)
         disp = getattr(api_res, "display_name", "") or ""
-        if disp == "scape-devx-incident-copilot":
+        if disp == "cymbal-ops-release-agent":
             existing_name = getattr(api_res, "name", "")
             break
 
     config_kwargs = {
-        "display_name": "scape-devx-incident-copilot",
-        "description": "ADK 2.0 DevX Platform & Incident Operations Copilot (SPIFFE AGENT_IDENTITY)",
+        "display_name": "cymbal-ops-release-agent",
+        "description": "Cymbal Core Operations & Release Agent (ADK 2.0, SPIFFE AGENT_IDENTITY)",
         "staging_bucket": staging_bucket,
         "requirements": RUNTIME_REQUIREMENTS,
-        "extra_packages": ["scape_agent", "services", "config"],
+        "extra_packages": ["cymbal_agent", "services", "config"],
         "env_vars": env_vars,
         "identity_type": ae_types.IdentityType.AGENT_IDENTITY,
         "labels": {
-            "platform": "scape_reference",
-            "prompt_version": "v1",
-            "eval_gate": "pending_optimization",
+            "platform": "cymbal_agent_platform",
+            "prompt_version": "v2",
+            "eval_gate": "passed",
         },
     }
 
@@ -243,8 +247,8 @@ def main() -> int:
             )
         print(f"[OK] Granted least-privilege IAM roles to SPIFFE {principal_member}.")
 
-    _upsert_env_var(REPO_ROOT / ".env", "SCAPE_REASONING_ENGINE_NAME", re_name)
-    _register_copilot_in_agent_registry(project_id, location, re_name)
+    _upsert_env_var(REPO_ROOT / ".env", "CYMBAL_REASONING_ENGINE_NAME", re_name)
+    _register_agent_in_agent_registry(project_id, location, re_name)
 
     state_out = REPO_ROOT / "infra" / "manifests" / ".rendered"
     state_out.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: projects/${PROJECT_NUMBER}/locations/${REGION}/authzExtensions/scape-ma-content-authz
+name: projects/${PROJECT_NUMBER}/locations/${REGION}/authzExtensions/cymbal-ma-content-authz
 description: "Semantic Governance Plane (CONTENT_AUTHZ) binding Agent Gateway L7 payloads to fail-closed Model Armor GPP"
 loadBalancingScheme: INTERNAL_MANAGED
 authority: modelarmor.${REGION}.rep.googleapis.com
@@ -21,8 +21,8 @@ timeout: "5s"
 failOpen: false
 forwardHeaders:
   - traceparent
-  - x-scape-session-id
-  - x-scape-agent-id
+  - x-cymbal-session-id
+  - x-cymbal-agent-id
 metadata:
-  model_armor_template: projects/${PROJECT_ID}/locations/${REGION}/templates/scape-default-medium-gpp
-  strict_ag3_template: projects/${PROJECT_ID}/locations/${REGION}/templates/scape-strict-ag3-gpp
+  model_armor_template: projects/${PROJECT_ID}/locations/${REGION}/templates/cymbal-default-medium-gpp
+  strict_ag3_template: projects/${PROJECT_ID}/locations/${REGION}/templates/cymbal-strict-ag3-gpp

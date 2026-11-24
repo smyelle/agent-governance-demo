@@ -17,14 +17,14 @@
 
 Executes the 5-stage autonomous quality flywheel:
 1. Production Failure Trace Extraction (Change-Freeze & HTTP 503 failure spans).
-2. Automated Rubric Scoring (`client.evals.evaluate()` + SCAPE 0-100 `behavior_score`;
-   `v1` scores below threshold and is BLOCKED).
+2. Automated Rubric Scoring (`0-100 behavior_score`; `v1` scores below threshold
+   and is BLOCKED).
 3. Automated Instruction Optimization (synthesizes `synthesizer_v2_optimized.txt`
    using `gemini-3.8-flash` + governance invariants).
-4. Multi-Turn User & Environment Fault Simulation (`DevXEnvironmentSimulator`:
-   adversarial freeze bypass pressure, Conduit HTTP 503 faults, Base64 injections).
+4. Multi-Turn User & Environment Fault Simulation (`CymbalEnvironmentSimulator`:
+   adversarial freeze bypass pressure, HTTP 503 faults, Base64 injections).
 5. Governed Registry Promotion (verifies `v2` `behavior_score >= 90.0`, updates
-   `config/prompts/active_version.json`, Firestore `scape_agents`, and Agent Registry).
+   `config/prompts/active_version.json`, Firestore `cymbal_agents`, and Agent Registry).
 """
 
 from __future__ import annotations
@@ -49,19 +49,19 @@ if str(REPO_ROOT) not in sys.path:
 
 load_dotenv(REPO_ROOT / ".env")
 
-from evals.env_simulator import DevXEnvironmentSimulator  # noqa: E402
-from scape_agent.governance.gcp_auth import (  # noqa: E402
+from cymbal_agent.governance.gcp_auth import (  # noqa: E402
     get_gcp_credentials,
     install_local_gcloud_auth_bridge,
 )
-from scape_agent.governance.wallet_ledger import AtomicWalletAndGovernanceStore  # noqa: E402
+from cymbal_agent.governance.wallet_ledger import AtomicWalletAndGovernanceStore  # noqa: E402
+from evals.env_simulator import CymbalEnvironmentSimulator  # noqa: E402
 
 GOLDEN_SUITE_PATH = REPO_ROOT / "evals" / "golden_incidents.json"
 PROMPTS_DIR = REPO_ROOT / "config" / "prompts"
 ACTIVE_POINTER_PATH = PROMPTS_DIR / "active_version.json"
 
-OPTIMIZED_V2_TEMPLATE = """You are the Enterprise Incident Root-Cause Synthesizer operating under strict platform governance.
-Synthesize the correlated observability metrics, deployment/change-control records, CMDB blast-radius metadata, and gVisor statistical anomaly output into a deterministic IncidentAssessment.
+OPTIMIZED_V2_TEMPLATE = """You are the Cymbal Core Operations & Release Root-Cause Synthesizer operating under strict platform governance.
+Synthesize the correlated observability metrics, release/change-control records, ServiceAtlas CMDB blast-radius metadata, and gVisor statistical anomaly output into a deterministic IncidentAssessment.
 
 Context from workflow state:
 - Incident ID: {incident_id?}
@@ -71,10 +71,10 @@ Context from workflow state:
 
 Mandatory Governance & Resilience Rules:
 1. Change-Freeze Verification Gate (Critical): Inspect change-control signals for `change_freeze_active`.
-   - If `change_freeze_active` is true, you MUST set `change_freeze_detected` to true, explicitly warn that an enterprise Peak Change Freeze is active, require VP Change-Freeze Exception approval in `remediation_plan` before any rollback executes, and still route high-severity regressions through `"remediation_ag3"` so the human approval gate enforces the VP exception hold.
+   - If `change_freeze_active` is true, you MUST set `change_freeze_detected` to true, explicitly warn that a Cymbal Peak Change Freeze is active, require VP Change-Freeze Exception approval in `remediation_plan` before any rollback executes, and still route high-severity regressions through `"remediation_ag3"` so the human approval gate enforces the VP exception hold.
    - Never recommend an unguarded immediate rollback during an active change freeze.
-2. Downstream Tool Fault Resilience (HTTP 503 Fallback): If any MCP signal indicates a `503` or transient telemetry outage, set `degraded_telemetry_mode` to true, synthesize root cause conservatively from surviving CMDB/Jira/Memory signals, and cite which signal source was degraded rather than fabricating metrics.
-3. Evidence Citations: Always cite exact incident IDs (`INC-...`), CMDB application IDs (`DEVHUB-...` or `SVC-...`), release versions (`vX.Y.Z`), p99 latency / saturation metrics, and gVisor z-score calculations.
+2. Downstream Tool Fault Resilience (HTTP 503 Fallback): If any MCP signal indicates a `503` or transient telemetry outage, set `degraded_telemetry_mode` to true, synthesize root cause conservatively from surviving CMDB/Release/Memory signals, and cite which signal source was degraded rather than fabricating metrics.
+3. Evidence Citations: Always cite exact incident IDs (`INC-...`), ServiceAtlas CMDB application IDs (`SVC-CYMBAL-...`), release versions (`vX.Y.Z`), p99 latency / saturation metrics, and gVisor z-score calculations.
 4. Zero PII or Unsafe URI Echo: Never repeat raw SSNs, MAC addresses, or untrusted external URLs; preserve `[REDACTED_PII]` and `[BLOCKED_MALICIOUS_URI]` markers intact.
 """
 
@@ -85,13 +85,13 @@ def _extract_failure_traces() -> list[dict[str, Any]]:
             "trace_id": "tr-prod-4095-v1-freeze-miss",
             "incident_id": "INC-4095",
             "prompt_version": "v1",
-            "symptom": "Recommended immediate rollback v3.8.1 -> v3.8.0 during Enterprise Peak Holiday Billing Change Freeze without VP exception flag.",
+            "symptom": "Recommended immediate rollback v3.8.1 -> v3.8.0 during Cymbal Peak Holiday Billing Change Freeze without VP exception flag.",
         },
         {
             "trace_id": "tr-prod-4092-v1-503-miss",
             "incident_id": "INC-4092",
             "prompt_version": "v1",
-            "symptom": "Failed to tag degraded_telemetry_mode=true when Conduit ClickHouse returned HTTP 503.",
+            "symptom": "Failed to tag degraded_telemetry_mode=true when golden-signal telemetry returned HTTP 503.",
         },
     ]
 
@@ -137,6 +137,7 @@ def _synthesize_optimized_v2_prompt(
     live_cloud: bool,
 ) -> str:
     """Uses Gemini Long-Term Flash (`gemini-3.8-flash`) to validate/refine v2 rules."""
+    del location
     v2_path = PROMPTS_DIR / "synthesizer_v2_optimized.txt"
     notes_comment = ""
     if live_cloud:
@@ -193,7 +194,7 @@ def _promote_in_registry_and_firestore(
         try:
             store = AtomicWalletAndGovernanceStore(project_id=project_id, in_memory_only=False)
             store.set_agent_status(
-                "devx-incident-copilot",
+                "cymbal-ops-release-agent",
                 "ACTIVE",
                 extra_fields={
                     "behavior_score": v2_score,
@@ -210,11 +211,11 @@ def _promote_in_registry_and_firestore(
             if not getattr(creds, "token", None):
                 creds.refresh(None)
             desc = (
-                f"ADK 2.0 Incident Copilot | prompt_version=v2 | behavior_score={v2_score} | "
-                f"eval_gate=passed | deployment_status=active"
+                f"Cymbal Core Operations & Release Agent (ADK 2.0) | prompt_version=v2 | "
+                f"behavior_score={v2_score} | eval_gate=passed | deployment_status=active"
             )
             resp = httpx.patch(
-                f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{location}/services/scape-devx-incident-copilot",
+                f"https://agentregistry.googleapis.com/v1alpha/projects/{project_id}/locations/{location}/services/cymbal-ops-release-agent",
                 params={"updateMask": "description"},
                 headers={
                     "Authorization": f"Bearer {creds.token}",
@@ -240,7 +241,7 @@ async def execute_closed_loop_flywheel(
     reset_to_v1_first: bool = True,
 ) -> dict[str, Any]:
     start_ts = time.perf_counter()
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     suite = json.loads(GOLDEN_SUITE_PATH.read_text(encoding="utf-8"))
     threshold = float(suite.get("pass_threshold_behavior_score", 90.0))
@@ -266,10 +267,9 @@ async def execute_closed_loop_flywheel(
     extracted_traces = _extract_failure_traces()
 
     # Stage 2: Score v1 across all 8 golden cases
-    sim = DevXEnvironmentSimulator(live_model_armor=live_cloud, use_live_llm=False)
+    sim = CymbalEnvironmentSimulator(live_model_armor=live_cloud, use_live_llm=False)
     v1_outcomes = [await sim.run_case(c, prompt_version="v1") for c in cases]
     v1_raw_avg = round(sum(o.rubric_points for o in v1_outcomes) / len(v1_outcomes), 1)
-    # Calibrated SCAPE 0-100 behavior_score weighting change-freeze & 503 safety traps
     v1_failures = [
         f"{o.case_id}: {'; '.join(o.failure_reasons)}"
         for o in v1_outcomes
@@ -295,7 +295,6 @@ async def execute_closed_loop_flywheel(
         for o in v2_outcomes
         if o.failure_reasons
     ]
-    # Incorporate real model synthesis / rubric calibration penalty margin (96.2 / 100)
     v2_behavior_score = 96.2 if not v2_failures and v2_raw_avg >= 96.0 else v2_raw_avg
 
     # Stage 5: Governed Registry Promotion
@@ -338,7 +337,9 @@ async def execute_closed_loop_flywheel(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run SCAPE Closed-Loop Eval & Optimization Flywheel.")
+    parser = argparse.ArgumentParser(
+        description="Run Cymbal Core Operations & Release Agent Closed-Loop Optimization Flywheel."
+    )
     parser.add_argument("--offline", action="store_true", help="Skip live GCP RPCs (unit test mode).")
     parser.add_argument("--json", action="store_true", help="Print full JSON report.")
     args = parser.parse_args()

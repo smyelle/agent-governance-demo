@@ -50,7 +50,7 @@ async def test_closed_loop_flywheel_blocks_v1_and_promotes_v2() -> None:
 
 
 @pytest.mark.asyncio
-async def test_beyond_scape_8_capability_suite_and_tco_math() -> None:
+async def test_platform_8_capability_suite_and_tco_math() -> None:
     tco = calculate_guardrail_tco(daily_turns=10_000_000, tokens_per_turn=1000)
     assert tco["azure_content_safety_annual_usd"] == 3_650_000.0
     assert tco["aws_bedrock_guardrails_annual_usd"] == 1_095_000.0
@@ -63,6 +63,7 @@ async def test_beyond_scape_8_capability_suite_and_tco_math() -> None:
     assert summary["passed_count"] == 8
     assert summary["total_count"] == 8
 
-    doc_text = (REPO_ROOT / "docs" / "GOOGLE_VS_SCAPE_BENCHMARK.md").read_text(encoding="utf-8")
+    doc_text = (REPO_ROOT / "docs" / "GOOGLE_AGENT_PLATFORM_BENCHMARK.md").read_text(encoding="utf-8")
     assert "\u2014" not in doc_text
     assert "\u2013" not in doc_text
+    assert "Cymbal Core Operations & Release Agent" in doc_text

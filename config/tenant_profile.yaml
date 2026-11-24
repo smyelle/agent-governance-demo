@@ -12,67 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-active_profile: comcast_devx
+active_profile: cymbal_core
 
 profiles:
-  comcast_devx:
-    organization_display_name: "Enterprise DevX & Platform Operations"
-    copilot_title: "DevX Platform & Incident Operations Copilot"
-    steward_console_title: "SCAPE & Google Agent Platform Steward Console"
+  cymbal_core:
+    organization_display_name: "Cymbal Communications Core SRE & Release Engineering"
+    agent_title: "Cymbal Core Operations & Release Agent"
+    steward_console_title: "Google Agent Platform Steward Console"
     terminology:
-      platform_name: "SCAPE"
-      gateway_name: "FLOW: Intel Studio"
-      intake_name: "CLARA"
-      cmdb_name: "DevHub / Galileo"
-      runtime_name: "CNAP / Agent Runtime"
-      risk_framework: "AEGIS"
-      registry_name: "Agent 365 / Agent Registry"
-      observability_name: "Conduit / Langfuse"
-      runbook_name: "AMA Runbooks"
-      wallet_name: "FLOW Wallet / BigQuery Ledger"
-      guardrail_policy_name: "VMG 2.0 GPP / Model Armor"
+      platform_name: "Google Agent Platform"
+      gateway_name: "Google Cloud Agent Gateway"
+      intake_name: "ATLAS"
+      cmdb_name: "ServiceAtlas CMDB"
+      runtime_name: "Vertex AI Agent Runtime"
+      risk_framework: "SENTINEL"
+      registry_name: "Agent & Tool Registry"
+      observability_name: "Cloud Trace & Golden Signals"
+      runbook_name: "OpsWiki Runbooks"
+      wallet_name: "Atomic Nano-USD Wallet & BigQuery Ledger"
+      guardrail_policy_name: "Model Armor + Cloud SDP"
       high_risk_tier: "AG3"
       low_risk_tier: "AG1"
     governance_defaults:
-      agent_id: "devx-incident-copilot"
-      intake_record_id: "CLARA-2026-0841"
-      cmdb_app_id: "DEVHUB-SCAPE-992"
-      wallet_id: "wallet-devx-ops"
-      monthly_cap_nano_usd: 15000000000
-      hybrid_gateway_placeholder_url: "https://flow-gateway.enterprise.example/v1"
-      hybrid_otlp_placeholder_url: "https://langfuse-telemetry.enterprise.example/api/public/otel"
-    theme:
-      accent_primary: "#2563eb"
-      accent_secondary: "#0f766e"
-      badge_text: "SCAPE Tier 1-4 Reference"
-
-  cymbal_telco:
-    organization_display_name: "Cymbal Communications SRE & Core Network"
-    copilot_title: "Cymbal Core Operations & Release Copilot"
-    steward_console_title: "Cymbal Mesh AI Governance Console"
-    terminology:
-      platform_name: "Cymbal Mesh"
-      gateway_name: "Cymbal AI Gateway"
-      intake_name: "ATLAS"
-      cmdb_name: "ServiceAtlas / TopologyGraph"
-      runtime_name: "Cymbal K8s / Agent Runtime"
-      risk_framework: "SENTINEL"
-      registry_name: "Cymbal Catalog / Agent Registry"
-      observability_name: "PulseMetrics / OpenTrace"
-      runbook_name: "OpsWiki Runbooks"
-      wallet_name: "FinOps Quota / BigQuery Ledger"
-      guardrail_policy_name: "Cymbal Safety Baseline / Model Armor"
-      high_risk_tier: "SNT-3"
-      low_risk_tier: "SNT-1"
-    governance_defaults:
-      agent_id: "cymbal-incident-copilot"
-      intake_record_id: "ATLAS-2026-0412"
-      cmdb_app_id: "SVC-CYMBAL-401"
-      wallet_id: "wallet-cymbal-sre"
+      agent_id: "cymbal-ops-release-agent"
+      intake_record_id: "ATLAS-2026-0841"
+      cmdb_app_id: "SVC-CYMBAL-992"
+      wallet_id: "wallet-cymbal-ops"
       monthly_cap_nano_usd: 15000000000
       hybrid_gateway_placeholder_url: "https://ai-gateway.cymbal.example/v1"
       hybrid_otlp_placeholder_url: "https://otlp-collector.cymbal.example/v1/traces"
     theme:
       accent_primary: "#0284c7"
-      accent_secondary: "#4f46e5"
-      badge_text: "Cymbal Mesh Enterprise Reference"
+      accent_secondary: "#0f766e"
+      badge_text: "Google Agent Platform | ADK 2.0"

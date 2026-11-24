@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 
 load_dotenv(REPO_ROOT / ".env")
 
-from scape_agent.governance.gcp_auth import get_gcp_credentials  # noqa: E402
+from cymbal_agent.governance.gcp_auth import get_gcp_credentials  # noqa: E402
 
 
 def build_batch_optimizer_config(project_id: str, location: str, bucket_uri: str) -> dict[str, object]:
@@ -61,9 +61,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "comcast-scape")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    bucket_uri = os.getenv("SCAPE_STAGING_BUCKET", f"gs://{project_id}-{location}")
+    bucket_uri = (
+        os.getenv("CYMBAL_STAGING_BUCKET")
+        or os.getenv("SCAPE_STAGING_BUCKET")
+        or f"gs://{project_id}-{location}"
+    )
     spec = build_batch_optimizer_config(project_id, location, bucket_uri)
 
     if not args.submit:

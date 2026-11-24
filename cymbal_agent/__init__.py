@@ -20,6 +20,6 @@ import os
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
-from scape_agent.agent import app, build_scape_workflow, governance_plugin, root_agent
+from cymbal_agent.agent import app, build_cymbal_workflow, governance_plugin, root_agent
 
-__all__ = ["app", "build_scape_workflow", "governance_plugin", "root_agent"]
+__all__ = ["app", "build_cymbal_workflow", "governance_plugin", "root_agent"]

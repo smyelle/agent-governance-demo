@@ -57,24 +57,24 @@ PY
 TOKEN="$(gcloud auth print-access-token --quiet)"
 
 echo "[2/4] Provisioning AgentConnectivityTemplate (PRIVATE_RANGES_ONLY)..."
-ACT_JSON="$(python3 -c "import json,sys,yaml,pathlib; print(json.dumps(yaml.safe_load(pathlib.Path('${RENDER_DIR}/act_private.yaml').read_text())))")"
+ACT_JSON="$(python3 -c "import json,yaml,pathlib; print(json.dumps(yaml.safe_load(pathlib.Path('${RENDER_DIR}/act_private.yaml').read_text())))")"
 ACT_HTTP="$(curl -sS -o "${RENDER_DIR}/act_response.json" -w "%{http_code}" \
   -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-Goog-User-Project: ${PROJECT_ID}" \
-  "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_NUMBER}/locations/${REGION}/agentConnectivityTemplates?agentConnectivityTemplateId=scape-act-private" \
+  "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_NUMBER}/locations/${REGION}/agentConnectivityTemplates?agentConnectivityTemplateId=cymbal-act-private" \
   -d "${ACT_JSON}" || echo "000")"
 echo "[INFO] ACT control-plane HTTP status: ${ACT_HTTP}"
 
 echo "[3/4] Provisioning AgentGateway (240.0.0.2:443, dual global + ${REGION} numeric registries)..."
-AGW_JSON="$(python3 -c "import json,sys,yaml,pathlib; print(json.dumps(yaml.safe_load(pathlib.Path('${RENDER_DIR}/agent_gateway.yaml').read_text())))")"
+AGW_JSON="$(python3 -c "import json,yaml,pathlib; print(json.dumps(yaml.safe_load(pathlib.Path('${RENDER_DIR}/agent_gateway.yaml').read_text())))")"
 AGW_HTTP="$(curl -sS -o "${RENDER_DIR}/agw_response.json" -w "%{http_code}" \
   -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-Goog-User-Project: ${PROJECT_ID}" \
-  "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_NUMBER}/locations/${REGION}/agentGateways?agentGatewayId=scape-agent-gateway" \
+  "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_NUMBER}/locations/${REGION}/agentGateways?agentGatewayId=cymbal-agent-gateway" \
   -d "${AGW_JSON}" || echo "000")"
 echo "[INFO] AgentGateway control-plane HTTP status: ${AGW_HTTP}"
 
@@ -89,7 +89,7 @@ UAP_HTTP="$(curl -sS -o "${RENDER_DIR}/uap_response.json" -w "%{http_code}" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-Goog-User-Project: ${PROJECT_ID}" \
-  "https://iap.googleapis.com/v1/projects/${PROJECT_NUMBER}/locations/global/accessPolicies?accessPolicyId=scape-uap-per-tool-cel" \
+  "https://iap.googleapis.com/v1/projects/${PROJECT_NUMBER}/locations/global/accessPolicies?accessPolicyId=cymbal-uap-per-tool-cel" \
   --data-binary "@${RENDER_DIR}/uap_project_policy.json" || echo "000")"
 echo "[INFO] UAP Policy V2 control-plane HTTP status: ${UAP_HTTP}"
 
@@ -98,7 +98,7 @@ if [[ "${ACT_HTTP}" =~ ^20[01]$ || "${ACT_HTTP}" == "409" ]] && [[ "${AGW_HTTP}"
 else
   GATEWAY_STATE="PREVIEW_MANIFEST_VALIDATED_PLUGIN_ENFORCED"
   echo "[INFO] Preview control-plane returned HTTP ACT=${ACT_HTTP}, AGW=${AGW_HTTP}, UAP=${UAP_HTTP} (preview allowlist gate)."
-  echo "[INFO] Validated manifests saved in ${RENDER_DIR} and UAP Policy V2 CEL + Model Armor CONTENT_AUTHZ parity is enforced inline by ScapeGovernancePlugin."
+  echo "[INFO] Validated manifests saved in ${RENDER_DIR} and UAP Policy V2 CEL + Model Armor CONTENT_AUTHZ parity is enforced inline by CymbalGovernancePlugin."
 fi
 
 cat > "${RENDER_DIR}/gateway_status.json" <<EOF

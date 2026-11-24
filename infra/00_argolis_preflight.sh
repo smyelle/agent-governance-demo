@@ -105,14 +105,14 @@ if gcloud org-policies describe run.allowedIngress --project="${PROJECT_ID}" --e
   INGRESS_RESTRICTED="$(gcloud org-policies describe run.allowedIngress --project="${PROJECT_ID}" --effective --format='json' | python3 -c "import json,sys; d=json.load(sys.stdin); vals=[]; [vals.extend(r.get('values',{}).get('allowedValues',[])) for r in d.get('spec',{}).get('rules',[])]; print('restricted' if vals and 'all' not in [v.lower() for v in vals] else 'ok')")"
   if [[ "${INGRESS_RESTRICTED}" == "restricted" ]]; then
     echo "[INFO] Relaxing run.allowedIngress at project scope so IAM-authenticated Cloud Run endpoints are reachable..."
-    cat > /tmp/scape_run_ingress_policy.yaml <<EOF
+    cat > /tmp/cymbal_run_ingress_policy.yaml <<EOF
 name: projects/${PROJECT_ID}/policies/run.allowedIngress
 spec:
   rules:
   - allowAll: true
 EOF
-    gcloud org-policies set-policy /tmp/scape_run_ingress_policy.yaml --project="${PROJECT_ID}" >/dev/null 2>&1 || true
-    rm -f /tmp/scape_run_ingress_policy.yaml
+    gcloud org-policies set-policy /tmp/cymbal_run_ingress_policy.yaml --project="${PROJECT_ID}" >/dev/null 2>&1 || true
+    rm -f /tmp/cymbal_run_ingress_policy.yaml
   fi
 fi
 

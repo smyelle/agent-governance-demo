@@ -26,11 +26,16 @@ Implements strict web security controls:
 
 from __future__ import annotations
 
+import os
+
+# Configure gRPC C-core logging and fork behavior before grpc modules initialize
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
+
 from collections import defaultdict, deque
 import hmac
 import json
 import logging
-import os
 from pathlib import Path
 import secrets
 import sys
@@ -61,7 +66,9 @@ from evals.run_beyond_scape_proofs import (  # noqa: E402
 )
 from evals.run_closed_loop_eval import execute_closed_loop_flywheel  # noqa: E402
 from scape_agent.agent import build_scape_workflow  # noqa: E402
+from scape_agent.governance.gcp_auth import get_gcp_credentials  # noqa: E402
 from scape_agent.governance.identity_obo import (  # noqa: E402
+    fetch_cloud_run_id_token,
     inspect_zero_secret_posture,
     mint_demo_adr011_token_pair,
     verify_adr011_dual_tokens,
@@ -81,9 +88,19 @@ from scape_agent.memory.memory_bank import ScopedMemoryBankClient  # noqa: E402
 from scape_agent.tenant import list_available_profiles, load_tenant_profile  # noqa: E402
 
 logger = logging.getLogger("scape_web_bff")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
+logging.getLogger("google_adk").setLevel(logging.WARNING)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PROMPTS_DIR = REPO_ROOT / "config" / "prompts"
+
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7" fill="#2563eb"/>'
+    '<path d="M16 6l8 4v6c0 5.5-3.4 9.7-8 11-4.6-1.3-8-5.5-8-11v-6l8-4z" fill="#ffffff"/>'
+    "</svg>"
+)
 
 
 def _resolve_session_hmac_secret() -> bytes:
@@ -93,7 +110,7 @@ def _resolve_session_hmac_secret() -> bytes:
     secret_file = REPO_ROOT / "jwt_secret.txt"
     if secret_file.is_file():
         return secret_file.read_text(encoding="utf-8").strip().encode("utf-8")
-    logger.warning("Generating ephemeral BFF CSRF secret (single-instance sandbox mode).")
+    logger.debug("Generated ephemeral in-memory BFF CSRF secret for sandbox session.")
     return secrets.token_bytes(32)
 
 
@@ -191,6 +208,17 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         offline_mode = os.getenv("SCAPE_BFF_OFFLINE", "false").lower() in {"1", "true", "yes"}
 
     live_cloud = not offline_mode
+    if live_cloud:
+        # Pre-warm CLI OAuth & OIDC tokens once before any gRPC channel opens so
+        # request handlers never fork child subprocesses while gRPC pollsets exist.
+        try:
+            get_gcp_credentials()
+            a2a_url = os.getenv("SCAPE_A2A_URL", "")
+            if a2a_url:
+                fetch_cloud_run_id_token(a2a_url)
+        except Exception:
+            pass
+
     store = AtomicWalletAndGovernanceStore(in_memory_only=offline_mode)
     guard = FailClosedModelArmorGuard(live_api_enabled=live_cloud)
     tracer = UnifiedTraceBridge(cloud_trace_enabled=live_cloud)
@@ -289,6 +317,10 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok", "service": "scape-steward-web"}
+
+    @bff.get("/favicon.ico")
+    async def favicon() -> Response:
+        return Response(content=FAVICON_SVG, media_type="image/svg+xml")
 
     @bff.get("/api/bootstrap")
     async def bootstrap(request: Request, response: Response) -> dict[str, Any]:

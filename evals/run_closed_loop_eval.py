@@ -35,15 +35,13 @@ import datetime
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 from typing import Any
 
 from dotenv import load_dotenv
 from google import genai
-import pandas as pd
-import vertexai
+import httpx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -207,31 +205,27 @@ def _promote_in_registry_and_firestore(
         except Exception:
             firestore_synced = False
 
-        env = dict(os.environ)
-        existing_metrics = env.get("CLOUDSDK_METRICS_ENVIRONMENT", "")
-        env["CLOUDSDK_METRICS_ENVIRONMENT"] = f"{existing_metrics} datacloud.antigravity".strip()
-        desc = (
-            f"ADK 2.0 Incident Copilot | prompt_version=v2 | behavior_score={v2_score} | "
-            f"eval_gate=passed | deployment_status=active"
-        )
-        proc = subprocess.run(
-            [
-                "gcloud",
-                "agent-registry",
-                "services",
-                "update",
-                "scape-devx-incident-copilot",
-                f"--location={location}",
-                f"--project={project_id}",
-                f"--description={desc}",
-                "--quiet",
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        registry_synced = proc.returncode == 0
+        try:
+            creds, _ = get_gcp_credentials(project_id)
+            if not getattr(creds, "token", None):
+                creds.refresh(None)
+            desc = (
+                f"ADK 2.0 Incident Copilot | prompt_version=v2 | behavior_score={v2_score} | "
+                f"eval_gate=passed | deployment_status=active"
+            )
+            resp = httpx.patch(
+                f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{location}/services/scape-devx-incident-copilot",
+                params={"updateMask": "description"},
+                headers={
+                    "Authorization": f"Bearer {creds.token}",
+                    "X-Goog-User-Project": project_id,
+                },
+                json={"description": desc},
+                timeout=15.0,
+            )
+            registry_synced = resp.status_code == 200
+        except Exception:
+            registry_synced = False
 
     return {
         "pointer": pointer,

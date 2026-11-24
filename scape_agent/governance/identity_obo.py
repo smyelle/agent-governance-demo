@@ -49,6 +49,8 @@ FORBIDDEN_STATIC_SECRET_ENV_NAMES = (
 
 EXPECTED_JWT_ALGORITHM = "HS256"
 _EPHEMERAL_OBO_SIGNING_KEY: str | None = None
+_OIDC_ID_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_OIDC_CACHE_TTL_SECONDS = 2700.0
 
 
 def _get_obo_verification_secret() -> str:
@@ -206,11 +208,19 @@ def verify_adr011_dual_tokens(
 
 
 def fetch_cloud_run_id_token(target_audience: str) -> str | None:
-    """Mints an IAM OIDC ID token over-the-wire for authenticated Cloud Run calls."""
+    """Mints an IAM OIDC ID token over-the-wire with 45-min in-memory caching."""
     base_aud = target_audience.split("/mcp")[0].split("/a2a")[0].rstrip("/")
+    now = time.time()
+    cached = _OIDC_ID_TOKEN_CACHE.get(base_aud) or _OIDC_ID_TOKEN_CACHE.get("__cli__")
+    if cached and (now - cached[1]) < _OIDC_CACHE_TTL_SECONDS:
+        return cached[0]
+
     try:
         auth_req = google.auth.transport.requests.Request()
-        return google.oauth2.id_token.fetch_id_token(auth_req, base_aud)
+        tok = google.oauth2.id_token.fetch_id_token(auth_req, base_aud)
+        if tok:
+            _OIDC_ID_TOKEN_CACHE[base_aud] = (tok, now)
+            return tok
     except Exception:
         pass
 
@@ -230,6 +240,8 @@ def fetch_cloud_run_id_token(target_audience: str) -> str | None:
             )
             tok = proc.stdout.strip()
             if tok:
+                _OIDC_ID_TOKEN_CACHE["__cli__"] = (tok, now)
+                _OIDC_ID_TOKEN_CACHE[base_aud] = (tok, now)
                 return tok
         except Exception:
             return None

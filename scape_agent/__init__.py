@@ -14,6 +14,12 @@
 
 """Exports `root_agent` and resumable ADK 2.0 `app` for Agent Runtime deployment."""
 
+import os
+
+# Configure gRPC C-core logging and fork behavior before grpc modules initialize
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
+
 from scape_agent.agent import app, build_scape_workflow, governance_plugin, root_agent
 
 __all__ = ["app", "build_scape_workflow", "governance_plugin", "root_agent"]

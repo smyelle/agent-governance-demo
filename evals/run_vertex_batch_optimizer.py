@@ -22,6 +22,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import warnings
 
 from dotenv import load_dotenv
 import vertexai
@@ -70,7 +71,9 @@ def main() -> int:
         return 0
 
     creds, _ = get_gcp_credentials(project_id)
-    client = vertexai.Client(project=project_id, location=location, credentials=creds)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        client = vertexai.Client(project=project_id, location=location, credentials=creds)
     job = client.prompt_optimizer.optimize(config=spec)  # pragma: no cover
     print(json.dumps({"mode": "submitted", "job": str(job)}, indent=2))  # pragma: no cover
     return 0

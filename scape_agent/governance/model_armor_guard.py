@@ -254,8 +254,6 @@ class FailClosedModelArmorGuard:
                 client = self._get_client()
                 # Scan the unpacked + PII-masked text via live Model Armor regional REP
                 scan_payload = expanded_corpus[:16000]
-                if pii_masked:
-                    scan_payload = re.sub(r"ssn", "tax-id", scan_payload, flags=re.IGNORECASE)
                 if direction == "MODEL_RESPONSE":
                     req = modelarmor_v1.SanitizeModelResponseRequest(
                         name=active_template,

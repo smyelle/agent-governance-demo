@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import warnings
 
 from dotenv import load_dotenv
 import vertexai
@@ -139,7 +140,9 @@ def main() -> int:
 
     install_local_gcloud_auth_bridge(project_id)
     creds, _ = get_gcp_credentials(project_id)
-    client = vertexai.Client(project=project_id, location=location, credentials=creds)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        client = vertexai.Client(project=project_id, location=location, credentials=creds)
 
     deployable_app = agent_engines.AdkApp(
         app=scape_adk_app,

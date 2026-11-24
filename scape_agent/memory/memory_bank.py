@@ -26,6 +26,7 @@ import os
 import threading
 from typing import Any
 import uuid
+import warnings
 
 from google.cloud import firestore
 import vertexai
@@ -94,11 +95,13 @@ class ScopedMemoryBankClient:
     def _vx(self) -> Any:
         if self._vx_client is None:
             creds, _ = get_gcp_credentials(self.project_id)
-            self._vx_client = vertexai.Client(
-                project=self.project_id,
-                location=self.location,
-                credentials=creds,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                self._vx_client = vertexai.Client(
+                    project=self.project_id,
+                    location=self.location,
+                    credentials=creds,
+                )
         return self._vx_client
 
     @staticmethod

@@ -29,7 +29,7 @@ profiles:
       registry_name: "Agent & Tool Registry"
       observability_name: "Cloud Trace & Golden Signals"
       runbook_name: "OpsWiki Runbooks"
-      wallet_name: "Atomic Nano-USD Wallet & BigQuery Ledger"
+      wallet_name: "Atomic Nano-USD Wallet"
       guardrail_policy_name: "Model Armor + Cloud SDP"
       high_risk_tier: "AG3"
       low_risk_tier: "AG1"

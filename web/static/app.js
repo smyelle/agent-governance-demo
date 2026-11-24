@@ -17,8 +17,6 @@
 (function () {
   "use strict";
 
-  const SVG_NS = "http://www.w3.org/2000/svg";
-
   const state = {
     csrfToken: "",
     architectureMode: "google_native",
@@ -27,42 +25,11 @@
     activeSessionId: "",
     activeInterruptId: "",
     platformSnapshot: null,
-    selectedServiceId: "agent_runtime",
+    expandedServiceIds: new Set(["agent_runtime"]),
+    expandAll: false,
     steppingServiceId: "",
     replayTimerIds: [],
   };
-
-  const TOPOLOGY_COLUMNS = [
-    { x: 118, label: "1. IDENTITY & SAFETY" },
-    { x: 338, label: "2. REGISTRY & GATEWAY" },
-    { x: 558, label: "3. ADK 2.0 RUNTIME" },
-    { x: 778, label: "4. MEMORY & MESH" },
-    { x: 998, label: "5. FINOPS & EVAL" },
-  ];
-
-  const TOPOLOGY_NODES = {
-    agent_identity: { x: 20, y: 38, w: 196, h: 112 },
-    model_armor: { x: 20, y: 186, w: 196, h: 112 },
-    agent_registry: { x: 240, y: 38, w: 196, h: 112 },
-    agent_gateway: { x: 240, y: 186, w: 196, h: 112 },
-    agent_runtime: { x: 460, y: 104, w: 196, h: 128 },
-    memory_bank: { x: 680, y: 38, w: 196, h: 112 },
-    mcp_a2a_mesh: { x: 680, y: 186, w: 196, h: 112 },
-    trace_wallet: { x: 900, y: 38, w: 196, h: 112 },
-    eval_flywheel: { x: 900, y: 186, w: 196, h: 112 },
-  };
-
-  const TOPOLOGY_EDGES = [
-    { id: "identity->armor", d: "M 118 150 L 118 186", loop: false },
-    { id: "armor->gateway", d: "M 216 242 L 240 242", loop: false },
-    { id: "registry->gateway", d: "M 338 150 L 338 186", loop: false },
-    { id: "gateway->runtime", d: "M 436 226 C 448 226, 448 182, 460 182", loop: false },
-    { id: "runtime->memory", d: "M 656 146 C 668 146, 668 94, 680 94", loop: false },
-    { id: "gateway->mesh", d: "M 656 192 C 668 192, 668 242, 680 242", loop: false },
-    { id: "runtime->trace", d: "M 656 124 C 724 24, 832 24, 900 72", loop: false },
-    { id: "trace->eval", d: "M 998 150 L 998 186", loop: false },
-    { id: "eval->registry", d: "M 900 286 C 750 324, 485 324, 338 298", loop: true },
-  ];
 
   const PROOF_DEFINITIONS = [
     {
@@ -126,27 +93,6 @@
     return node;
   }
 
-  function svgEl(tag, attrs, text) {
-    const node = document.createElementNS(SVG_NS, tag);
-    if (attrs) {
-      Object.keys(attrs).forEach((k) => {
-        node.setAttribute(k, String(attrs[k]));
-      });
-    }
-    if (text !== undefined && text !== null) {
-      node.textContent = String(text);
-    }
-    return node;
-  }
-
-  function clipText(str, maxLen) {
-    const clean = String(str || "");
-    if (clean.length <= maxLen) {
-      return clean;
-    }
-    return clean.slice(0, maxLen - 2) + "..";
-  }
-
   async function apiGet(path) {
     const resp = await fetch(path, { credentials: "same-origin" });
     if (!resp.ok) {
@@ -202,236 +148,177 @@
     if (status === "PAUSED_HITL" || status === "MASKED_PII") {
       return "status-chip chip-warn";
     }
+    if (status === "READY") {
+      return "status-chip chip-ready";
+    }
+    if (status === "STANDBY") {
+      return "status-chip chip-muted";
+    }
     return "status-chip";
   }
 
-  function renderServiceInspector() {
-    const snap = state.platformSnapshot;
-    if (!snap || !snap.services) {
-      return;
-    }
-    const svc =
-      snap.services.find((s) => s.id === state.selectedServiceId) || snap.services[0];
-    if (!svc) {
-      return;
-    }
-
-    document.getElementById("insp-plane").textContent = svc.plane;
-    document.getElementById("insp-title").textContent = svc.step + ". " + svc.name;
-
-    const statusBadge = document.getElementById("insp-status");
-    statusBadge.className = statusChipClass(svc.status);
-    statusBadge.textContent = svc.status + " (" + svc.badge_label + ")";
-
-    const latencyEl = document.getElementById("insp-latency");
-    latencyEl.textContent =
-      svc.latency_ms !== null && svc.latency_ms !== undefined
-        ? "Measured: " + svc.latency_ms + " ms"
-        : "Control Plane Active";
-
-    document.getElementById("insp-summary").textContent = svc.summary;
-    document.getElementById("insp-api").textContent = svc.api_surface;
-    document.getElementById("insp-vendors").textContent = svc.consolidates;
-
-    const metricsRow = document.getElementById("insp-metrics-row");
-    metricsRow.replaceChildren();
-    const metricsObj = svc.metrics || {};
-    Object.keys(metricsObj).forEach((key) => {
-      const chip = el("div", "insp-metric-chip");
-      chip.appendChild(el("strong", "", key.replace(/_/g, " ")));
-      chip.appendChild(el("span", "", metricsObj[key]));
-      metricsRow.appendChild(chip);
-    });
-  }
-
-  function renderPlatformTopologySvg() {
-    const svg = document.getElementById("platform-topology-svg");
-    svg.replaceChildren();
+  function renderVerticalPipeline() {
+    const container = document.getElementById("vertical-pipeline-list");
+    container.replaceChildren();
     const snap = state.platformSnapshot;
     if (!snap || !snap.services) {
       return;
     }
 
-    // Arrowhead marker definitions
-    const defs = svgEl("defs");
-    const markerIdle = svgEl("marker", {
-      id: "arrow-idle",
-      viewBox: "0 0 10 10",
-      refX: "8",
-      refY: "5",
-      markerWidth: "5",
-      markerHeight: "5",
-      orient: "auto-start-reverse",
-    });
-    markerIdle.appendChild(svgEl("path", { d: "M 0 1 L 10 5 L 0 9 z", fill: "#475569" }));
-
-    const markerActive = svgEl("marker", {
-      id: "arrow-active",
-      viewBox: "0 0 10 10",
-      refX: "8",
-      refY: "5",
-      markerWidth: "5.5",
-      markerHeight: "5.5",
-      orient: "auto-start-reverse",
-    });
-    markerActive.appendChild(svgEl("path", { d: "M 0 1 L 10 5 L 0 9 z", fill: "#38bdf8" }));
-    defs.appendChild(markerIdle);
-    defs.appendChild(markerActive);
-    svg.appendChild(defs);
-
-    // Column stage labels
-    TOPOLOGY_COLUMNS.forEach((col) => {
-      svg.appendChild(
-        svgEl("text", { x: col.x, y: 20, class: "svg-col-label" }, col.label)
-      );
-    });
-
-    // Directed architecture edges
-    const activeSet = new Set(snap.active_edges || []);
-    TOPOLOGY_EDGES.forEach((edge) => {
-      const isAct = activeSet.has(edge.id);
-      svg.appendChild(svgEl("path", { d: edge.d, class: "svg-edge-base", "marker-end": "url(#arrow-idle)" }));
-      if (isAct) {
-        svg.appendChild(
-          svgEl("path", {
-            d: edge.d,
-            class: "svg-edge-active" + (edge.loop ? " svg-edge-loop" : ""),
-            "marker-end": "url(#arrow-active)",
-          })
-        );
-      }
-    });
-
-    // 9 Google Agent Platform service nodes
+    let currentStage = "";
     snap.services.forEach((svc) => {
-      const box = TOPOLOGY_NODES[svc.id];
-      if (!box) {
-        return;
+      if (svc.stage_group && svc.stage_group !== currentStage) {
+        currentStage = svc.stage_group;
+        container.appendChild(el("div", "pipeline-stage-divider", currentStage));
       }
-      const classes = ["svc-node", "svc-status-" + svc.status];
-      if (state.selectedServiceId === svc.id) {
-        classes.push("svc-node-selected");
+
+      const isExpanded = state.expandAll || state.expandedServiceIds.has(svc.id);
+      const rowClasses = ["pipeline-step-row", "step-status-" + svc.status];
+      if (isExpanded) {
+        rowClasses.push("step-expanded");
       }
       if (state.steppingServiceId === svc.id) {
-        classes.push("svc-node-stepping");
+        rowClasses.push("step-stepping");
       }
 
-      const g = svgEl("g", {
-        class: classes.join(" "),
-        tabindex: "0",
-        role: "button",
-        "aria-label": svc.step + ". " + svc.name + " - " + svc.status + " - " + svc.badge_label,
-      });
+      const row = el("div", rowClasses.join(" "));
+      row.setAttribute("role", "listitem");
 
-      g.appendChild(
-        svgEl("rect", {
-          x: box.x,
-          y: box.y,
-          width: box.w,
-          height: box.h,
-          rx: 10,
-          class: "svc-card-bg",
-        })
-      );
+      // Left vertical timeline rail + numbered node circle
+      const rail = el("div", "pipeline-rail");
+      rail.appendChild(el("div", "pipeline-node-circle", String(svc.step)));
+      rail.appendChild(el("div", "pipeline-rail-line"));
+      row.appendChild(rail);
 
-      g.appendChild(
-        svgEl("circle", {
-          cx: box.x + 15,
-          cy: box.y + 21,
-          r: 5,
-          class: "svc-dot-" + svc.status,
-        })
-      );
+      // Spacious full-width service card
+      const card = el("div", "pipeline-card");
+      const trigger = el("button", "pipeline-card-trigger");
+      trigger.type = "button";
+      trigger.setAttribute("aria-expanded", String(isExpanded));
 
-      g.appendChild(
-        svgEl(
-          "text",
-          { x: box.x + 26, y: box.y + 25, class: "svc-title" },
-          clipText(svc.step + ". " + svc.name, 25)
-        )
-      );
+      const topLine = el("div", "pipeline-card-top");
+      const nameWrap = el("div", "pipeline-name-wrap");
+      nameWrap.appendChild(el("span", "pipeline-svc-name", svc.name));
+      nameWrap.appendChild(el("span", "pipeline-plane-tag", svc.plane));
 
-      g.appendChild(
-        svgEl(
-          "text",
-          { x: box.x + 12, y: box.y + 46, class: "svc-subtitle" },
-          clipText(svc.subtitle, 30)
-        )
-      );
+      const badgesWrap = el("div", "pipeline-badges-wrap");
+      badgesWrap.appendChild(el("span", statusChipClass(svc.status), svc.badge_label));
+      if (svc.latency_ms !== null && svc.latency_ms !== undefined) {
+        badgesWrap.appendChild(el("span", "mono-pill", Math.round(svc.latency_ms * 10) / 10 + " ms"));
+      }
+      badgesWrap.appendChild(el("span", "pipeline-chevron", isExpanded ? "Hide" : "Details"));
 
-      g.appendChild(
-        svgEl(
-          "text",
-          { x: box.x + 12, y: box.y + 64, class: "svc-plane" },
-          clipText(svc.plane, 29)
-        )
-      );
+      topLine.appendChild(nameWrap);
+      topLine.appendChild(badgesWrap);
+      trigger.appendChild(topLine);
 
-      const pillY = box.y + box.h - 32;
-      g.appendChild(
-        svgEl("rect", {
-          x: box.x + 10,
-          y: pillY,
-          width: box.w - 20,
-          height: 22,
-          rx: 11,
-          class: "svc-pill-bg-" + svc.status,
-        })
-      );
+      // Subtitle (clean full text when collapsed; full live summary inside drawer when expanded)
+      const briefLine =
+        svc.status === "READY" || isExpanded ? svc.subtitle : svc.summary;
+      trigger.appendChild(el("p", "pipeline-svc-subtitle", briefLine));
 
-      const latencySuffix =
-        svc.latency_ms !== null && svc.latency_ms !== undefined
-          ? " (" + Math.round(svc.latency_ms) + "ms)"
-          : "";
-      g.appendChild(
-        svgEl(
-          "text",
-          { x: box.x + box.w / 2, y: pillY + 14.5, class: "svc-pill-text" },
-          clipText(svc.badge_label + latencySuffix, 27)
-        )
-      );
-
-      const selectThisNode = () => {
-        state.selectedServiceId = svc.id;
-        renderPlatformTopologySvg();
-        renderServiceInspector();
-      };
-
-      g.addEventListener("click", selectThisNode);
-      g.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") {
-          ev.preventDefault();
-          selectThisNode();
+      trigger.addEventListener("click", () => {
+        if (state.expandAll) {
+          state.expandAll = false;
+          document.getElementById("btn-expand-all").textContent = "Expand All";
+          state.expandedServiceIds = new Set([svc.id]);
+        } else if (state.expandedServiceIds.has(svc.id)) {
+          state.expandedServiceIds.delete(svc.id);
+        } else {
+          state.expandedServiceIds = new Set([svc.id]);
         }
+        renderVerticalPipeline();
       });
 
-      svg.appendChild(g);
+      card.appendChild(trigger);
+
+      if (isExpanded) {
+        const drawer = el("div", "pipeline-drawer");
+        drawer.appendChild(el("p", "drawer-summary", svc.summary));
+
+        const metaList = el("div", "drawer-meta-list");
+        const apiRow = el("div", "drawer-meta-row");
+        apiRow.appendChild(el("span", "drawer-label", "Google Cloud API Surface"));
+        apiRow.appendChild(el("code", "drawer-code", svc.api_surface));
+        metaList.appendChild(apiRow);
+
+        const vendorRow = el("div", "drawer-meta-row");
+        vendorRow.appendChild(el("span", "drawer-label", "Consolidates Specialist 3P Categories"));
+        vendorRow.appendChild(el("code", "drawer-code", svc.consolidates));
+        metaList.appendChild(vendorRow);
+        drawer.appendChild(metaList);
+
+        const metricsObj = svc.metrics || {};
+        const metricKeys = Object.keys(metricsObj);
+        if (metricKeys.length > 0) {
+          const mGrid = el("div", "drawer-metrics-grid");
+          metricKeys.forEach((k) => {
+            const mBox = el("div", "drawer-metric-box");
+            mBox.appendChild(el("strong", "", k.replace(/_/g, " ")));
+            mBox.appendChild(el("span", "", metricsObj[k]));
+            mGrid.appendChild(mBox);
+          });
+          drawer.appendChild(mGrid);
+        }
+
+        card.appendChild(drawer);
+      }
+
+      row.appendChild(card);
+      container.appendChild(row);
     });
   }
 
-  function animateFlowSequence(sequence) {
+  function pickHighlightService(snapshot) {
+    if (!snapshot || !snapshot.services) {
+      return "agent_runtime";
+    }
+    const blocked = snapshot.services.find((s) => s.status === "BLOCKED");
+    if (blocked) {
+      return blocked.id;
+    }
+    const paused = snapshot.services.find(
+      (s) => s.status === "PAUSED_HITL" || s.status === "MASKED_PII"
+    );
+    if (paused) {
+      return paused.id;
+    }
+    const anyActive = snapshot.services.some(
+      (s) => s.status === "VERIFIED" || s.status === "ACTIVE"
+    );
+    const seq = snapshot.flow_sequence || [];
+    if (anyActive && seq.length > 0) {
+      return seq[seq.length - 1];
+    }
+    return "agent_runtime";
+  }
+
+  function animateFlowSequence(sequence, finalHighlightId) {
     clearReplayTimers();
-    const steps = (sequence || []).filter((id) => TOPOLOGY_NODES[id]);
+    const steps = (sequence || []).slice();
     if (!steps.length) {
-      renderPlatformTopologySvg();
-      renderServiceInspector();
+      renderVerticalPipeline();
       return;
     }
 
     steps.forEach((svcId, idx) => {
       const tid = window.setTimeout(() => {
         state.steppingServiceId = svcId;
-        state.selectedServiceId = svcId;
-        renderPlatformTopologySvg();
-        renderServiceInspector();
-      }, idx * 140);
+        if (!state.expandAll) {
+          state.expandedServiceIds = new Set([svcId]);
+        }
+        renderVerticalPipeline();
+      }, idx * 130);
       state.replayTimerIds.push(tid);
     });
 
     const endTid = window.setTimeout(() => {
       state.steppingServiceId = "";
-      renderPlatformTopologySvg();
-    }, steps.length * 140 + 220);
+      if (!state.expandAll && finalHighlightId) {
+        state.expandedServiceIds = new Set([finalHighlightId]);
+      }
+      renderVerticalPipeline();
+    }, steps.length * 130 + 180);
     state.replayTimerIds.push(endTid);
   }
 
@@ -443,17 +330,20 @@
     document.getElementById("viz-last-event").textContent = snapshot.last_event || "";
     document.getElementById("viz-mode-pill").textContent =
       snapshot.architecture_mode === "enterprise_hybrid"
-        ? "Enterprise Hybrid Coexistence"
-        : "Google-Native Full Platform";
+        ? "Enterprise Hybrid"
+        : "Google-Native";
     document.getElementById("viz-trace-pill").textContent = snapshot.trace_id
-      ? "W3C Trace: " + snapshot.trace_id.slice(0, 14) + "..."
+      ? "Trace: " + snapshot.trace_id.slice(0, 12) + "..."
       : "W3C Trace: Ready";
 
+    const targetHighlight = pickHighlightService(snapshot);
     if (animate && snapshot.flow_sequence && snapshot.flow_sequence.length) {
-      animateFlowSequence(snapshot.flow_sequence);
+      animateFlowSequence(snapshot.flow_sequence, targetHighlight);
     } else {
-      renderPlatformTopologySvg();
-      renderServiceInspector();
+      if (!state.expandAll) {
+        state.expandedServiceIds = new Set([targetHighlight]);
+      }
+      renderVerticalPipeline();
     }
   }
 
@@ -471,7 +361,7 @@
       btn.type = "button";
       const top = el("div", "incident-item-top");
       top.appendChild(el("span", "", inc.incident_id));
-      top.appendChild(el("span", "", inc.severity));
+      top.appendChild(el("span", "subtle-tag", inc.severity));
       btn.appendChild(top);
       btn.appendChild(el("div", "incident-item-title", inc.title));
       btn.addEventListener("click", () => {
@@ -696,6 +586,42 @@
     });
   }
 
+  function activateWorkspaceTab(mode) {
+    const tabAgent = document.getElementById("tab-agent");
+    const tabSteward = document.getElementById("tab-steward");
+    const tabPipeline = document.getElementById("tab-pipeline");
+    const shell = document.getElementById("workspace-shell");
+    const leftCol = document.getElementById("primary-workspace-col");
+    const viewAgent = document.getElementById("view-agent");
+    const viewSteward = document.getElementById("view-steward");
+
+    [tabAgent, tabSteward, tabPipeline].forEach((b) => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
+
+    if (mode === "pipeline") {
+      tabPipeline.classList.add("active");
+      tabPipeline.setAttribute("aria-selected", "true");
+      leftCol.classList.add("hidden");
+      shell.className = "workspace-container workspace-focus-pipeline";
+    } else if (mode === "steward") {
+      tabSteward.classList.add("active");
+      tabSteward.setAttribute("aria-selected", "true");
+      leftCol.classList.remove("hidden");
+      viewSteward.classList.remove("hidden");
+      viewAgent.classList.add("hidden");
+      shell.className = "workspace-container workspace-split";
+    } else {
+      tabAgent.classList.add("active");
+      tabAgent.setAttribute("aria-selected", "true");
+      leftCol.classList.remove("hidden");
+      viewAgent.classList.remove("hidden");
+      viewSteward.classList.add("hidden");
+      shell.className = "workspace-container workspace-split";
+    }
+  }
+
   async function init() {
     renderProofCards();
     const boot = await apiGet("/api/bootstrap");
@@ -737,40 +663,34 @@
       );
     }
 
-    // Visualization controls
+    // Pipeline toolbar controls
     document.getElementById("btn-replay-flow").addEventListener("click", () => {
       if (state.platformSnapshot) {
-        animateFlowSequence(state.platformSnapshot.flow_sequence);
+        animateFlowSequence(
+          state.platformSnapshot.flow_sequence,
+          pickHighlightService(state.platformSnapshot)
+        );
       }
     });
 
-    document.getElementById("btn-toggle-viz").addEventListener("click", () => {
-      const body = document.getElementById("viz-body");
-      const btn = document.getElementById("btn-toggle-viz");
-      const isHidden = body.classList.toggle("hidden");
-      btn.setAttribute("aria-expanded", String(!isHidden));
-      btn.textContent = isHidden ? "Expand Map" : "Collapse Map";
+    document.getElementById("btn-expand-all").addEventListener("click", () => {
+      state.expandAll = !state.expandAll;
+      document.getElementById("btn-expand-all").textContent = state.expandAll
+        ? "Collapse Details"
+        : "Expand All";
+      renderVerticalPipeline();
     });
 
-    // Accessible Persona Tab switching
-    const tabAgent = document.getElementById("tab-agent");
-    const tabSteward = document.getElementById("tab-steward");
-    tabAgent.addEventListener("click", () => {
-      tabAgent.classList.add("active");
-      tabAgent.setAttribute("aria-selected", "true");
-      tabSteward.classList.remove("active");
-      tabSteward.setAttribute("aria-selected", "false");
-      document.getElementById("view-agent").classList.remove("hidden");
-      document.getElementById("view-steward").classList.add("hidden");
-    });
-    tabSteward.addEventListener("click", () => {
-      tabSteward.classList.add("active");
-      tabSteward.setAttribute("aria-selected", "true");
-      tabAgent.classList.remove("active");
-      tabAgent.setAttribute("aria-selected", "false");
-      document.getElementById("view-steward").classList.remove("hidden");
-      document.getElementById("view-agent").classList.add("hidden");
-    });
+    // Accessible Workspace Tabs (1. Agent | 2. Steward | 3. Full Platform Pipeline)
+    document
+      .getElementById("tab-agent")
+      .addEventListener("click", () => activateWorkspaceTab("agent"));
+    document
+      .getElementById("tab-steward")
+      .addEventListener("click", () => activateWorkspaceTab("steward"));
+    document
+      .getElementById("tab-pipeline")
+      .addEventListener("click", () => activateWorkspaceTab("pipeline"));
 
     // Architecture Mode switching
     document.getElementById("mode-select").addEventListener("change", async () => {
@@ -969,6 +889,18 @@
       renderTelemetry(snap.recent_traces, snap.recent_ledger);
       updatePlatformServices(snap.platform_services, false);
     });
+
+    // Optional URL view parameter (?view=pipeline | ?view=steward)
+    const params = new URLSearchParams(window.location.search);
+    const requestedView = params.get("view");
+    if (requestedView === "pipeline" || requestedView === "steward") {
+      activateWorkspaceTab(requestedView);
+    }
+    if (params.get("expand") === "all") {
+      state.expandAll = true;
+      document.getElementById("btn-expand-all").textContent = "Collapse Details";
+      renderVerticalPipeline();
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);

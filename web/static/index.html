@@ -32,213 +32,131 @@ limitations under the License.
       </div>
     </div>
 
-    <div class="header-controls">
-      <div class="consolidation-banner">
-        Consolidates 6 Specialist Vendor Categories: Runlayer/Arcade, E2B, Veris, Mem0, Revenium, Straiker
-      </div>
-      <div class="selector-row">
-        <label class="ctrl-label" for="mode-select">Architecture Mode</label>
-        <select id="mode-select" class="ctrl-select">
-          <option value="google_native">Google-Native Full Platform</option>
-          <option value="enterprise_hybrid">Enterprise Hybrid Coexistence</option>
-        </select>
+    <div class="selector-row">
+      <label class="ctrl-label" for="mode-select">Mode</label>
+      <select id="mode-select" class="ctrl-select">
+        <option value="google_native">Google-Native Full Platform</option>
+        <option value="enterprise_hybrid">Enterprise Hybrid Coexistence</option>
+      </select>
 
-        <div class="persona-tabs" role="tablist" aria-label="Workspace View Switcher">
-          <button type="button" id="tab-agent" role="tab" aria-selected="true" aria-controls="view-agent" class="tab-btn active">
-            1. Operations &amp; Release Agent
-          </button>
-          <button type="button" id="tab-steward" role="tab" aria-selected="false" aria-controls="view-steward" class="tab-btn">
-            2. Platform Steward Console
-          </button>
-        </div>
+      <div class="persona-tabs" role="tablist" aria-label="Workspace View Switcher">
+        <button type="button" id="tab-agent" role="tab" aria-selected="true" aria-controls="view-agent" class="tab-btn active">
+          1. Operations Agent
+        </button>
+        <button type="button" id="tab-steward" role="tab" aria-selected="false" aria-controls="view-steward" class="tab-btn">
+          2. Steward Console
+        </button>
+        <button type="button" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="platform-viz-section" class="tab-btn">
+          3. Platform Pipeline
+        </button>
       </div>
     </div>
   </header>
 
-  <main class="workspace-container">
-    <!-- LIVE GOOGLE AGENT PLATFORM 9-SERVICE VISUALIZATION -->
-    <section id="platform-viz-section" class="card viz-shell" aria-label="Google Agent Platform Live Services Visualization">
-      <div class="viz-header">
-        <div>
-          <div class="viz-title-row">
-            <h2>Google Agent Platform Live Services Topology</h2>
-            <span id="viz-mode-pill" class="subtle-tag">Google-Native Full Platform</span>
-            <span id="viz-trace-pill" class="mono-pill">W3C Trace: Ready</span>
-          </div>
-          <p id="viz-last-event" class="viz-event-banner">
-            Initializing 9 managed Google Agent Platform services...
-          </p>
-        </div>
-        <div class="viz-actions">
-          <div class="viz-legend" aria-label="Service Status Legend">
-            <span class="legend-item"><span class="legend-dot dot-verified"></span>Active / Verified</span>
-            <span class="legend-item"><span class="legend-dot dot-paused"></span>HITL Pause / SDP Mask</span>
-            <span class="legend-item"><span class="legend-dot dot-blocked"></span>Blocked Fail-Closed</span>
-            <span class="legend-item"><span class="legend-dot dot-ready"></span>Ready / Standby</span>
-          </div>
-          <button type="button" id="btn-replay-flow" class="small-btn">Replay Execution Flow</button>
-          <button type="button" id="btn-toggle-viz" class="small-btn" aria-expanded="true">Collapse Map</button>
-        </div>
-      </div>
-
-      <div id="viz-body" class="viz-body">
-        <div class="viz-canvas-wrap">
-          <svg
-            id="platform-topology-svg"
-            class="topology-svg"
-            viewBox="0 0 1120 332"
-            role="img"
-            aria-label="Interactive architecture diagram showing 9 Google Agent Platform services executing live"
-          ></svg>
-        </div>
-
-        <div id="service-inspector" class="service-inspector" aria-live="polite">
-          <div class="inspector-top">
-            <div>
-              <span id="insp-plane" class="subtle-tag">ADK 2.0 Runtime &amp; Sandbox</span>
-              <h3 id="insp-title" class="insp-heading">5. Vertex AI Agent Runtime</h3>
-            </div>
-            <div class="inspector-badges">
-              <span id="insp-status" class="status-chip">READY</span>
-              <span id="insp-latency" class="mono-pill">Click any service node to inspect</span>
-            </div>
-          </div>
-          <p id="insp-summary" class="insp-summary-text"></p>
-          <div class="insp-meta-grid">
-            <div class="insp-meta-item">
-              <span class="insp-meta-label">Google Cloud API Surface</span>
-              <code id="insp-api" class="insp-code"></code>
-            </div>
-            <div class="insp-meta-item">
-              <span class="insp-meta-label">Specialist 3P Categories Consolidated</span>
-              <code id="insp-vendors" class="insp-code"></code>
-            </div>
-          </div>
-          <div id="insp-metrics-row" class="insp-metrics-row"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- VIEW 1: CYMBAL CORE OPERATIONS & RELEASE AGENT -->
-    <section id="view-agent" role="tabpanel" aria-labelledby="tab-agent" class="persona-view">
-      <div class="agent-grid">
-        <aside class="incident-rail card">
+  <main id="workspace-shell" class="workspace-container workspace-split">
+    <!-- LEFT COLUMN: ACTIVE WORKSPACE (AGENT OR STEWARD) -->
+    <div id="primary-workspace-col" class="workspace-left">
+      <!-- VIEW 1: CYMBAL CORE OPERATIONS & RELEASE AGENT -->
+      <section id="view-agent" role="tabpanel" aria-labelledby="tab-agent" class="persona-view">
+        <div class="card scenario-card">
           <div class="card-header">
-            <h2>Active Incidents</h2>
+            <div>
+              <h2>Active Production Incidents</h2>
+              <p class="muted-note">Select an incident scenario to execute governed ADK 2.0 Workflow triage.</p>
+            </div>
             <span class="subtle-tag" id="term-observability">Cloud Trace &amp; Golden Signals</span>
           </div>
-          <div id="incident-list" class="incident-list"></div>
-
-          <div class="memory-sidebar-box">
-            <h3>Longitudinal Memory Bank</h3>
-            <p class="muted-note">Strictly scoped to authenticated principal JWT subject.</p>
-            <div id="memory-list" class="memory-list"></div>
-          </div>
-        </aside>
-
-        <div class="agent-center">
-          <div class="card prompt-composer">
-            <div class="card-header">
-              <h2 id="selected-incident-heading">INC-4092: Triage &amp; Governed Release Remediation</h2>
-              <span class="status-chip" id="agent-run-status">Ready</span>
-            </div>
-            <label class="ctrl-label" for="agent-prompt-input">On-Call SRE &amp; Release Investigation Instruction</label>
-            <textarea id="agent-prompt-input" rows="3" class="prompt-textarea"></textarea>
-            <div class="composer-actions">
-              <button type="button" id="btn-run-triage" class="primary-btn">Execute ADK 2.0 Workflow Triage</button>
-              <span id="inline-sdp-notice" class="sdp-pill hidden">Inline Cloud SDP PII Masking Applied</span>
-            </div>
-          </div>
-
-          <!-- RESUMABLE HITL APPROVAL CARD -->
-          <div id="ag3-approval-card" class="card approval-card hidden">
-            <div class="card-header">
-              <h2 id="approval-card-title">SENTINEL AG3 Human Authorization Gate (Paused via RequestInput)</h2>
-              <span class="risk-badge">HITL Checkpoint</span>
-            </div>
-            <p id="approval-plan-summary" class="approval-plan-text"></p>
-            <div id="approval-freeze-banner" class="warning-banner hidden">
-              Active Cymbal Peak Change Freeze Detected: VP Change-Freeze Exception Ticket Required Before Rollback.
-            </div>
-            <div class="approval-form-row">
-              <input type="text" id="vp-ticket-input" class="ctrl-input" placeholder="Optional VP Exception Ticket (e.g. VP-EXC-4095)" />
-              <button type="button" id="btn-approve-rollback" class="success-btn">Approve Canary Rollback</button>
-              <button type="button" id="btn-hold-exception" class="secondary-btn">Hold for VP Change-Freeze Exception</button>
-            </div>
-          </div>
-
-          <!-- CORRELATED SIGNALS, GVISOR SANDBOX & SYNTHESIS -->
-          <div id="triage-results-panel" class="results-stack"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- VIEW 2: GOOGLE AGENT PLATFORM STEWARD CONSOLE -->
-    <section id="view-steward" role="tabpanel" aria-labelledby="tab-steward" class="persona-view hidden">
-      <div class="steward-top-metrics">
-        <div class="card metric-card">
-          <div class="metric-header">
-            <h3>Global Kill Switch</h3>
-            <span id="agent-status-pill" class="status-chip">ACTIVE</span>
-          </div>
-          <p class="muted-note">Enforced across model inference, MCP tools, and A2A calls.</p>
-          <div class="btn-group">
-            <button type="button" data-kill="ACTIVE" class="small-btn">Set ACTIVE</button>
-            <button type="button" data-kill="PAUSED" class="small-btn warn">Set PAUSED</button>
-            <button type="button" data-kill="DISABLED" class="small-btn danger">Set DISABLED</button>
-          </div>
+          <div id="incident-list" class="incident-grid"></div>
         </div>
 
-        <div class="card metric-card">
-          <div class="metric-header">
-            <h3 id="term-wallet">Atomic Nano-USD Wallet</h3>
-            <span id="wallet-cpri-pill" class="brand-pill">Cost / Resolved Incident</span>
-          </div>
-          <p id="wallet-summary-text" class="metric-value">$0.000000 spent / $15.00 cap</p>
-          <div class="btn-group">
-            <button type="button" id="btn-cap-normal" class="small-btn">Set $15.00 Sandbox Cap</button>
-            <button type="button" id="btn-cap-tight" class="small-btn warn">Simulate Cap Exhaustion (403)</button>
-          </div>
-        </div>
-
-        <div class="card metric-card">
-          <div class="metric-header">
-            <h3>Zero-Secret Runtime Posture</h3>
-            <span id="spiffe-pill" class="status-chip">SPIFFE SVID</span>
-          </div>
-          <p id="posture-summary-text" class="muted-note"></p>
-          <div class="btn-group">
-            <button type="button" id="btn-verify-obo" class="small-btn">Verify ADR-011 azp vs Pairwise sub</button>
-          </div>
-          <p id="obo-verify-output" class="mono-note"></p>
-        </div>
-      </div>
-
-      <!-- HERO PANEL: 8 CAPABILITIES BEYOND MULTI-SYSTEM BASELINE -->
-      <div class="card section-block">
-        <div class="card-header">
-          <div>
-            <h2>Capabilities Beyond Multi-System DIY Baselines (Live Proof Lab)</h2>
-            <p class="muted-note">Execute live verification proofs comparing Multi-System / DIY Baselines vs. Google Agent Platform Managed Services.</p>
-          </div>
-          <button type="button" id="btn-run-all-proofs" class="primary-btn">Run All 8 Live Proofs</button>
-        </div>
-        <div id="proof-cards-grid" class="proof-grid"></div>
-      </div>
-
-      <!-- GUARDRAIL TCO & INTERACTIVE THREAT LAB -->
-      <div class="two-col-grid">
-        <div class="card section-block">
+        <div class="card prompt-composer">
           <div class="card-header">
-            <h2 id="term-guardrail">Model Armor + Cloud SDP TCO Calculator</h2>
+            <h2 id="selected-incident-heading">INC-4092: Triage &amp; Governed Release Remediation</h2>
+            <span class="status-chip" id="agent-run-status">Ready</span>
           </div>
-          <label class="ctrl-label" for="tco-slider">
-            Enterprise Volume: <strong id="tco-volume-label">10,000,000</strong> turns / day (1,000 tokens / turn)
-          </label>
-          <input type="range" id="tco-slider" min="1000000" max="50000000" step="1000000" value="10000000" class="full-slider" />
-          <div id="tco-breakdown" class="tco-cards"></div>
+          <label class="ctrl-label" for="agent-prompt-input">On-Call SRE &amp; Release Investigation Instruction</label>
+          <textarea id="agent-prompt-input" rows="3" class="prompt-textarea"></textarea>
+          <div class="composer-actions">
+            <button type="button" id="btn-run-triage" class="primary-btn">Execute ADK 2.0 Workflow Triage</button>
+            <span id="inline-sdp-notice" class="sdp-pill hidden">Inline Cloud SDP PII Masking Applied</span>
+          </div>
         </div>
 
+        <!-- RESUMABLE HITL APPROVAL CARD -->
+        <div id="ag3-approval-card" class="card approval-card hidden">
+          <div class="card-header">
+            <h2 id="approval-card-title">SENTINEL AG3 Human Authorization Gate (Paused via RequestInput)</h2>
+            <span class="risk-badge">HITL Checkpoint</span>
+          </div>
+          <p id="approval-plan-summary" class="approval-plan-text"></p>
+          <div id="approval-freeze-banner" class="warning-banner hidden">
+            Active Cymbal Peak Change Freeze Detected: VP Change-Freeze Exception Ticket Required Before Rollback.
+          </div>
+          <div class="approval-form-row">
+            <input type="text" id="vp-ticket-input" class="ctrl-input" placeholder="Optional VP Exception Ticket (e.g. VP-EXC-4095)" />
+            <button type="button" id="btn-approve-rollback" class="success-btn">Approve Canary Rollback</button>
+            <button type="button" id="btn-hold-exception" class="secondary-btn">Hold for VP Change-Freeze Exception</button>
+          </div>
+        </div>
+
+        <!-- CORRELATED SIGNALS, GVISOR SANDBOX & SYNTHESIS -->
+        <div id="triage-results-panel" class="results-stack"></div>
+
+        <!-- LONGITUDINAL MEMORY BANK -->
+        <div class="card memory-card">
+          <div class="card-header">
+            <div>
+              <h2>Longitudinal Vertex AI Memory Bank</h2>
+              <p class="muted-note">Cross-session incident facts strictly isolated to authenticated JWT principal.</p>
+            </div>
+            <span class="subtle-tag">user_id=sre-oncall-01</span>
+          </div>
+          <div id="memory-list" class="memory-list"></div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: GOOGLE AGENT PLATFORM STEWARD CONSOLE -->
+      <section id="view-steward" role="tabpanel" aria-labelledby="tab-steward" class="persona-view hidden">
+        <div class="steward-top-metrics">
+          <div class="card metric-card">
+            <div class="metric-header">
+              <h3>Global Kill Switch</h3>
+              <span id="agent-status-pill" class="status-chip">ACTIVE</span>
+            </div>
+            <p class="muted-note">Enforced across model inference, MCP tools, and A2A calls.</p>
+            <div class="btn-group">
+              <button type="button" data-kill="ACTIVE" class="small-btn">Set ACTIVE</button>
+              <button type="button" data-kill="PAUSED" class="small-btn warn">Set PAUSED</button>
+              <button type="button" data-kill="DISABLED" class="small-btn danger">Set DISABLED</button>
+            </div>
+          </div>
+
+          <div class="card metric-card">
+            <div class="metric-header">
+              <h3 id="term-wallet">Atomic Nano-USD Wallet</h3>
+              <span id="wallet-cpri-pill" class="brand-pill">Cost / Outcome</span>
+            </div>
+            <p id="wallet-summary-text" class="metric-value">$0.000000 spent / $15.00 cap</p>
+            <div class="btn-group">
+              <button type="button" id="btn-cap-normal" class="small-btn">Set $15.00 Sandbox Cap</button>
+              <button type="button" id="btn-cap-tight" class="small-btn warn">Simulate Cap Exhaustion (403)</button>
+            </div>
+          </div>
+
+          <div class="card metric-card">
+            <div class="metric-header">
+              <h3>Zero-Secret Posture</h3>
+              <span id="spiffe-pill" class="status-chip">SPIFFE SVID</span>
+            </div>
+            <p id="posture-summary-text" class="muted-note"></p>
+            <div class="btn-group">
+              <button type="button" id="btn-verify-obo" class="small-btn">Verify ADR-011 azp vs Pairwise sub</button>
+            </div>
+            <p id="obo-verify-output" class="mono-note"></p>
+          </div>
+        </div>
+
+        <!-- LIVE MODEL ARMOR THREAT SANITIZER & TCO CALCULATOR -->
         <div class="card section-block">
           <div class="card-header">
             <h2>Live Model Armor + Cloud SDP Threat Sanitizer</h2>
@@ -253,10 +171,31 @@ limitations under the License.
           <button type="button" id="btn-test-threat" class="primary-btn">Inspect Payload via Fail-Closed Guard</button>
           <div id="threat-verdict-box" class="verdict-box"></div>
         </div>
-      </div>
 
-      <!-- CLOSED-LOOP OPTIMIZATION FLYWHEEL & UNIFIED SINGLE-TRACE WATERFALL -->
-      <div class="two-col-grid">
+        <div class="card section-block">
+          <div class="card-header">
+            <h2 id="term-guardrail">Model Armor + Cloud SDP TCO Calculator</h2>
+          </div>
+          <label class="ctrl-label" for="tco-slider">
+            Enterprise Volume: <strong id="tco-volume-label">10,000,000</strong> turns / day (1,000 tokens / turn)
+          </label>
+          <input type="range" id="tco-slider" min="1000000" max="50000000" step="1000000" value="10000000" class="full-slider" />
+          <div id="tco-breakdown" class="tco-cards"></div>
+        </div>
+
+        <!-- 8 LIVE CAPABILITY PROOFS -->
+        <div class="card section-block">
+          <div class="card-header">
+            <div>
+              <h2>Capabilities Beyond Multi-System DIY Baselines (Live Proof Lab)</h2>
+              <p class="muted-note">Consolidates 6 Specialist Vendor Categories: Runlayer/Arcade, E2B, Veris, Mem0, Revenium, Straiker.</p>
+            </div>
+            <button type="button" id="btn-run-all-proofs" class="primary-btn">Run All 8 Live Proofs</button>
+          </div>
+          <div id="proof-cards-grid" class="proof-grid"></div>
+        </div>
+
+        <!-- CLOSED-LOOP OPTIMIZATION FLYWHEEL -->
         <div class="card section-block">
           <div class="card-header">
             <div>
@@ -278,6 +217,7 @@ limitations under the License.
           </div>
         </div>
 
+        <!-- UNIFIED SINGLE-TRACE WATERFALL & WALLET LEDGER -->
         <div class="card section-block">
           <div class="card-header">
             <h2>Unified W3C Single-Trace Join &amp; BigQuery Wallet Ledger</h2>
@@ -289,8 +229,40 @@ limitations under the License.
           <h4>BigQuery Wallet Ledger (Cost-per-Outcome Attribution)</h4>
           <div id="ledger-table-box" class="trace-list"></div>
         </div>
+      </section>
+    </div>
+
+    <!-- RIGHT STICKY COLUMN (OR FULL-WIDTH SHOWCASE): VERTICAL 9-SERVICE GOOGLE AGENT PLATFORM PIPELINE -->
+    <aside id="platform-viz-section" class="card pipeline-panel" aria-label="Google Agent Platform Vertical Execution Pipeline">
+      <div class="pipeline-header">
+        <div class="pipeline-title-group">
+          <div class="pipeline-heading-row">
+            <h2>Google Agent Platform Services</h2>
+            <span id="viz-mode-pill" class="subtle-tag">Google-Native</span>
+            <span id="viz-trace-pill" class="mono-pill">W3C Trace: Ready</span>
+          </div>
+          <p id="viz-last-event" class="pipeline-event-banner">
+            All 9 Google Agent Platform services online and ready for incident triage
+          </p>
+        </div>
+
+        <div class="pipeline-toolbar">
+          <div class="viz-legend" aria-label="Service Status Legend">
+            <span class="legend-item"><span class="legend-dot dot-verified"></span>Verified</span>
+            <span class="legend-item"><span class="legend-dot dot-paused"></span>Paused / Masked</span>
+            <span class="legend-item"><span class="legend-dot dot-blocked"></span>Blocked</span>
+            <span class="legend-item"><span class="legend-dot dot-ready"></span>Ready</span>
+          </div>
+          <div class="pipeline-actions">
+            <button type="button" id="btn-replay-flow" class="small-btn">Replay Flow</button>
+            <button type="button" id="btn-expand-all" class="small-btn">Expand All</button>
+          </div>
+        </div>
       </div>
-    </section>
+
+      <!-- VERTICAL TIMELINE STACK (POPULATED SAFELY BY APP.JS) -->
+      <div id="vertical-pipeline-list" class="vertical-pipeline-list" role="list"></div>
+    </aside>
   </main>
 
   <footer class="app-footer">

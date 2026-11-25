@@ -25,9 +25,9 @@
   };
 
   const ORIGIN_LABELS = {
-    google_gcp_standard: "Google Cloud Standard",
-    cymbal_baseline: "Cymbal Baseline",
-    custom_hybrid: "Custom Hybrid",
+    google_gcp_standard: "Google Cloud",
+    cymbal_baseline: "Custom",
+    custom_hybrid: "Custom",
     imported_manifest: "Imported Manifest",
   };
 
@@ -399,9 +399,6 @@
     if (tpl.template_mode === "google_gcp" || providers.every((p) => p === "google_gcp")) {
       return "google_gcp";
     }
-    if (providers.every((p) => p === "cymbal_stack")) {
-      return "cymbal";
-    }
     return "custom";
   }
 
@@ -423,19 +420,6 @@
       if (state.workingTemplate.sdp_pii_mode === "NONE") {
         state.workingTemplate.sdp_pii_mode = "DEIDENTIFY_INLINE";
       }
-      await refreshEvaluation(true);
-    } else if (preset === "cymbal") {
-      state.workingTemplate.template_mode = "custom";
-      state.workingTemplate.origin = "cymbal_baseline";
-      state.slotCatalog.forEach((spec) => {
-        state.workingTemplate.components[spec.slot_id] = {
-          slot_id: spec.slot_id,
-          provider: "cymbal_stack",
-          enabled: true,
-          enterprise_sync_enabled: true,
-          parameters: {},
-        };
-      });
       await refreshEvaluation(true);
     } else {
       state.workingTemplate.template_mode = "custom";
@@ -819,7 +803,6 @@
 
     [
       ["google_gcp", gcpShortName()],
-      ["cymbal", customerShortName()],
       ["custom", "Custom"],
     ].forEach(([key, labelText]) => {
       const radioId = `inst-tpl-${tpl.template_id}-${key}`;
@@ -1849,8 +1832,8 @@
       ],
       [
         "Template Profile Mix",
-        `${ob.google_gcp_standard || 0} GCP | ${ob.cymbal_baseline || 0} ${customerShortName()}`,
-        `${ob.custom_hybrid || 0} Custom Hybrid | ${ob.imported_manifest || 0} Imported`,
+        `${ob.google_gcp_standard || 0} Google Cloud | ${ob.custom_hybrid || 0} Custom`,
+        `${ob.imported_manifest || 0} Imported Manifest`,
       ],
     ].forEach(([l, v, s], idx) => {
       const c = el("div", idx === 0 ? "surface-card hero-metric-card" : "surface-card");
@@ -1951,9 +1934,8 @@
     origSel.id = "finops-origin-select";
     [
       ["all", "All Template Profiles"],
-      ["google_gcp_standard", "Google Cloud Standard"],
-      ["cymbal_baseline", `${customerShortName()} Baseline`],
-      ["custom_hybrid", "Custom Hybrid"],
+      ["google_gcp_standard", "Google Cloud"],
+      ["custom_hybrid", "Custom"],
       ["imported_manifest", "Imported Manifest"],
     ].forEach(([val, txt]) => {
       const o = el("option", "", txt);
@@ -2503,13 +2485,13 @@
     );
 
     const profGrp = el("div", "field-group");
-    const profLbl = el("label", "", "Initial Template Preset");
+    const profLbl = el("label", "", "Initial Template");
     profLbl.setAttribute("for", "new-agent-profile");
     const profSel = el("select");
     profSel.id = "new-agent-profile";
     [
-      ["google_gcp", "Google Cloud (All 10 Google Cloud components)"],
-      ["cymbal_baseline", `${customerShortName()} (All 10 ${customerShortName()} components)`],
+      ["google_gcp", `${gcpShortName()} (All 10 Google Cloud components)`],
+      ["custom", "Custom (Select per-component choices)"],
     ].forEach(([val, txt]) => {
       const o = el("option", "", txt);
       o.value = val;
@@ -2525,12 +2507,11 @@
       e.preventDefault();
       const slug = fName.input.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
       const useGcp = profSel.value === "google_gcp";
-      const prov = useGcp ? "google_gcp" : "cymbal_stack";
       const comps = {};
       state.slotCatalog.forEach((s) => {
         comps[s.slot_id] = {
           slot_id: s.slot_id,
-          provider: prov,
+          provider: "google_gcp",
           enabled: true,
           enterprise_sync_enabled: true,
           parameters: {},
@@ -2541,7 +2522,7 @@
         name: slug,
         description: "Registered via Cymbal Agent Governance Platform.",
         template_mode: useGcp ? "google_gcp" : "custom",
-        origin: useGcp ? "google_gcp_standard" : "cymbal_baseline",
+        origin: useGcp ? "google_gcp_standard" : "custom_hybrid",
         agent_name: slug,
         app_id: fApp.input.value.trim(),
         intake_id: fIntake.input.value.trim(),

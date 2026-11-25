@@ -596,13 +596,13 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         updated_display="11/25/2026 10:15am",
     )
 
-    # 3. subscriber-billing-concierge (100% Cymbal baseline stack)
+    # 3. subscriber-billing-concierge (Custom template selecting Cymbal components)
     agent_3 = AgentDeploymentTemplate(
         template_id="subscriber-billing-concierge",
         name="subscriber-billing-concierge",
-        description="Standard Cymbal enterprise component baseline.",
+        description="Custom deployment configuration using Cymbal enterprise components.",
         template_mode="custom",
-        origin="cymbal_baseline",
+        origin="custom_hybrid",
         agent_name="subscriber-billing-concierge",
         app_id="svc-cymbal-208",
         intake_id="atlas-2026-0889",
@@ -1314,7 +1314,7 @@ def _seed_historical_deployments(profile: TenantProfile) -> list[dict[str, Any]]
             "app_id": "svc-cymbal-208",
             "business_unit": "core_cable",
             "risk_tier": "AG2",
-            "origin": "cymbal_baseline",
+            "origin": "custom_hybrid",
             "months_active": 5.0,
             "turns_m": 6.0,
             "initial_score": 86.0,
@@ -1346,7 +1346,7 @@ def _seed_historical_deployments(profile: TenantProfile) -> list[dict[str, Any]]
             "app_id": "svc-cymbal-349",
             "business_unit": "media_studio",
             "risk_tier": "AG1",
-            "origin": "cymbal_baseline",
+            "origin": "custom_hybrid",
             "months_active": 4.0,
             "turns_m": 2.8,
             "initial_score": 88.0,
@@ -1394,7 +1394,7 @@ def _seed_historical_deployments(profile: TenantProfile) -> list[dict[str, Any]]
             "app_id": "svc-cymbal-601",
             "business_unit": "enterprise_shared",
             "risk_tier": "AG2",
-            "origin": "cymbal_baseline",
+            "origin": "custom_hybrid",
             "months_active": 2.6,
             "turns_m": 3.5,
             "initial_score": 74.0,
@@ -1724,14 +1724,15 @@ class WorkbenchGovernanceEngine:
 
         origin_counts: dict[str, int] = {
             "google_gcp_standard": 0,
-            "cymbal_baseline": 0,
             "custom_hybrid": 0,
             "imported_manifest": 0,
         }
         slot_adoption: list[dict[str, Any]] = []
 
         for d in deps:
-            orig = str(d.get("origin", "custom_hybrid"))
+            raw_orig = str(d.get("origin", "custom_hybrid"))
+            orig = "custom_hybrid" if raw_orig == "cymbal_baseline" else raw_orig
+            d["origin"] = orig
             origin_counts[orig] = origin_counts.get(orig, 0) + 1
             bu = str(d.get("business_unit", "core_cable"))
             d["business_unit_label"] = prof.terminology.business_units.get(bu, bu)
@@ -1756,9 +1757,7 @@ class WorkbenchGovernanceEngine:
                 }
             )
 
-        standard_cnt = (
-            origin_counts["google_gcp_standard"] + origin_counts["cymbal_baseline"]
-        )
+        standard_cnt = origin_counts["google_gcp_standard"]
         return {
             "total_deployments": len(deps),
             "remediated_prior_to_deploy_count": remediated_cnt,

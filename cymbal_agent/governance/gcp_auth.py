@@ -162,11 +162,7 @@ def get_gcp_credentials(project_id: str | None = None) -> tuple[Credentials, str
         try:
             creds, adc_project = _ORIG_GOOGLE_AUTH_DEFAULT()
             adc_quota = getattr(creds, "quota_project_id", None)
-            if (
-                not resolved_project
-                or adc_quota == resolved_project
-                or adc_project == resolved_project
-            ):
+            if not resolved_project or (adc_quota and adc_quota == resolved_project):
                 return creds, resolved_project or (adc_project or "")
         except Exception:
             pass
@@ -179,19 +175,38 @@ def get_gcp_credentials(project_id: str | None = None) -> tuple[Credentials, str
         return cached, resolved_project
 
     if shutil.which("gcloud"):
-        try:
-            cli_creds = GcloudCliRefreshingCredentials(
-                quota_project_id=resolved_project or None
-            )
-            _CREDENTIAL_CACHE[cache_key] = cli_creds
-            return cli_creds, resolved_project
-        except Exception:
-            pass
+        cli_creds = GcloudCliRefreshingCredentials(
+            quota_project_id=resolved_project or None
+        )
+        _CREDENTIAL_CACHE[cache_key] = cli_creds
+        return cli_creds, resolved_project
 
     creds, adc_project = _ORIG_GOOGLE_AUTH_DEFAULT(
         quota_project_id=resolved_project or None
     )
     return creds, resolved_project or (adc_project or "")
+
+
+def probe_local_gcp_credentials(project_id: str | None = None) -> tuple[bool, str]:
+    """Verifies whether usable GCP credentials exist before binding live gRPC clients."""
+    if is_cloud_managed_runtime():
+        return True, "cloud_managed_iam"
+    resolved_project = (
+        project_id
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or os.getenv("GCLOUD_PROJECT")
+        or ""
+    )
+    try:
+        creds, _ = get_gcp_credentials(resolved_project or None)
+        if getattr(creds, "token", None):
+            return True, "gcloud_cli_token"
+        adc_quota = getattr(creds, "quota_project_id", None)
+        if adc_quota and (not resolved_project or adc_quota == resolved_project):
+            return True, "adc_matching_project"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return False, "No active gcloud token or matching ADC quota_project_id"
 
 
 def install_local_gcloud_auth_bridge(project_id: str | None = None) -> None:

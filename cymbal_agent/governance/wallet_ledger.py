@@ -30,7 +30,10 @@ import uuid
 from google.cloud import bigquery
 from google.cloud import firestore
 
-from cymbal_agent.governance.gcp_auth import get_gcp_credentials
+from cymbal_agent.governance.gcp_auth import (
+    get_gcp_credentials,
+    is_cloud_managed_runtime,
+)
 from cymbal_agent.governance.model_armor_guard import GuardrailVerdict
 
 # Public list-rate illustrative nano-USD constants (1 USD = 1,000,000,000 nano-USD)
@@ -151,7 +154,7 @@ class AtomicWalletAndGovernanceStore:
             if snap.exists:
                 return snap.to_dict() or {}
         except Exception:
-            if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+            if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") or not is_cloud_managed_runtime():
                 self.in_memory_only = True
                 return dict(
                     self._mem_agents.get(agent_id, self._mem_agents["cymbal-ops-release-agent"])
@@ -194,9 +197,17 @@ class AtomicWalletAndGovernanceStore:
                 return dict(
                     self._mem_wallets.get(wallet_id, self._mem_wallets["wallet-cymbal-ops"])
                 )
-        snap = self._fs().collection("cymbal_wallets").document(wallet_id).get()
-        if snap.exists:
-            return snap.to_dict() or {}
+        try:
+            snap = self._fs().collection("cymbal_wallets").document(wallet_id).get()
+            if snap.exists:
+                return snap.to_dict() or {}
+        except Exception:
+            if not is_cloud_managed_runtime():
+                self.in_memory_only = True
+                return dict(
+                    self._mem_wallets.get(wallet_id, self._mem_wallets["wallet-cymbal-ops"])
+                )
+            raise
         return dict(self._mem_wallets["wallet-cymbal-ops"])
 
     def update_wallet_cap(
@@ -414,7 +425,14 @@ class AtomicWalletAndGovernanceStore:
             query_parameters=[bigquery.ScalarQueryParameter("row_limit", "INT64", int(limit))],
             labels={"datacloud": "antigravity"},
         )
-        rows = self._bq().query(query, job_config=job_config).result()
+        try:
+            rows = self._bq().query(query, job_config=job_config).result()
+        except Exception:
+            if not is_cloud_managed_runtime():
+                self.in_memory_only = True
+                with self._lock:
+                    return list(reversed(self._mem_ledger[-limit:]))
+            raise
         out = []
         for r in rows:
             item = dict(r.items())
@@ -438,7 +456,15 @@ class AtomicWalletAndGovernanceStore:
             query_parameters=[bigquery.ScalarQueryParameter("row_limit", "INT64", int(limit))],
             labels={"datacloud": "antigravity"},
         )
-        rows = self._bq().query(query, job_config=job_config).result()
+        try:
+            rows = self._bq().query(query, job_config=job_config).result()
+        except Exception:
+            if not is_cloud_managed_runtime():
+                self.in_memory_only = True
+                with self._lock:
+                    return list(reversed(self._mem_audits[-limit:]))
+                
+            raise
         out = []
         for r in rows:
             item = dict(r.items())

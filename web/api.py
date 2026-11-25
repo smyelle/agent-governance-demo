@@ -73,6 +73,7 @@ from cymbal_agent.agent import build_cymbal_workflow  # noqa: E402
 from cymbal_agent.governance.gcp_auth import (  # noqa: E402
     get_gcp_credentials,
     is_cloud_managed_runtime,
+    probe_local_gcp_credentials,
 )
 from cymbal_agent.governance.identity_obo import (  # noqa: E402
     fetch_cloud_run_id_token,
@@ -657,6 +658,17 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             or "false"
         )
         offline_mode = flag.lower() in {"1", "true", "yes"}
+
+    if not offline_mode and not is_cloud_managed_runtime():
+        creds_ok, creds_reason = probe_local_gcp_credentials()
+        if not creds_ok:
+            logger.warning(
+                "Local gcloud credentials unavailable or expired (%s); "
+                "starting Web Workbench in resilient local mode. "
+                "Run 'gcloud auth login' to re-enable live GCP telemetry.",
+                creds_reason,
+            )
+            offline_mode = True
 
     live_cloud = not offline_mode
     if live_cloud:

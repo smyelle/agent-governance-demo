@@ -54,7 +54,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["cymbal_agent*", "evals*", "web*"]
+include = ["cymbal_agent*", "evals*", "services*", "web*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

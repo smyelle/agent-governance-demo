@@ -21,12 +21,31 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_PATH = REPO_ROOT / "config" / "tenant_profile.yaml"
 LOCAL_OVERRIDE_PATH = REPO_ROOT / "config" / "tenant_profile.local.yaml"
+
+DEFAULT_SLOT_MOCK_NAMES: dict[str, str] = {
+    "agent_identity": "Mocked Corporate SPIFFE + OIDC (ADR-011 OBO)",
+    "agent_registry": "Mocked Catalog 360 + ATLAS Intake + Supergraph",
+    "agent_gateway": "Mocked Enterprise AI Gateway + A2A Proxy",
+    "trace_observability": "Mocked Enterprise OTel & Trace Collector",
+    "wallet_kill_switch": "Mocked Enterprise Wallet + Gateway Kill Switch",
+    "safety_guardrails": "Mocked 4-5 Model Guardrail Ensemble",
+    "agent_runtime_sandbox": "Mocked Managed Container + External MicroVM",
+    "session_memory": "Mocked Custom ABAC Session Store",
+    "eval_optimizer": "Mocked Static CI YAML Agent Evals",
+}
+
+DEFAULT_BUSINESS_UNITS: dict[str, str] = {
+    "core_cable": "Core Connectivity & Broadband",
+    "media_studio": "Media & Broadcast Studio",
+    "intl_sky": "International Broadband (GDPR Strict)",
+    "enterprise_shared": "Enterprise Shared Services",
+}
 
 
 class TerminologyMap(BaseModel):
@@ -47,6 +66,17 @@ class TerminologyMap(BaseModel):
     guardrail_policy_name: str
     high_risk_tier: str = "AG3"
     low_risk_tier: str = "AG1"
+    mock_stack_short: str = "Mocked Enterprise Stack"
+    mock_template_title: str = "Standard Template 1: Mocked Enterprise Components"
+    gcp_template_title: str = "Standard Template 2: GCP Agent Platform Services"
+    coexistence_template_title: str = "4-Tier A-La-Carte Coexistence Blueprint"
+    best_practices_name: str = "Enterprise Platform Best Practices Rubric"
+    slot_mock_names: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_SLOT_MOCK_NAMES)
+    )
+    business_units: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_BUSINESS_UNITS)
+    )
 
 
 class GovernanceDefaults(BaseModel):
@@ -88,9 +118,18 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def load_raw_tenant_config(config_path: Path | None = None) -> dict[str, Any]:
     target = config_path or DEFAULT_PROFILE_PATH
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    if config_path is None and LOCAL_OVERRIDE_PATH.is_file():
-        local_raw = yaml.safe_load(LOCAL_OVERRIDE_PATH.read_text(encoding="utf-8")) or {}
-        raw = _deep_merge(raw, local_raw)
+    if config_path is None:
+        if LOCAL_OVERRIDE_PATH.is_file():
+            local_raw = (
+                yaml.safe_load(LOCAL_OVERRIDE_PATH.read_text(encoding="utf-8")) or {}
+            )
+            raw = _deep_merge(raw, local_raw)
+        else:
+            env_override_yaml = os.getenv("CYMBAL_TENANT_OVERRIDE_YAML", "").strip()
+            if env_override_yaml:
+                env_raw = yaml.safe_load(env_override_yaml) or {}
+                if isinstance(env_raw, dict):
+                    raw = _deep_merge(raw, env_raw)
     return raw
 
 

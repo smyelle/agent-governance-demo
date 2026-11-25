@@ -311,6 +311,35 @@ def run_functional_and_security_checks(
             }
         )
 
+        # 7. 3-Persona Routes, Rubric Evaluation & Executive 9-Component FinOps Rollup
+        p1_html = client.get("/end-user")
+        p2_html = client.get("/governance-ops")
+        p3_html = client.get("/executive")
+        ops_m = client.get("/api/ops/metrics")
+        exec_c = client.get("/api/executive/costs")
+        exec_json = exec_c.json() if exec_c.status_code == 200 else {}
+        personas_ok = (
+            p1_html.status_code == 200
+            and p2_html.status_code == 200
+            and p3_html.status_code == 200
+            and 'id="left-menu-tree"' in p1_html.text
+            and ops_m.status_code == 200
+            and exec_c.status_code == 200
+            and len(exec_json.get("component_cost_rollup") or []) == 9
+            and int(exec_json.get("deployment_count") or 0) >= 12
+        )
+        checks.append(
+            {
+                "check": "three_persona_routes_metrics_and_finops",
+                "passed": personas_ok,
+                "detail": (
+                    f"routes_200={p1_html.status_code}/{p2_html.status_code}/{p3_html.status_code} "
+                    f"components={len(exec_json.get('component_cost_rollup') or [])} "
+                    f"deployments={exec_json.get('deployment_count')}"
+                ),
+            }
+        )
+
     return checks
 
 

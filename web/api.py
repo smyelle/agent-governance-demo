@@ -92,6 +92,16 @@ from cymbal_agent.governance.wallet_ledger import (  # noqa: E402
     KillSwitchHaltedError,
     WalletBudgetExceededError,
 )
+from cymbal_agent.governance.workbench_state import (  # noqa: E402
+    AgentDeploymentTemplate,
+    ProviderChoice,
+    RubricConfig,
+    WorkbenchGovernanceEngine,
+    apply_remediation_action_to_template,
+    build_localized_slot_catalog,
+    evaluate_template_against_rubric,
+    parse_uploaded_template_manifest,
+)
 from cymbal_agent.memory.memory_bank import ScopedMemoryBankClient  # noqa: E402
 from cymbal_agent.tenant import load_tenant_profile  # noqa: E402
 from evals.run_beyond_scape_proofs import (  # noqa: E402
@@ -283,6 +293,31 @@ class ClosedLoopTriggerRequest(BaseModel):
 class TcoQueryRequest(BaseModel):
     daily_turns: int = Field(default=10_000_000, ge=100_000, le=200_000_000)
     tokens_per_turn: int = Field(default=1000, ge=100, le=16000)
+
+
+class TemplateUploadRequest(BaseModel):
+    filename: str = Field(default="uploaded_template.yaml", min_length=5, max_length=120)
+    content: str = Field(..., min_length=2, max_length=524_288)
+
+
+class TemplateEvaluateRequest(BaseModel):
+    template: AgentDeploymentTemplate
+
+
+class TemplateRemediateRequest(BaseModel):
+    template: AgentDeploymentTemplate
+    rule_id: str = Field(..., min_length=3, max_length=40)
+    action: Literal["accept", "customize", "exception"]
+    custom_provider: ProviderChoice | None = None
+    custom_parameters: dict[str, Any] | None = None
+    exception_reason: str | None = Field(default=None, max_length=300)
+
+
+class TemplateDeployRequest(BaseModel):
+    template: AgentDeploymentTemplate
+    initial_score: float = Field(default=60.0, ge=0.0, le=100.0)
+    approver_principal: str = Field(default="gov-steward-lead", min_length=2, max_length=80)
+    vp_exception_ticket: str | None = Field(default=None, max_length=64)
 
 
 CANDIDATE_PRESETS: list[dict[str, Any]] = [
@@ -649,6 +684,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         plugins=[plugin],
     )
     runner = InMemoryRunner(app=agent_adk_app)
+    workbench = WorkbenchGovernanceEngine()
 
     runtime_cfg: dict[str, str] = {
         "architecture_mode": os.getenv("CYMBAL_PLATFORM_MODE", "enterprise_hybrid"),
@@ -846,6 +882,12 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 verified_user_id="gov-reviewer-01", limit=5
             ),
             "platform_services": platform_services,
+            "slot_catalog": build_localized_slot_catalog(profile),
+            "templates": workbench.list_templates(),
+            "sample_uploads": workbench.list_sample_uploads(),
+            "rubric": workbench.get_rubric().model_dump(),
+            "operations_metrics": workbench.build_operations_metrics(),
+            "executive_costs": workbench.build_executive_cost_summary(),
         }
 
     @bff.post("/api/config/mode")
@@ -1683,9 +1725,352 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             ),
         }
 
+    def _template_to_service_overrides(
+        tpl: AgentDeploymentTemplate, evaluation: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        slot_to_service = {
+            "agent_identity": "agent_identity",
+            "agent_registry": "agent_registry",
+            "agent_gateway": "agent_gateway",
+            "trace_observability": "trace_wallet",
+            "wallet_kill_switch": "trace_wallet",
+            "safety_guardrails": "model_armor",
+            "agent_runtime_sandbox": "agent_runtime",
+            "session_memory": "memory_bank",
+            "eval_optimizer": "eval_flywheel",
+        }
+        failed_slots = {
+            r["slot_id"]
+            for r in evaluation.get("rule_results", [])
+            if r.get("status") == "FAILED"
+        }
+        overrides: dict[str, dict[str, Any]] = {}
+        for sid, svc_id in slot_to_service.items():
+            comp = tpl.components.get(sid)
+            prov = comp.provider if (comp and comp.enabled) else "unconfigured"
+            if prov == "unconfigured" or sid in failed_slots:
+                st_val = "BLOCKED" if prov == "unconfigured" else "MASKED_PII"
+                lbl = "Missing Hook" if prov == "unconfigured" else "Remediation Needed"
+            else:
+                st_val = "VERIFIED"
+                lbl = (
+                    "Mocked Stack"
+                    if prov == "enterprise_mock"
+                    else ("GCP Native" if prov == "gcp_native" else "Coexistence Ready")
+                )
+            overrides[svc_id] = {"status": st_val, "badge_label": lbl}
+        overrides["mcp_a2a_mesh"] = {
+            "status": "BLOCKED"
+            if (tpl.destructive_mcp_tools_exposed and not tpl.uap_cel_per_tool_enforced)
+            else "VERIFIED",
+            "badge_label": (
+                "CEL Gate Missing"
+                if (tpl.destructive_mcp_tools_exposed and not tpl.uap_cel_per_tool_enforced)
+                else "MCP + A2A Governed"
+            ),
+        }
+        return overrides
+
+    @bff.post("/api/templates/upload")
+    async def upload_template_manifest(
+        req: TemplateUploadRequest, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        profile = load_tenant_profile()
+        try:
+            tpl = parse_uploaded_template_manifest(
+                req.content, filename=req.filename, profile=profile
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        rubric = workbench.get_rubric()
+        evaluation = evaluate_template_against_rubric(tpl, rubric, profile=profile)
+        snap = build_platform_services_snapshot(
+            store=store,
+            mem_bank=mem_bank,
+            tracer=tracer,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            last_event=(
+                f"Inspected uploaded template '{tpl.agent_name}': "
+                f"score={evaluation['overall_score']}/100 ({evaluation['gate_verdict']})"
+            ),
+            overrides=_template_to_service_overrides(tpl, evaluation),
+        )
+        return {
+            "template": tpl.model_dump(),
+            "evaluation": evaluation,
+            "platform_services": snap,
+        }
+
+    @bff.post("/api/templates/evaluate")
+    async def evaluate_deployment_template(
+        req: TemplateEvaluateRequest, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        profile = load_tenant_profile()
+        rubric = workbench.get_rubric()
+        evaluation = evaluate_template_against_rubric(
+            req.template, rubric, profile=profile
+        )
+        snap = build_platform_services_snapshot(
+            store=store,
+            mem_bank=mem_bank,
+            tracer=tracer,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            last_event=(
+                f"Evaluated '{req.template.agent_name}' against {rubric.name}: "
+                f"{evaluation['overall_score']}/100 ({evaluation['recommendations_count']} recommendation(s))"
+            ),
+            overrides=_template_to_service_overrides(req.template, evaluation),
+        )
+        return {
+            "template": req.template.model_dump(),
+            "evaluation": evaluation,
+            "platform_services": snap,
+        }
+
+    @bff.post("/api/templates/remediate")
+    async def remediate_deployment_template(
+        req: TemplateRemediateRequest, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        profile = load_tenant_profile()
+        rubric = workbench.get_rubric()
+        try:
+            updated_tpl = apply_remediation_action_to_template(
+                req.template,
+                rule_id=req.rule_id,
+                action=req.action,
+                rubric=rubric,
+                custom_provider=req.custom_provider,
+                custom_parameters=req.custom_parameters,
+                exception_reason=req.exception_reason,
+                profile=profile,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        evaluation = evaluate_template_against_rubric(
+            updated_tpl, rubric, profile=profile
+        )
+        snap = build_platform_services_snapshot(
+            store=store,
+            mem_bank=mem_bank,
+            tracer=tracer,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            last_event=(
+                f"Applied '{req.action}' on {req.rule_id} for '{updated_tpl.agent_name}' -> "
+                f"updated score {evaluation['overall_score']}/100"
+            ),
+            overrides=_template_to_service_overrides(updated_tpl, evaluation),
+        )
+        return {
+            "template": updated_tpl.model_dump(),
+            "evaluation": evaluation,
+            "platform_services": snap,
+        }
+
+    @bff.post("/api/templates/deploy")
+    async def deploy_governed_template(
+        req: TemplateDeployRequest, request: Request
+    ) -> Any:
+        _verify_csrf(request)
+        t0 = time.perf_counter()
+        trace_id = tracer.new_trace_id()
+        sess_id = f"dep-sess-{trace_id[:10]}"
+        profile = load_tenant_profile()
+        rubric = workbench.get_rubric()
+
+        try:
+            store.assert_agent_active("cymbal-ops-release-agent")
+            store.reserve_preflight_budget("wallet-cymbal-ops")
+            verdict = guard.inspect_text(
+                req.template.system_instruction, direction="USER_PROMPT"
+            )
+            store.record_guardrail_audit(
+                trace_id=trace_id,
+                session_id=sess_id,
+                agent_id="cymbal-ops-release-agent",
+                direction="USER_PROMPT",
+                verdict=verdict,
+            )
+            if not verdict.allowed:
+                raise ModelArmorBlockedError(verdict.summary, verdict)
+        except KillSwitchHaltedError as exc:
+            snap = build_platform_services_snapshot(
+                store=store,
+                mem_bank=mem_bank,
+                tracer=tracer,
+                architecture_mode=runtime_cfg["architecture_mode"],
+                last_event=f"Deployment blocked by Global Kill Switch ({exc.agent_status})",
+                trace_id=trace_id,
+            )
+            return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=423)
+        except WalletBudgetExceededError as exc:
+            snap = build_platform_services_snapshot(
+                store=store,
+                mem_bank=mem_bank,
+                tracer=tracer,
+                architecture_mode=runtime_cfg["architecture_mode"],
+                last_event="Deployment blocked by Atomic Nano-USD Wallet cap (403)",
+                trace_id=trace_id,
+            )
+            return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=403)
+        except ModelArmorBlockedError as exc:
+            snap = build_platform_services_snapshot(
+                store=store,
+                mem_bank=mem_bank,
+                tracer=tracer,
+                architecture_mode=runtime_cfg["architecture_mode"],
+                last_event=f"Deployment blocked by Model Armor ({exc.audit_record.action_taken})",
+                trace_id=trace_id,
+            )
+            return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=400)
+
+        evaluation = evaluate_template_against_rubric(
+            req.template, rubric, profile=profile
+        )
+        if not evaluation["gate_passed"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Template '{req.template.agent_name}' has not met deployment gate "
+                    f"(score={evaluation['overall_score']}/100, required={evaluation['passing_threshold']}/100, "
+                    f"mandatory_failures={evaluation['mandatory_failures_count']}). "
+                    "Accept remediation recommendations or record exceptions before deploying."
+                ),
+            )
+
+        tpl_clean = req.template.model_copy(
+            update={"system_instruction": verdict.sanitized_text}
+        )
+        dep_record = workbench.record_deployment(
+            template=tpl_clean,
+            initial_score=req.initial_score,
+            approver_principal=req.approver_principal,
+            trace_id=trace_id,
+        )
+        ledger_row = store.settle_turn_spend(
+            wallet_id="wallet-cymbal-ops",
+            agent_id="cymbal-ops-release-agent",
+            session_id=sess_id,
+            trace_id=trace_id,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            input_tokens=480,
+            output_tokens=260,
+            outcome="GOVERNED_TEMPLATE_DEPLOYED",
+            incident_id=dep_record["deployment_id"],
+            incident_resolved=True,
+        )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        tracer.record_span(
+            trace_id=trace_id,
+            session_id=sess_id,
+            span_name="governance_workbench.deploy_template",
+            stage="template_deployment",
+            duration_ms=elapsed_ms,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            cmdb_app_id=tpl_clean.app_id,
+            attributes={
+                "deployment.id": dep_record["deployment_id"],
+                "agent.name": tpl_clean.agent_name,
+                "eval.final_score": dep_record["final_eval_score"],
+            },
+        )
+        mem_bank.persist_memory(
+            verified_user_id="gov-reviewer-01",
+            incident_id=dep_record["deployment_id"],
+            service_name=tpl_clean.agent_name,
+            fact=(
+                f"Deployed {tpl_clean.agent_name} ({dep_record['deployment_id']}) "
+                f"score {dep_record['initial_eval_score']} -> {dep_record['final_eval_score']} "
+                f"at ${dep_record['monthly_run_rate_usd']}/mo."
+            ),
+        )
+        snap = build_platform_services_snapshot(
+            store=store,
+            mem_bank=mem_bank,
+            tracer=tracer,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            last_event=(
+                f"Deployed {dep_record['deployment_id']} ({tpl_clean.agent_name}) -> "
+                f"Score {dep_record['final_eval_score']}/100 | ${dep_record['monthly_run_rate_usd']}/mo"
+            ),
+            trace_id=trace_id,
+            overrides=_template_to_service_overrides(tpl_clean, evaluation),
+        )
+        return {
+            "deployment": dep_record,
+            "wallet_settlement": ledger_row,
+            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
+            "operations_metrics": workbench.build_operations_metrics(),
+            "executive_costs": workbench.build_executive_cost_summary(),
+            "recent_memories": mem_bank.retrieve_memories(
+                verified_user_id="gov-reviewer-01", limit=5
+            ),
+            "platform_services": snap,
+        }
+
+    @bff.post("/api/ops/rubric")
+    async def save_governance_rubric(
+        req: RubricConfig, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        saved = workbench.update_rubric(req)
+        return {
+            "rubric": saved.model_dump(),
+            "templates": workbench.list_templates(),
+            "sample_uploads": workbench.list_sample_uploads(),
+        }
+
+    @bff.post("/api/ops/templates")
+    async def upsert_standard_template(
+        req: AgentDeploymentTemplate, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        saved = workbench.upsert_template(req)
+        return {
+            "template": saved,
+            "templates": workbench.list_templates(),
+        }
+
+    @bff.get("/api/ops/metrics")
+    async def get_governance_ops_metrics() -> dict[str, Any]:
+        return workbench.build_operations_metrics()
+
+    @bff.get("/api/executive/costs")
+    async def get_executive_cost_rollup(
+        business_unit: str = "all",
+        origin: str = "all",
+    ) -> dict[str, Any]:
+        allowed_bu = {
+            "all",
+            "core_cable",
+            "media_studio",
+            "intl_sky",
+            "enterprise_shared",
+        }
+        allowed_orig = {
+            "all",
+            "standard_enterprise_mock",
+            "standard_gcp_native",
+            "custom_composed",
+            "uploaded_manifest",
+        }
+        bu_val = business_unit if business_unit in allowed_bu else "all"
+        orig_val = origin if origin in allowed_orig else "all"
+        return workbench.build_executive_cost_summary(
+            business_unit_filter=bu_val,
+            origin_filter=orig_val,
+        )
+
     bff.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @bff.get("/")
+    @bff.get("/end-user")
+    @bff.get("/governance-ops")
+    @bff.get("/executive")
     async def serve_index(request: Request) -> FileResponse:
         resp = FileResponse(STATIC_DIR / "index.html")
         _issue_or_get_session(request, resp)

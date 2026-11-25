@@ -99,6 +99,31 @@ gcloud secrets add-iam-policy-binding "${SESSION_SECRET_NAME}" \
   --role="roles/secretmanager.secretAccessor" \
   --quiet >/dev/null
 
+SECRET_MOUNT_SPEC="CYMBAL_BFF_SESSION_SECRET=${SESSION_SECRET_NAME}:latest"
+LOCAL_TENANT_YAML="${REPO_ROOT}/config/tenant_profile.local.yaml"
+TENANT_SECRET_NAME="cymbal-tenant-override-yaml"
+if [[ -f "${LOCAL_TENANT_YAML}" ]]; then
+  echo "[3b/6] Syncing local tenant branding profile to Secret Manager (${TENANT_SECRET_NAME})..."
+  if ! gcloud secrets describe "${TENANT_SECRET_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud secrets create "${TENANT_SECRET_NAME}" \
+      --replication-policy="automatic" \
+      --data-file="${LOCAL_TENANT_YAML}" \
+      --project="${PROJECT_ID}" \
+      --quiet
+  else
+    gcloud secrets versions add "${TENANT_SECRET_NAME}" \
+      --data-file="${LOCAL_TENANT_YAML}" \
+      --project="${PROJECT_ID}" \
+      --quiet >/dev/null
+  fi
+  gcloud secrets add-iam-policy-binding "${TENANT_SECRET_NAME}" \
+    --project="${PROJECT_ID}" \
+    --member="serviceAccount:${WEB_SA_EMAIL}" \
+    --role="roles/secretmanager.secretAccessor" \
+    --quiet >/dev/null
+  SECRET_MOUNT_SPEC="${SECRET_MOUNT_SPEC},CYMBAL_TENANT_OVERRIDE_YAML=${TENANT_SECRET_NAME}:latest"
+fi
+
 MCP_URL="${CYMBAL_MCP_URL:-}"
 if [[ -z "${MCP_URL}" ]] && gcloud run services describe cymbal-ops-mcp-server --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   MCP_URL="$(gcloud run services describe cymbal-ops-mcp-server --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')/mcp"
@@ -128,8 +153,8 @@ if ! gcloud run deploy "${WEB_SERVICE}" \
   --memory=1Gi \
   --min-instances=0 \
   --max-instances=5 \
-  --set-secrets="CYMBAL_BFF_SESSION_SECRET=${SESSION_SECRET_NAME}:latest" \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_ENTERPRISE=TRUE,GOOGLE_GENAI_API_TRANSPORT=rest,GEMINI_MODEL=${GEMINI_MDL},GEMINI_LITE_MODEL=${GEMINI_LITE},CYMBAL_PLATFORM_MODE=google_native,CYMBAL_BQ_DATASET=cymbal_governance,CYMBAL_FIRESTORE_DATABASE=(default),CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE=${MA_DEFAULT},CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE=${MA_STRICT},CYMBAL_MCP_URL=${MCP_URL},CYMBAL_A2A_URL=${A2A_URL}" \
+  --set-secrets="${SECRET_MOUNT_SPEC}" \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_ENTERPRISE=TRUE,GOOGLE_GENAI_API_TRANSPORT=rest,GEMINI_MODEL=${GEMINI_MDL},GEMINI_LITE_MODEL=${GEMINI_LITE},CYMBAL_PLATFORM_MODE=enterprise_hybrid,CYMBAL_BQ_DATASET=cymbal_governance,CYMBAL_FIRESTORE_DATABASE=(default),CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE=${MA_DEFAULT},CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE=${MA_STRICT},CYMBAL_MCP_URL=${MCP_URL},CYMBAL_A2A_URL=${A2A_URL}" \
   --quiet; then
   echo "[WARN] Direct --iap flag unavailable on this project configuration; deploying with --no-allow-unauthenticated IAM enforcement..."
   gcloud run deploy "${WEB_SERVICE}" \
@@ -143,8 +168,8 @@ if ! gcloud run deploy "${WEB_SERVICE}" \
     --memory=1Gi \
     --min-instances=0 \
     --max-instances=5 \
-    --set-secrets="CYMBAL_BFF_SESSION_SECRET=${SESSION_SECRET_NAME}:latest" \
-    --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_ENTERPRISE=TRUE,GOOGLE_GENAI_API_TRANSPORT=rest,GEMINI_MODEL=${GEMINI_MDL},GEMINI_LITE_MODEL=${GEMINI_LITE},CYMBAL_PLATFORM_MODE=google_native,CYMBAL_BQ_DATASET=cymbal_governance,CYMBAL_FIRESTORE_DATABASE=(default),CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE=${MA_DEFAULT},CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE=${MA_STRICT},CYMBAL_MCP_URL=${MCP_URL},CYMBAL_A2A_URL=${A2A_URL}" \
+    --set-secrets="${SECRET_MOUNT_SPEC}" \
+    --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_ENTERPRISE=TRUE,GOOGLE_GENAI_API_TRANSPORT=rest,GEMINI_MODEL=${GEMINI_MDL},GEMINI_LITE_MODEL=${GEMINI_LITE},CYMBAL_PLATFORM_MODE=enterprise_hybrid,CYMBAL_BQ_DATASET=cymbal_governance,CYMBAL_FIRESTORE_DATABASE=(default),CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE=${MA_DEFAULT},CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE=${MA_STRICT},CYMBAL_MCP_URL=${MCP_URL},CYMBAL_A2A_URL=${A2A_URL}" \
     --quiet
 fi
 

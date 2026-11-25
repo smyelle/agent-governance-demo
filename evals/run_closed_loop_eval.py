@@ -46,13 +46,23 @@ import sys
 import time
 from typing import Any
 
-import agentplatform
-from agentplatform import types as ap_types
+try:
+    import agentplatform
+    from agentplatform import types as ap_types
+except ImportError:  # pragma: no cover - slim runtime fallback
+    agentplatform = None  # type: ignore[assignment]
+    ap_types = None  # type: ignore[assignment]
+
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types as genai_types
 import httpx
-import pandas as pd
+
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover - slim runtime fallback
+    pd = None  # type: ignore[assignment]
+
 from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

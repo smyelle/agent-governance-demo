@@ -29,6 +29,7 @@ COPY cymbal_agent /app/cymbal_agent
 COPY evals /app/evals
 COPY services/__init__.py /app/services/__init__.py
 COPY services/cymbal_ops_mcp_server /app/services/cymbal_ops_mcp_server
+COPY services/remediation_a2a_agent /app/services/remediation_a2a_agent
 COPY web /app/web
 
 RUN pip install --no-cache-dir /app \

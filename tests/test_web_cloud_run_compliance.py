@@ -294,3 +294,152 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert fly.json()["flywheel_stages_count"] == 6
     assert (state_dir / "prompts" / "active_version.json").is_file()
     assert (state_dir / "prompts" / "enterprise_golden_blueprint_v2.json").is_file()
+
+
+def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "persona_state"))
+    app = create_bff_app(offline_mode=True)
+    client = TestClient(app, base_url="http://127.0.0.1:8080")
+
+    # Verify all 3 Persona SPA routes & 4-zone traditional layout elements
+    for route in ("/", "/end-user", "/governance-ops", "/executive"):
+        html_res = client.get(route)
+        assert html_res.status_code == 200
+        assert 'id="left-menu-tree"' in html_res.text
+        assert 'id="center-workspace"' in html_res.text
+        assert 'id="right-dynamic-tray"' in html_res.text
+        assert 'data-persona="end-user"' in html_res.text
+        assert 'data-persona="governance-ops"' in html_res.text
+        assert 'data-persona="executive"' in html_res.text
+
+    boot = client.get("/api/bootstrap").json()
+    csrf = boot["csrf_token"]
+    headers = {"X-CSRF-Token": csrf}
+
+    # Verify 9 canonical component slots & Standard Templates (Mocked Stack + GCP Native)
+    assert len(boot["slot_catalog"]) == 9
+    tpl_by_id = {t["template_id"]: t for t in boot["templates"]}
+    assert "tpl-enterprise-mock" in tpl_by_id
+    assert "tpl-gcp-native" in tpl_by_id
+    assert all(
+        c["provider"] == "enterprise_mock"
+        for c in tpl_by_id["tpl-enterprise-mock"]["components"].values()
+    )
+    assert all(
+        c["provider"] == "gcp_native"
+        for c in tpl_by_id["tpl-gcp-native"]["components"].values()
+    )
+
+    # Persona 1 UJ2: Reject disallowed file extension & accept valid YAML manifest upload
+    bad_upload = client.post(
+        "/api/templates/upload",
+        headers=headers,
+        json={"filename": "malicious.py", "content": "print('nope')"},
+    )
+    assert bad_upload.status_code == 400
+
+    shadow_yaml = (
+        "agent_name: shadow-claims-bot\n"
+        "app_id: APP-SHADOW-99\n"
+        "intake_id: ''\n"
+        "business_unit: core_cable\n"
+        "risk_tier: AG3\n"
+        "static_secrets_in_env: ['OPENAI_API_KEY']\n"
+        "destructive_mcp_tools_exposed: true\n"
+        "uap_cel_per_tool_enforced: false\n"
+        "sdp_pii_mode: NONE\n"
+        "behavior_score: 55.0\n"
+        "components:\n"
+        "  agent_runtime_sandbox: enterprise_mock\n"
+    )
+    up_res = client.post(
+        "/api/templates/upload",
+        headers=headers,
+        json={"filename": "shadow-claims.yaml", "content": shadow_yaml},
+    )
+    assert up_res.status_code == 200
+    working_tpl = up_res.json()["template"]
+    eval_initial = up_res.json()["evaluation"]
+    assert eval_initial["gate_passed"] is False
+    assert eval_initial["overall_score"] < 50.0
+    assert len(eval_initial["recommendations"]) >= 6
+
+    # Premature deploy must fail gate check (400)
+    blocked_dep = client.post(
+        "/api/templates/deploy",
+        headers=headers,
+        json={"template": working_tpl, "initial_score": eval_initial["overall_score"]},
+    )
+    assert blocked_dep.status_code == 400
+
+    # Persona 1 UJ4 & UJ5: Accept recommendations & customize manually
+    initial_score = eval_initial["overall_score"]
+    cur_eval = eval_initial
+    for idx, rec in enumerate(list(cur_eval["recommendations"])):
+        if idx == 0:
+            rem_res = client.post(
+                "/api/templates/remediate",
+                headers=headers,
+                json={
+                    "template": working_tpl,
+                    "rule_id": rec["rule_id"],
+                    "action": "customize",
+                    "custom_provider": "coexistence_bridge",
+                    "custom_parameters": {"clear_static_secrets": True},
+                },
+            )
+        else:
+            rem_res = client.post(
+                "/api/templates/remediate",
+                headers=headers,
+                json={
+                    "template": working_tpl,
+                    "rule_id": rec["rule_id"],
+                    "action": "accept",
+                },
+            )
+        assert rem_res.status_code == 200
+        working_tpl = rem_res.json()["template"]
+        cur_eval = rem_res.json()["evaluation"]
+
+    assert cur_eval["gate_passed"] is True
+    assert cur_eval["overall_score"] >= 95.0
+
+    # Deploy remediated template -> updates Persona 2 Metrics & Persona 3 Executive FinOps
+    dep_before_cnt = boot["operations_metrics"]["total_deployments"]
+    hist_before_usd = boot["executive_costs"]["total_historical_cumulative_usd"]
+
+    dep_res = client.post(
+        "/api/templates/deploy",
+        headers=headers,
+        json={
+            "template": working_tpl,
+            "initial_score": initial_score,
+            "approver_principal": "gov-ops-reviewer",
+        },
+    )
+    assert dep_res.status_code == 200
+    dep_payload = dep_res.json()
+    assert dep_payload["deployment"]["remediated_prior_to_deploy"] is True
+    assert dep_payload["operations_metrics"]["total_deployments"] == dep_before_cnt + 1
+    assert (
+        dep_payload["executive_costs"]["total_historical_cumulative_usd"] > hist_before_usd
+    )
+    assert len(dep_payload["executive_costs"]["component_cost_rollup"]) == 9
+
+    # Persona 2: Live Rubric update immediately governs Persona 1 evaluations
+    rubric = boot["rubric"]
+    rubric["passing_score_threshold"] = 99.5
+    rub_save = client.post("/api/ops/rubric", headers=headers, json=rubric)
+    assert rub_save.status_code == 200
+    re_eval = client.post(
+        "/api/templates/evaluate",
+        headers=headers,
+        json={"template": tpl_by_id["tpl-enterprise-mock"]},
+    )
+    assert re_eval.status_code == 200
+    assert re_eval.json()["evaluation"]["passing_threshold"] == 99.5
+    assert re_eval.json()["evaluation"]["gate_passed"] is False

@@ -526,15 +526,8 @@
   }
 
   function resolveTemplatePresetKey(tpl) {
-    if (!tpl || !tpl.components) return "custom";
-    const providers = state.slotCatalog.map((s) => {
-      const c = tpl.components[s.slot_id];
-      return c && c.enabled !== false ? c.provider : "unconfigured";
-    });
-    if (tpl.template_mode === "google_gcp" || providers.every((p) => p === "google_gcp")) {
-      return "google_gcp";
-    }
-    return "custom";
+    if (!tpl) return "custom";
+    return tpl.template_mode === "google_gcp" ? "google_gcp" : "custom";
   }
 
   async function applyInstanceTemplatePreset(preset) {
@@ -561,6 +554,10 @@
       if (state.workingTemplate.origin === "google_gcp_standard") {
         state.workingTemplate.origin = "custom_hybrid";
       }
+      if (!state.selectedSlotId && state.slotCatalog.length > 0) {
+        state.selectedSlotId = state.slotCatalog[0].slot_id;
+      }
+      syncWorkingTemplateIntoList();
       renderHeaderAndBrand();
       renderStageBody();
     }
@@ -1046,7 +1043,7 @@
       ["custom", "Custom"],
     ].forEach(([key, labelText]) => {
       const radioId = `inst-tpl-${tpl.template_id}-${key}`;
-      const rad = el("input", "visually-hidden");
+      const rad = el("input", "segmented-radio-input");
       rad.type = "radio";
       rad.id = radioId;
       rad.name = `inst_tpl_mode_${tpl.template_id}`;

@@ -67,7 +67,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.visually-hidden:where(:not(:focus-within, :active)) {
+.visually-hidden:not(.skip-link),
+.skip-link.visually-hidden:where(:not(:focus, :active)) {
   position: absolute !important;
   clip-path: inset(50%) !important;
   overflow: hidden !important;
@@ -694,14 +695,26 @@ body {
 
 /* Segmented Pill Radio Group (Cymbal Chip / Pill Style) */
 .segmented-radio-group {
+  position: relative;
   margin: 0;
-  padding: 0.22rem 0.3rem;
+  padding: 0.22rem 0.28rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
   background: var(--bg-surface);
   display: inline-flex;
   align-items: safe center;
   gap: 0.2rem;
+}
+
+.segmented-radio-input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  appearance: none;
+  pointer-events: none;
 }
 
 .control-inline-label {
@@ -712,7 +725,7 @@ body {
 }
 
 .segmented-radio-label {
-  padding: 0.34rem 0.85rem;
+  padding: 0.34rem 0.88rem;
   border-radius: var(--radius-pill);
   font-size: 0.82rem;
   font-weight: 600;
@@ -725,14 +738,13 @@ body {
   background: var(--bg-subtle);
 }
 
-.segmented-radio-group input[type="radio"]:checked + .segmented-radio-label {
+.segmented-radio-group .segmented-radio-input:checked + .segmented-radio-label {
   background: var(--cymbal-primary-300);
   color: #FFFFFF;
 }
 
-.segmented-radio-group input[type="radio"]:focus-visible + .segmented-radio-label {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 2px;
+.segmented-radio-group .segmented-radio-input:focus-visible + .segmented-radio-label {
+  box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--focus-ring);
 }
 
 /* Cymbal Full-Pill Buttons (999px radius, Primary 300 -> Primary 500 hover) */

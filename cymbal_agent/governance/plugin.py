@@ -90,7 +90,7 @@ class UapToolPolicyDeniedError(PermissionError):
 
 def evaluate_uap_cel_tool_policy(
     tool_name: str,
-    principal: str = "spiffe://cymbal-agent-platform.svc.id.goog/ns/agent-runtime/sa/cymbal-ops-release-agent",
+    principal: str = "spiffe://cymbal-agent-platform.svc.id.goog/ns/agent-runtime/sa/agent-governance-demo",
     read_only_hint: bool | None = None,
     destructive_hint: bool | None = None,
 ) -> dict[str, Any]:
@@ -115,7 +115,9 @@ def evaluate_uap_cel_tool_policy(
             rule_id="deny-destructive-mcp-tools-by-default",
         )
 
-    if clean in SCOPED_NON_DESTRUCTIVE_TOOLS and "cymbal-ops-release-agent" in principal:
+    if clean in SCOPED_NON_DESTRUCTIVE_TOOLS and (
+        "agent-governance-demo" in principal or "cymbal-ops-release-agent" in principal
+    ):
         return {
             "allowed": True,
             "rule_id": "allow-scoped-incident-annotation",
@@ -139,7 +141,7 @@ class CymbalGovernancePlugin(BasePlugin):
         store: AtomicWalletAndGovernanceStore | None = None,
         guard: FailClosedModelArmorGuard | None = None,
         tracer: UnifiedTraceBridge | None = None,
-        agent_id: str = "cymbal-ops-release-agent",
+        agent_id: str = "agent-governance-demo",
         wallet_id: str = "wallet-cymbal-ops",
         architecture_mode: str | None = None,
     ) -> None:

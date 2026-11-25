@@ -28,36 +28,43 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_PATH = REPO_ROOT / "config" / "tenant_profile.yaml"
 LOCAL_OVERRIDE_PATH = REPO_ROOT / "config" / "tenant_profile.local.yaml"
 
-DEFAULT_SLOT_MOCK_NAMES: dict[str, str] = {
-    "agent_identity": "Mocked Corporate SPIFFE + OIDC (ADR-011 OBO)",
-    "agent_registry": "Mocked Catalog 360 + ATLAS Intake + Supergraph",
-    "agent_gateway": "Mocked Enterprise AI Gateway + A2A Proxy",
-    "trace_observability": "Mocked Enterprise OTel & Trace Collector",
-    "wallet_kill_switch": "Mocked Enterprise Wallet + Gateway Kill Switch",
-    "safety_guardrails": "Mocked 4-5 Model Guardrail Ensemble",
-    "agent_runtime_sandbox": "Mocked Managed Container + External MicroVM",
-    "session_memory": "Mocked Custom ABAC Session Store",
-    "eval_optimizer": "Mocked Static CI YAML Agent Evals",
+DEFAULT_SLOT_CYMBAL_NAMES: dict[str, str] = {
+    "identity_access": "Cymbal SSO & OBO Identity",
+    "agent_registry": "Cymbal Catalog 360 & Atlas Graph",
+    "ai_gateway": "Cymbal Flow AI Gateway",
+    "safety_guardrails": "Cymbal Guardrail Ensemble",
+    "foundation_model": "Cymbal Model Collection",
+    "runtime_sandbox": "Cymbal Container Runtime",
+    "memory_knowledge": "Cymbal Knowledge & Session Store",
+    "observability_tracing": "Cymbal Telemetry & Langfuse",
+    "cost_kill_controls": "Cymbal FinOps Wallet & Gateway Switch",
+    "eval_optimization": "Cymbal CI Evaluation Suite",
 }
 
 DEFAULT_BUSINESS_UNITS: dict[str, str] = {
-    "core_cable": "Core Connectivity & Broadband",
-    "media_studio": "Media & Broadcast Studio",
-    "intl_sky": "International Broadband (GDPR Strict)",
-    "enterprise_shared": "Enterprise Shared Services",
+    "core_cable": "cymbal-broadband",
+    "media_studio": "cymbal-media",
+    "intl_sky": "cymbal-international",
+    "enterprise_shared": "cymbal-enterprise",
 }
 
 
 class TerminologyMap(BaseModel):
     platform_name: str
+    sidebar_brand: str = "Cymbal Platform"
+    customer_provider_short: str = "Cymbal"
+    gcp_provider_short: str = "Google Cloud"
     gateway_name: str
     intake_name: str
+    intake_col_label: str = "ATLAS Intake ID"
     cmdb_name: str
-    supergraph_name: str = "ServiceAtlas Supergraph"
+    cmdb_col_label: str = "ServiceAtlas CMDB App ID"
+    supergraph_name: str = "ServiceAtlas Dependency Graph"
     runtime_name: str
     risk_framework: str
+    risk_col_label: str = "SENTINEL Agency Tier"
     registry_name: str
-    blueprint_registry_name: str = "Golden Blueprint Registry"
+    blueprint_registry_name: str = "Enterprise Golden Blueprint Catalog"
     observability_name: str
     eval_engine_name: str = "Gen AI Eval & Prompt Optimizer"
     paved_path_iac_name: str = "Terraform Paved-Path Blueprints"
@@ -66,13 +73,9 @@ class TerminologyMap(BaseModel):
     guardrail_policy_name: str
     high_risk_tier: str = "AG3"
     low_risk_tier: str = "AG1"
-    mock_stack_short: str = "Mocked Enterprise Stack"
-    mock_template_title: str = "Standard Template 1: Mocked Enterprise Components"
-    gcp_template_title: str = "Standard Template 2: GCP Agent Platform Services"
-    coexistence_template_title: str = "4-Tier A-La-Carte Coexistence Blueprint"
-    best_practices_name: str = "Enterprise Platform Best Practices Rubric"
-    slot_mock_names: dict[str, str] = Field(
-        default_factory=lambda: dict(DEFAULT_SLOT_MOCK_NAMES)
+    best_practices_name: str = "Cymbal Platform Governance Rubric"
+    slot_cymbal_names: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_SLOT_CYMBAL_NAMES)
     )
     business_units: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_BUSINESS_UNITS)
@@ -92,7 +95,7 @@ class GovernanceDefaults(BaseModel):
 class ThemeConfig(BaseModel):
     accent_primary: str = "#0284c7"
     accent_secondary: str = "#0f766e"
-    badge_text: str = "Google Agent Platform | ADK 2.0"
+    badge_text: str = "Cymbal Platform | ADK 2.0"
 
 
 class TenantProfile(BaseModel):

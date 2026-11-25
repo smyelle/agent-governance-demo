@@ -50,7 +50,7 @@ curl -sS -X DELETE -H "Authorization: Bearer ${TOKEN}" \
   "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_NUMBER}/locations/${REGION}/agentConnectivityTemplates/cymbal-act-private" >/dev/null 2>&1 || true
 
 echo "[3/5] Deleting Agent Registry services..."
-for svc_id in cymbal-ops-mcp-server remediation-a2a-agent cymbal-ops-release-agent; do
+for svc_id in cymbal-ops-mcp-server remediation-a2a-agent agent-governance-demo; do
   gcloud agent-registry services delete "${svc_id}" \
     --location="${REGION}" \
     --project="${PROJECT_ID}" \

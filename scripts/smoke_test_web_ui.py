@@ -16,9 +16,10 @@
 """Standardized Local & Cloud Run Smoke-Test Runner for Cymbal Web UI BFF.
 
 Validates security headers, cookie hardening, CSRF enforcement, Fetch Metadata
-isolation, inline Cloud SDP PII masking, and ADK 2.0 triage + HITL resume
-against either a local 127.0.0.1 server (`--local` / `--url`) or a deployed
-Cloud Run service (`--cloud-run-url`).
+isolation, inline Cloud SDP PII masking, ADK 2.0 triage + HITL resume, and the
+4-stage Cymbal Platform lifecycle console (`/build`, `/evaluate`, `/deploy`,
+`/govern`) against either a local 127.0.0.1 server (`--local` / `--url`) or a
+deployed Cloud Run service (`--cloud-run-url`).
 """
 
 from __future__ import annotations
@@ -76,57 +77,6 @@ def _ephemeral_local_server(*, offline: bool) -> Iterator[str]:
     finally:
         server.should_exit = True
         thread.join(timeout=3.0)
-
-
-@contextlib.contextmanager
-def _gcloud_run_proxy(
-    *, service_name: str, region: str, project_id: str
-) -> Iterator[str]:
-    gcloud_bin = shutil.which("gcloud")
-    if not gcloud_bin:
-        raise RuntimeError("gcloud CLI not found in PATH.")
-    port = _pick_free_local_port()
-    env = dict(os.environ)
-    existing = env.get("CLOUDSDK_METRICS_ENVIRONMENT", "")
-    env["CLOUDSDK_METRICS_ENVIRONMENT"] = f"{existing} datacloud.antigravity".strip()
-    proc = subprocess.Popen(
-        [
-            gcloud_bin,
-            "run",
-            "services",
-            "proxy",
-            service_name,
-            f"--region={region}",
-            f"--project={project_id}",
-            f"--port={port}",
-            "--quiet",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    proxy_url = f"http://127.0.0.1:{port}"
-    deadline = time.time() + 20.0
-    ready = False
-    while time.time() < deadline:
-        try:
-            r = httpx.get(f"{proxy_url}/healthz", timeout=2.0)
-            if r.status_code == 200:
-                ready = True
-                break
-        except Exception:
-            time.sleep(0.3)
-    if not ready:
-        proc.terminate()
-        raise RuntimeError(f"gcloud run services proxy failed to come up on {proxy_url}")
-    try:
-        yield proxy_url
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3.0)
-        except Exception:
-            proc.kill()
 
 
 def _mint_gcloud_id_token(audience: str | None = None) -> str | None:
@@ -188,7 +138,7 @@ def run_functional_and_security_checks(
             }
         )
 
-        # 3. Bootstrap + Session Cookie + 9 Platform Services
+        # 3. Bootstrap + Session Cookie + 9 Platform Services + 10 Functional Slots
         boot = client.get("/api/bootstrap")
         raw_cookies = idx.headers.get_list("set-cookie") + boot.headers.get_list("set-cookie")
         joined_cookie = "; ".join(raw_cookies)
@@ -200,8 +150,6 @@ def run_functional_and_security_checks(
                 and "samesite=strict" in joined_cookie.lower()
                 and "strict-transport-security" in boot.headers
             )
-            # httpx will not resend a Secure cookie over a plain http://127.0.0.1 proxy socket;
-            # manually carry the verified __Host-cymbal_sid cookie if base_url is http://127.0.0.1
             if base_url.startswith("http://127.0.0.1") and "__Host-cymbal_sid=" in joined_cookie:
                 sid_val = joined_cookie.rsplit("__Host-cymbal_sid=", 1)[1].split(";", 1)[0]
                 client.headers["Cookie"] = f"__Host-cymbal_sid={sid_val}"
@@ -213,11 +161,18 @@ def run_functional_and_security_checks(
         boot_json = boot.json() if boot.status_code == 200 else {}
         csrf = boot_json.get("csrf_token", "")
         svc_count = len((boot_json.get("platform_services") or {}).get("services") or [])
+        slot_count = len(boot_json.get("slot_catalog") or [])
         checks.append(
             {
-                "check": "bootstrap_cookie_and_9_services",
-                "passed": boot.status_code == 200 and bool(csrf) and svc_count == 9 and cookie_ok,
-                "detail": f"services={svc_count} cookie_hardened={cookie_ok}",
+                "check": "bootstrap_cookie_services_and_10_slots",
+                "passed": (
+                    boot.status_code == 200
+                    and bool(csrf)
+                    and svc_count == 9
+                    and slot_count == 10
+                    and cookie_ok
+                ),
+                "detail": f"services={svc_count} slots={slot_count} cookie_hardened={cookie_ok}",
             }
         )
 
@@ -311,29 +266,36 @@ def run_functional_and_security_checks(
             }
         )
 
-        # 7. 3-Persona Routes, Rubric Evaluation & Executive 9-Component FinOps Rollup
-        p1_html = client.get("/end-user")
-        p2_html = client.get("/governance-ops")
-        p3_html = client.get("/executive")
+        # 7. Cymbal Lifecycle Routes (/build, /evaluate, /deploy, /govern), Zero Meta Terms & 10-Component FinOps
+        b_html = client.get("/build")
+        e_html = client.get("/evaluate")
+        d_html = client.get("/deploy")
+        g_html = client.get("/govern")
         ops_m = client.get("/api/ops/metrics")
         exec_c = client.get("/api/executive/costs")
         exec_json = exec_c.json() if exec_c.status_code == 200 else {}
-        personas_ok = (
-            p1_html.status_code == 200
-            and p2_html.status_code == 200
-            and p3_html.status_code == 200
-            and 'id="left-menu-tree"' in p1_html.text
+        lower_html = b_html.text.lower()
+        lifecycle_ok = (
+            b_html.status_code == 200
+            and e_html.status_code == 200
+            and d_html.status_code == 200
+            and g_html.status_code == 200
+            and 'id="left-lifecycle-nav"' in b_html.text
+            and 'id="ten-tile-strip"' in b_html.text
+            and "mock" not in lower_html
+            and "persona" not in lower_html
             and ops_m.status_code == 200
             and exec_c.status_code == 200
-            and len(exec_json.get("component_cost_rollup") or []) == 9
+            and len(exec_json.get("component_cost_rollup") or []) == 10
+            and len(exec_json.get("pillar_cost_rollup") or []) == 4
             and int(exec_json.get("deployment_count") or 0) >= 12
         )
         checks.append(
             {
-                "check": "three_persona_routes_metrics_and_finops",
-                "passed": personas_ok,
+                "check": "cymbal_lifecycle_routes_metrics_and_10_component_finops",
+                "passed": lifecycle_ok,
                 "detail": (
-                    f"routes_200={p1_html.status_code}/{p2_html.status_code}/{p3_html.status_code} "
+                    f"routes_200={b_html.status_code}/{e_html.status_code}/{d_html.status_code}/{g_html.status_code} "
                     f"components={len(exec_json.get('component_cost_rollup') or [])} "
                     f"deployments={exec_json.get('deployment_count')}"
                 ),
@@ -363,7 +325,6 @@ def main() -> int:
     if args.cloud_run_url:
         cr_url = args.cloud_run_url.rstrip("/")
         target_desc = f"cloud_run ({cr_url})"
-        # Step 1: Unauthenticated API & Browser IAP front-door verification
         unauth_api = httpx.get(f"{cr_url}/api/bootstrap", follow_redirects=False, timeout=15.0)
         unauth_html = httpx.get(
             f"{cr_url}/",
@@ -389,7 +350,6 @@ def main() -> int:
             }
         )
 
-        # Step 2: Direct OIDC check (when IAM-only) or Cloud Run container HTTPS parity check (when browser IAP-gated)
         tok = _mint_gcloud_id_token()
         direct_probe = (
             httpx.get(

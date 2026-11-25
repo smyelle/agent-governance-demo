@@ -79,7 +79,7 @@ class ContainerIdentityPosture:
 
 def inspect_zero_secret_posture(
     project_id: str | None = None,
-    agent_id: str = "cymbal-ops-release-agent",
+    agent_id: str = "agent-governance-demo",
     env_mapping: dict[str, str] | None = None,
 ) -> ContainerIdentityPosture:
     """Inspects runtime environment to verify zero static bearer/API secrets exist."""

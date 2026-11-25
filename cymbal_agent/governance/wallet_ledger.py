@@ -86,8 +86,8 @@ class AtomicWalletAndGovernanceStore:
         self.in_memory_only = in_memory_only
         self._lock = threading.Lock()
         self._mem_agents: dict[str, dict[str, Any]] = {
-            "cymbal-ops-release-agent": {
-                "agent_id": "cymbal-ops-release-agent",
+            "agent-governance-demo": {
+                "agent_id": "agent-governance-demo",
                 "display_name": "Cymbal Core Operations & Release Agent",
                 "status": "ACTIVE",
                 "risk_tier": "AG3",
@@ -143,11 +143,11 @@ class AtomicWalletAndGovernanceStore:
             self._bq_client = bigquery.Client(project=self.project_id, credentials=creds)
         return self._bq_client
 
-    def get_agent_state(self, agent_id: str = "cymbal-ops-release-agent") -> dict[str, Any]:
+    def get_agent_state(self, agent_id: str = "agent-governance-demo") -> dict[str, Any]:
         if self.in_memory_only:
             with self._lock:
                 return dict(
-                    self._mem_agents.get(agent_id, self._mem_agents["cymbal-ops-release-agent"])
+                    self._mem_agents.get(agent_id, self._mem_agents["agent-governance-demo"])
                 )
         try:
             snap = self._fs().collection("cymbal_agents").document(agent_id).get()
@@ -157,10 +157,10 @@ class AtomicWalletAndGovernanceStore:
             if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") or not is_cloud_managed_runtime():
                 self.in_memory_only = True
                 return dict(
-                    self._mem_agents.get(agent_id, self._mem_agents["cymbal-ops-release-agent"])
+                    self._mem_agents.get(agent_id, self._mem_agents["agent-governance-demo"])
                 )
             raise
-        return dict(self._mem_agents["cymbal-ops-release-agent"])
+        return dict(self._mem_agents["agent-governance-demo"])
 
     def set_agent_status(
         self,
@@ -184,7 +184,7 @@ class AtomicWalletAndGovernanceStore:
         ref.set(updates, merge=True)
         return ref.get().to_dict() or updates
 
-    def assert_agent_active(self, agent_id: str = "cymbal-ops-release-agent") -> dict[str, Any]:
+    def assert_agent_active(self, agent_id: str = "agent-governance-demo") -> dict[str, Any]:
         state = self.get_agent_state(agent_id)
         status = str(state.get("status", "ACTIVE")).upper()
         if status != "ACTIVE":
@@ -284,7 +284,7 @@ class AtomicWalletAndGovernanceStore:
         self,
         *,
         wallet_id: str = "wallet-cymbal-ops",
-        agent_id: str = "cymbal-ops-release-agent",
+        agent_id: str = "agent-governance-demo",
         session_id: str,
         trace_id: str,
         architecture_mode: str = "google_native",

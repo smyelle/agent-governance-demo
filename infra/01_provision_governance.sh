@@ -78,11 +78,11 @@ db = firestore.Client(project=project_id, database="(default)", credentials=cred
 now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 agents_ref = db.collection("cymbal_agents")
-agent_doc = agents_ref.document("cymbal-ops-release-agent")
+agent_doc = agents_ref.document("agent-governance-demo")
 if not agent_doc.get().exists:
     agent_doc.set(
         {
-            "agent_id": "cymbal-ops-release-agent",
+            "agent_id": "agent-governance-demo",
             "display_name": "Cymbal Core Operations & Release Agent",
             "status": "ACTIVE",
             "risk_tier": "AG3",

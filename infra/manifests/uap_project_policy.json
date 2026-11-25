@@ -16,7 +16,7 @@
       "effect": "ALLOW",
       "condition": {
         "title": "Allow non-destructive ticket annotation only for registered Cymbal Core Operations & Release Agent SPIFFE identity",
-        "expression": "destination.agent_registry.mcp_server.tool.name == 'annotate_incident_ticket' && destination.agent_registry.mcp_server.tool.annotations.destructive_hint == false && request.auth.principal.contains('cymbal-ops-release-agent')"
+        "expression": "destination.agent_registry.mcp_server.tool.name == 'annotate_incident_ticket' && destination.agent_registry.mcp_server.tool.annotations.destructive_hint == false && request.auth.principal.contains('agent-governance-demo')"
       }
     },
     {

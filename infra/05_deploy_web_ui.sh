@@ -100,29 +100,6 @@ gcloud secrets add-iam-policy-binding "${SESSION_SECRET_NAME}" \
   --quiet >/dev/null
 
 SECRET_MOUNT_SPEC="CYMBAL_BFF_SESSION_SECRET=${SESSION_SECRET_NAME}:latest"
-LOCAL_TENANT_YAML="${REPO_ROOT}/config/tenant_profile.local.yaml"
-TENANT_SECRET_NAME="cymbal-tenant-override-yaml"
-if [[ -f "${LOCAL_TENANT_YAML}" ]]; then
-  echo "[3b/6] Syncing local tenant branding profile to Secret Manager (${TENANT_SECRET_NAME})..."
-  if ! gcloud secrets describe "${TENANT_SECRET_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    gcloud secrets create "${TENANT_SECRET_NAME}" \
-      --replication-policy="automatic" \
-      --data-file="${LOCAL_TENANT_YAML}" \
-      --project="${PROJECT_ID}" \
-      --quiet
-  else
-    gcloud secrets versions add "${TENANT_SECRET_NAME}" \
-      --data-file="${LOCAL_TENANT_YAML}" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-  fi
-  gcloud secrets add-iam-policy-binding "${TENANT_SECRET_NAME}" \
-    --project="${PROJECT_ID}" \
-    --member="serviceAccount:${WEB_SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor" \
-    --quiet >/dev/null
-  SECRET_MOUNT_SPEC="${SECRET_MOUNT_SPEC},CYMBAL_TENANT_OVERRIDE_YAML=${TENANT_SECRET_NAME}:latest"
-fi
 
 MCP_URL="${CYMBAL_MCP_URL:-}"
 if [[ -z "${MCP_URL}" ]] && gcloud run services describe cymbal-ops-mcp-server --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then

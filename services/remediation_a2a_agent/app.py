@@ -208,7 +208,7 @@ async def handle_a2a_rpc(
         "approval_id": cmd.approval_id,
         "approver_principal": cmd.approver_principal,
         "caller_spiffe_or_oidc": (
-            x_cymbal_caller_identity or "spiffe://agent-identity/cymbal-ops-release-agent"
+            x_cymbal_caller_identity or "spiffe://agent-identity/agent-governance-demo"
         ),
         "vp_exception_ticket": cmd.vp_exception_ticket,
         "tier1_registration_receipt": {

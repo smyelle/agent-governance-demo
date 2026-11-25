@@ -376,7 +376,7 @@ def _promote_blueprint_in_registries(
         try:
             store = AtomicWalletAndGovernanceStore(project_id=project_id, in_memory_only=False)
             store.set_agent_status(
-                "cymbal-ops-release-agent",
+                "agent-governance-demo",
                 "ACTIVE",
                 extra_fields={
                     "behavior_score": v2_score,
@@ -398,7 +398,7 @@ def _promote_blueprint_in_registries(
                 f"behavior_score={v2_score} | eval_gate=passed | deployment_status=active"
             )
             resp = httpx.patch(
-                f"https://agentregistry.googleapis.com/v1alpha/projects/{project_id}/locations/{location}/services/cymbal-ops-release-agent",
+                f"https://agentregistry.googleapis.com/v1alpha/projects/{project_id}/locations/{location}/services/agent-governance-demo",
                 params={"updateMask": "description"},
                 headers={
                     "Authorization": f"Bearer {creds.token}",

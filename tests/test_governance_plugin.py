@@ -58,7 +58,7 @@ def _make_plugin() -> tuple[CymbalGovernancePlugin, AtomicWalletAndGovernanceSto
 @pytest.mark.asyncio
 async def test_kill_switch_paused_blocks_before_run_and_before_tool() -> None:
     plugin, store = _make_plugin()
-    store.set_agent_status("cymbal-ops-release-agent", "PAUSED")
+    store.set_agent_status("agent-governance-demo", "PAUSED")
 
     inv_ctx = SimpleNamespace(session=SimpleNamespace(id="sess-1", state={}))
     with pytest.raises(KillSwitchHaltedError):

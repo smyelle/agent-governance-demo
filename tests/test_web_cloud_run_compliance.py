@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
 
-from web.api import create_bff_app
+from web.api import STATIC_DIR, create_bff_app
 
 
 @pytest.fixture()
@@ -164,14 +165,12 @@ def test_stateless_signed_csrf_and_session_revocation(
 def test_fetch_metadata_cross_site_isolation_and_method_allowlist(
     bff_client: TestClient,
 ) -> None:
-    # Cross-site API request rejected pre-auth with 403
     blocked_api = bff_client.get(
         "/api/bootstrap",
         headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"},
     )
     assert blocked_api.status_code == 403
 
-    # Cross-site iframe embed rejected with 403
     blocked_iframe = bff_client.get(
         "/",
         headers={
@@ -182,7 +181,6 @@ def test_fetch_metadata_cross_site_isolation_and_method_allowlist(
     )
     assert blocked_iframe.status_code == 403
 
-    # Standard top-level link navigation allowed
     nav_ok = bff_client.get(
         "/",
         headers={
@@ -193,7 +191,6 @@ def test_fetch_metadata_cross_site_isolation_and_method_allowlist(
     )
     assert nav_ok.status_code == 200
 
-    # Disallowed HTTP methods rejected with 405
     put_res = bff_client.put("/api/bootstrap")
     assert put_res.status_code == 405
     del_res = bff_client.delete("/api/bootstrap")
@@ -213,7 +210,6 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     csrf = boot.json()["csrf_token"]
     headers = {"X-CSRF-Token": csrf}
 
-    # 1. Dynamic Per-Request Model Armor Policy Router (Inline SDP Mask vs Strict BU Block)
     guard_res = client.post(
         "/api/steward/guardrail-test",
         headers=headers,
@@ -250,7 +246,6 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert strict_res.json()["allowed"] is False
     assert strict_res.json()["action_taken"] == "BLOCKED_SDP_PII_POLICY"
 
-    # 2. ADK 2.0 Governance Audit pauses at AG3 RequestInput checkpoint
     triage = client.post(
         "/api/agent/audit",
         headers=headers,
@@ -269,7 +264,6 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert t_body["status"] == "WAITING_AG3_APPROVAL"
     assert t_body["pending_approval"]["interrupt_id"].startswith("ag3_deploy_")
 
-    # 3. Durable HITL resume executes governed A2A Paved-Path deployment
     resume = client.post(
         "/api/agent/resume",
         headers=headers,
@@ -287,7 +281,6 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert r_body["remediation_outcome"]["status"] == "DEPLOYED_PAVED_PATH"
     assert r_body["remediation_outcome"]["compliance_verified"] is True
 
-    # 4. 6-Stage Closed-Loop Optimizer writes runtime artifacts safely under CYMBAL_RUNTIME_STATE_DIR
     fly = client.post("/api/steward/closed-loop-eval", headers=headers, json={})
     assert fly.status_code == 200
     assert fly.json()["status"] == "PROMOTED_V2"
@@ -296,44 +289,61 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
     assert (state_dir / "prompts" / "enterprise_golden_blueprint_v2.json").is_file()
 
 
-def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
+def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
-    monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "persona_state"))
+    monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "lifecycle_state"))
     app = create_bff_app(offline_mode=True)
     client = TestClient(app, base_url="http://127.0.0.1:8080")
 
-    # Verify all 3 Persona SPA routes & 4-zone traditional layout elements
-    for route in ("/", "/end-user", "/governance-ops", "/executive"):
+    # 1. Verify all 4 Lifecycle SPA routes & production Cymbal wireframe structure
+    for route in ("/", "/build", "/evaluate", "/deploy", "/govern"):
         html_res = client.get(route)
         assert html_res.status_code == 200
-        assert 'id="left-menu-tree"' in html_res.text
+        assert "Cymbal Platform" in html_res.text
+        assert 'id="left-lifecycle-nav"' in html_res.text
+        assert 'id="ten-tile-strip"' in html_res.text
         assert 'id="center-workspace"' in html_res.text
-        assert 'id="right-dynamic-tray"' in html_res.text
-        assert 'data-persona="end-user"' in html_res.text
-        assert 'data-persona="governance-ops"' in html_res.text
-        assert 'data-persona="executive"' in html_res.text
+        assert 'id="right-inspector-drawer"' in html_res.text
+        assert 'data-stage="build"' in html_res.text
+        assert 'data-stage="evaluate"' in html_res.text
+        assert 'data-stage="deploy"' in html_res.text
+        assert 'data-stage="govern"' in html_res.text
+
+    # 2. Enforce zero "Mock" / "Persona" / "User Journey" meta-language in frontend assets & bootstrap data
+    for asset_name in ("index.html", "styles.css", "app.js"):
+        asset_text = (STATIC_DIR / asset_name).read_text(encoding="utf-8").lower()
+        assert "mock" not in asset_text, f"Forbidden term 'mock' found in {asset_name}"
+        assert "persona" not in asset_text, f"Forbidden term 'persona' found in {asset_name}"
+        assert "user journey" not in asset_text
 
     boot = client.get("/api/bootstrap").json()
+    for section_key in ("tenant", "slot_catalog", "templates", "rubric", "operations_metrics", "executive_costs"):
+        serialized = json.dumps(boot[section_key]).lower()
+        assert "mock" not in serialized, f"Forbidden term 'mock' in bootstrap.{section_key}"
+        assert "persona" not in serialized, f"Forbidden term 'persona' in bootstrap.{section_key}"
+
     csrf = boot["csrf_token"]
     headers = {"X-CSRF-Token": csrf}
 
-    # Verify 9 canonical component slots & Standard Templates (Mocked Stack + GCP Native)
-    assert len(boot["slot_catalog"]) == 9
+    # 3. Verify 10 vendor-neutral functional components & seeded agent inventory
+    assert len(boot["slot_catalog"]) == 10
+    assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Platform"
     tpl_by_id = {t["template_id"]: t for t in boot["templates"]}
-    assert "tpl-enterprise-mock" in tpl_by_id
-    assert "tpl-gcp-native" in tpl_by_id
+    assert "example-agent-1" in tpl_by_id
+    assert "network-telemetry-advisor" in tpl_by_id
+    assert "subscriber-billing-concierge" in tpl_by_id
     assert all(
-        c["provider"] == "enterprise_mock"
-        for c in tpl_by_id["tpl-enterprise-mock"]["components"].values()
+        c["provider"] == "google_gcp"
+        for c in tpl_by_id["network-telemetry-advisor"]["components"].values()
     )
     assert all(
-        c["provider"] == "gcp_native"
-        for c in tpl_by_id["tpl-gcp-native"]["components"].values()
+        c["provider"] == "cymbal_stack"
+        for c in tpl_by_id["subscriber-billing-concierge"]["components"].values()
     )
 
-    # Persona 1 UJ2: Reject disallowed file extension & accept valid YAML manifest upload
+    # 4. Build -> Import Manifest -> Evaluate -> Remediate -> Deploy -> Govern
     bad_upload = client.post(
         "/api/templates/upload",
         headers=headers,
@@ -341,31 +351,41 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
     )
     assert bad_upload.status_code == 400
 
-    shadow_yaml = (
-        "agent_name: shadow-claims-bot\n"
-        "app_id: APP-SHADOW-99\n"
+    unmanaged_yaml = (
+        "agent_name: unmanaged-claims-agent\n"
+        "app_id: svc-cymbal-999\n"
         "intake_id: ''\n"
         "business_unit: core_cable\n"
         "risk_tier: AG3\n"
-        "static_secrets_in_env: ['OPENAI_API_KEY']\n"
+        "static_secrets_in_env: ['LEGACY_API_KEY']\n"
         "destructive_mcp_tools_exposed: true\n"
         "uap_cel_per_tool_enforced: false\n"
         "sdp_pii_mode: NONE\n"
         "behavior_score: 55.0\n"
         "components:\n"
-        "  agent_runtime_sandbox: enterprise_mock\n"
+        "  runtime_sandbox: cymbal_stack\n"
     )
     up_res = client.post(
         "/api/templates/upload",
         headers=headers,
-        json={"filename": "shadow-claims.yaml", "content": shadow_yaml},
+        json={"filename": "unmanaged-claims.yaml", "content": unmanaged_yaml},
     )
     assert up_res.status_code == 200
     working_tpl = up_res.json()["template"]
     eval_initial = up_res.json()["evaluation"]
     assert eval_initial["gate_passed"] is False
     assert eval_initial["overall_score"] < 50.0
-    assert len(eval_initial["recommendations"]) >= 6
+    assert set(eval_initial["pillar_scores"].keys()) == {
+        "Control",
+        "Intelligence",
+        "Economics",
+        "Experience",
+    }
+
+    # Save template via /api/agents/save
+    save_res = client.post("/api/agents/save", headers=headers, json=working_tpl)
+    assert save_res.status_code == 200
+    assert any(t["agent_name"] == "unmanaged-claims-agent" for t in save_res.json()["templates"])
 
     # Premature deploy must fail gate check (400)
     blocked_dep = client.post(
@@ -375,7 +395,7 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
     )
     assert blocked_dep.status_code == 400
 
-    # Persona 1 UJ4 & UJ5: Accept recommendations & customize manually
+    # Remediate findings via customize + accept
     initial_score = eval_initial["overall_score"]
     cur_eval = eval_initial
     for idx, rec in enumerate(list(cur_eval["recommendations"])):
@@ -387,7 +407,7 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
                     "template": working_tpl,
                     "rule_id": rec["rule_id"],
                     "action": "customize",
-                    "custom_provider": "coexistence_bridge",
+                    "custom_provider": "google_gcp",
                     "custom_parameters": {"clear_static_secrets": True},
                 },
             )
@@ -408,7 +428,6 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
     assert cur_eval["gate_passed"] is True
     assert cur_eval["overall_score"] >= 95.0
 
-    # Deploy remediated template -> updates Persona 2 Metrics & Persona 3 Executive FinOps
     dep_before_cnt = boot["operations_metrics"]["total_deployments"]
     hist_before_usd = boot["executive_costs"]["total_historical_cumulative_usd"]
 
@@ -418,19 +437,18 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
         json={
             "template": working_tpl,
             "initial_score": initial_score,
-            "approver_principal": "gov-ops-reviewer",
+            "approver_principal": "platform-governance-lead",
         },
     )
     assert dep_res.status_code == 200
     dep_payload = dep_res.json()
     assert dep_payload["deployment"]["remediated_prior_to_deploy"] is True
     assert dep_payload["operations_metrics"]["total_deployments"] == dep_before_cnt + 1
-    assert (
-        dep_payload["executive_costs"]["total_historical_cumulative_usd"] > hist_before_usd
-    )
-    assert len(dep_payload["executive_costs"]["component_cost_rollup"]) == 9
+    assert dep_payload["executive_costs"]["total_historical_cumulative_usd"] > hist_before_usd
+    assert len(dep_payload["executive_costs"]["component_cost_rollup"]) == 10
+    assert len(dep_payload["executive_costs"]["pillar_cost_rollup"]) == 4
 
-    # Persona 2: Live Rubric update immediately governs Persona 1 evaluations
+    # Govern -> Policies & Rubric live threshold update immediately governs Evaluate
     rubric = boot["rubric"]
     rubric["passing_score_threshold"] = 99.5
     rub_save = client.post("/api/ops/rubric", headers=headers, json=rubric)
@@ -438,7 +456,7 @@ def test_three_persona_workbench_journeys_rubric_metrics_and_finops(
     re_eval = client.post(
         "/api/templates/evaluate",
         headers=headers,
-        json={"template": tpl_by_id["tpl-enterprise-mock"]},
+        json={"template": tpl_by_id["subscriber-billing-concierge"]},
     )
     assert re_eval.status_code == 200
     assert re_eval.json()["evaluation"]["passing_threshold"] == 99.5

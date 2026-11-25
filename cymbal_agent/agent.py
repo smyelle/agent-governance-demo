@@ -149,7 +149,7 @@ def build_remote_mcp_toolset(
     )
 
     def _oidc_headers(_readonly_ctx: Any) -> dict[str, str]:
-        headers = {"X-Cymbal-Agent-Id": "cymbal-ops-release-agent"}
+        headers = {"X-Cymbal-Agent-Id": "agent-governance-demo"}
         tok = fetch_cloud_run_id_token(resolved_url)
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
@@ -801,7 +801,7 @@ def build_cymbal_workflow(
                         "X-Cymbal-AG3-Approval-Id": approval_id,
                         "X-Cymbal-Caller-Identity": str(
                             ctx.state.get(
-                                "spiffe_id", "spiffe://agent-identity/cymbal-ops-release-agent"
+                                "spiffe_id", "spiffe://agent-identity/agent-governance-demo"
                             )
                         ),
                     }
@@ -819,7 +819,7 @@ def build_cymbal_workflow(
                 resp_json = await handle_a2a_rpc(
                     JsonRpcA2ARequest.model_validate(rpc_body),
                     x_cymbal_ag3_approval_id=approval_id,
-                    x_cymbal_caller_identity="spiffe://agent-identity/cymbal-ops-release-agent",
+                    x_cymbal_caller_identity="spiffe://agent-identity/agent-governance-demo",
                 )
 
         result = resp_json.get("result", {})

@@ -12,16 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FastAPI Backend-for-Frontend (BFF) for Agent Governance, Optimization & Deployment Workbench.
+"""FastAPI Backend-for-Frontend (BFF) for Cymbal Platform Agent Lifecycle Console.
 
-Serves:
-- View 1: Analyze, Optimize & Deploy (3 Candidate Agents, ADK 2.0 Parallel Audit,
-  6-Stage Closed-Loop Optimizer, Dynamic Model Armor + Terraform Paved-Path Diff,
-  Resumable AG3 Reviewer HITL, and A2A Blueprint Deployment)
-- View 2: Day-2 Fleet & Steward Lab (Kill Switch, Atomic Wallet, ADR-011 Verifier,
-  Interactive Dynamic Per-Request Model Armor Router, Ensemble TCO Calculator,
-  8 Modular Capability Proofs, W3C + OTLP Trace Waterfall)
-- Right Rail / View 3: Live 9-Service 4-Tier Architecture Pipeline (`platform_services`)
+Serves the four enterprise lifecycle stages:
+- Build (/build): 10-Component Agent Deployment Template (Google Cloud vs. Custom
+  Cymbal / Google Cloud selection) + Registered & Draft Agents inventory.
+- Evaluate (/evaluate): Governance pillar & workstream rubric scoring, remediation queue,
+  and 6-stage behavioral prompt/trace optimization.
+- Deploy (/deploy): Terraform module & dynamic guardrail policy synthesis, approval gate,
+  and production fleet enrollment.
+- Govern (/govern): Policies & Rubric, Fleet Operations, FinOps & Economics, and Runtime Controls.
+- Right Slide-Out Inspector Drawer: Component configuration & 9-Service Runtime Pipeline.
 
 Implements strict web security controls:
 - Strict Content-Security-Policy (`default-src 'self'`, zero `unsafe-inline`/`unsafe-eval`),
@@ -309,7 +310,7 @@ class TemplateRemediateRequest(BaseModel):
     template: AgentDeploymentTemplate
     rule_id: str = Field(..., min_length=3, max_length=40)
     action: Literal["accept", "customize", "exception"]
-    custom_provider: ProviderChoice | None = None
+    custom_provider: str | None = Field(default=None, max_length=40)
     custom_parameters: dict[str, Any] | None = None
     exception_reason: str | None = Field(default=None, max_length=300)
 
@@ -358,7 +359,7 @@ CANDIDATE_PRESETS: list[dict[str, Any]] = [
         "app_id": "SVC-CYMBAL-309",
         "severity": "Multi-BU | SDP + CEL",
         "default_prompt": (
-            "Audit CAND-309 (cpe-fleet-provisioning-agent). Sample trace log: subscriber SSN "
+            "Audit CAND-309 (cpe-fleet-provisioning-agent). Production trace log: subscriber SSN "
             "123-45-6789 on CPE MAC aa:bb:cc:dd:ee:ff. Attach Dynamic Model Armor policy and "
             "block destructive MCP tools."
         ),
@@ -404,7 +405,7 @@ def build_platform_services_snapshot(
     """Constructs live status across all 9 services mapped 1:1 to the 4-Tier Pyramid."""
     profile = load_tenant_profile()
     terms = profile.terminology
-    agent_state = store.get_agent_state("cymbal-ops-release-agent")
+    agent_state = store.get_agent_state("agent-governance-demo")
     wallet_state = store.get_wallet_state("wallet-cymbal-ops")
     posture = inspect_zero_secret_posture()
     pointer = _load_prompt_pointer()
@@ -866,7 +867,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             tracer=tracer,
             architecture_mode=runtime_cfg["architecture_mode"],
             last_event=(
-                f"4-Tier Coexistence ready ({profile.terminology.platform_name} + Google Agent Platform)"
+                f"Lifecycle control plane ready ({profile.terminology.platform_name} + Google Cloud)"
             ),
         )
 
@@ -877,7 +878,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "tenant": profile.model_dump(),
             "candidates": CANDIDATE_PRESETS,
             "incidents": CANDIDATE_PRESETS,
-            "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
+            "agent_state": store.get_agent_state("agent-governance-demo"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "identity_posture": inspect_zero_secret_posture().__dict__,
             "prompt_registry": {
@@ -896,7 +897,6 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "platform_services": platform_services,
             "slot_catalog": build_localized_slot_catalog(profile),
             "templates": workbench.list_templates(),
-            "sample_uploads": workbench.list_sample_uploads(),
             "rubric": workbench.get_rubric().model_dump(),
             "operations_metrics": workbench.build_operations_metrics(),
             "executive_costs": workbench.build_executive_cost_summary(),
@@ -937,13 +937,13 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         agent_name = (req.agent_name or req.service_name or "billing-dispute-assistant").strip()
 
         try:
-            store.assert_agent_active("cymbal-ops-release-agent")
+            store.assert_agent_active("agent-governance-demo")
             store.reserve_preflight_budget("wallet-cymbal-ops")
             verdict = guard.inspect_text(req.operator_prompt, direction="USER_PROMPT")
             store.record_guardrail_audit(
                 trace_id=trace_id,
                 session_id=sess_preview_id,
-                agent_id="cymbal-ops-release-agent",
+                agent_id="agent-governance-demo",
                 direction="USER_PROMPT",
                 verdict=verdict,
             )
@@ -1081,7 +1081,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
 
         ledger_row = store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
-            agent_id="cymbal-ops-release-agent",
+            agent_id="agent-governance-demo",
             session_id=session.id,
             trace_id=trace_id,
             architecture_mode=req.architecture_mode,
@@ -1256,7 +1256,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "remediation_outcome": st.get("remediation_outcome"),
             "postmortem_record": st.get("postmortem_record"),
             "wallet_settlement": ledger_row,
-            "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
+            "agent_state": store.get_agent_state("agent-governance-demo"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "recent_memories": mem_bank.retrieve_memories(
                 verified_user_id="gov-reviewer-01", limit=5
@@ -1269,7 +1269,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         _verify_csrf(request)
         t0 = time.perf_counter()
         try:
-            store.assert_agent_active("cymbal-ops-release-agent")
+            store.assert_agent_active("agent-governance-demo")
         except KillSwitchHaltedError as exc:
             snap = build_platform_services_snapshot(
                 store=store,
@@ -1323,7 +1323,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         store.reserve_preflight_budget("wallet-cymbal-ops")
         ledger_row = store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
-            agent_id="cymbal-ops-release-agent",
+            agent_id="agent-governance-demo",
             session_id=req.session_id,
             trace_id=trace_id,
             architecture_mode=runtime_cfg["architecture_mode"],
@@ -1434,7 +1434,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "remediation_outcome": rem_outcome,
             "postmortem_record": st.get("postmortem_record"),
             "wallet_settlement": ledger_row,
-            "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
+            "agent_state": store.get_agent_state("agent-governance-demo"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "memories": memories,
             "platform_services": platform_services,
@@ -1445,7 +1445,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: KillSwitchUpdateRequest, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
-        updated = store.set_agent_status("cymbal-ops-release-agent", req.status)
+        updated = store.set_agent_status("agent-governance-demo", req.status)
         snap = build_platform_services_snapshot(
             store=store,
             mem_bank=mem_bank,
@@ -1500,7 +1500,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         store.record_guardrail_audit(
             trace_id=trace_id,
             session_id="steward-threat-lab",
-            agent_id="cymbal-ops-release-agent",
+            agent_id="agent-governance-demo",
             direction="USER_PROMPT",
             verdict=verdict,
         )
@@ -1722,7 +1722,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.get("/api/steward/telemetry")
     async def get_telemetry_snapshot() -> dict[str, Any]:
         return {
-            "agent_state": store.get_agent_state("cymbal-ops-release-agent"),
+            "agent_state": store.get_agent_state("agent-governance-demo"),
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "recent_traces": tracer.list_recent_traces(limit=12),
             "recent_otlp_exports": tracer.list_recent_otlp_exports(limit=6),
@@ -1741,16 +1741,18 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         tpl: AgentDeploymentTemplate, evaluation: dict[str, Any]
     ) -> dict[str, dict[str, Any]]:
         slot_to_service = {
-            "agent_identity": "agent_identity",
+            "identity_access": "agent_identity",
             "agent_registry": "agent_registry",
-            "agent_gateway": "agent_gateway",
-            "trace_observability": "trace_wallet",
-            "wallet_kill_switch": "trace_wallet",
+            "ai_gateway": "agent_gateway",
+            "observability_tracing": "trace_wallet",
+            "cost_kill_controls": "trace_wallet",
             "safety_guardrails": "model_armor",
-            "agent_runtime_sandbox": "agent_runtime",
-            "session_memory": "memory_bank",
-            "eval_optimizer": "eval_flywheel",
+            "foundation_model": "agent_runtime",
+            "runtime_sandbox": "agent_runtime",
+            "memory_knowledge": "memory_bank",
+            "eval_optimization": "eval_flywheel",
         }
+        severity_rank = {"VERIFIED": 1, "MASKED_PII": 2, "BLOCKED": 3}
         failed_slots = {
             r["slot_id"]
             for r in evaluation.get("rule_results", [])
@@ -1762,15 +1764,13 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             prov = comp.provider if (comp and comp.enabled) else "unconfigured"
             if prov == "unconfigured" or sid in failed_slots:
                 st_val = "BLOCKED" if prov == "unconfigured" else "MASKED_PII"
-                lbl = "Missing Hook" if prov == "unconfigured" else "Remediation Needed"
+                lbl = "Unconfigured" if prov == "unconfigured" else "Action Required"
             else:
                 st_val = "VERIFIED"
-                lbl = (
-                    "Mocked Stack"
-                    if prov == "enterprise_mock"
-                    else ("GCP Native" if prov == "gcp_native" else "Coexistence Ready")
-                )
-            overrides[svc_id] = {"status": st_val, "badge_label": lbl}
+                lbl = "Cymbal Active" if prov == "cymbal_stack" else "Google Cloud"
+            prev = overrides.get(svc_id)
+            if prev is None or severity_rank[st_val] >= severity_rank.get(prev["status"], 0):
+                overrides[svc_id] = {"status": st_val, "badge_label": lbl}
         overrides["mcp_a2a_mesh"] = {
             "status": "BLOCKED"
             if (tpl.destructive_mcp_tools_exposed and not tpl.uap_cel_per_tool_enforced)
@@ -1895,7 +1895,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         rubric = workbench.get_rubric()
 
         try:
-            store.assert_agent_active("cymbal-ops-release-agent")
+            store.assert_agent_active("agent-governance-demo")
             store.reserve_preflight_budget("wallet-cymbal-ops")
             verdict = guard.inspect_text(
                 req.template.system_instruction, direction="USER_PROMPT"
@@ -1903,7 +1903,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             store.record_guardrail_audit(
                 trace_id=trace_id,
                 session_id=sess_id,
-                agent_id="cymbal-ops-release-agent",
+                agent_id="agent-governance-demo",
                 direction="USER_PROMPT",
                 verdict=verdict,
             )
@@ -1965,7 +1965,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         )
         ledger_row = store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
-            agent_id="cymbal-ops-release-agent",
+            agent_id="agent-governance-demo",
             session_id=sess_id,
             trace_id=trace_id,
             architecture_mode=runtime_cfg["architecture_mode"],
@@ -2033,18 +2033,37 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         return {
             "rubric": saved.model_dump(),
             "templates": workbench.list_templates(),
-            "sample_uploads": workbench.list_sample_uploads(),
         }
 
+    @bff.post("/api/agents/save")
     @bff.post("/api/ops/templates")
     async def upsert_standard_template(
         req: AgentDeploymentTemplate, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
+        profile = load_tenant_profile()
         saved = workbench.upsert_template(req)
+        rubric = workbench.get_rubric()
+        validated_tpl = AgentDeploymentTemplate.model_validate(saved)
+        evaluation = evaluate_template_against_rubric(
+            validated_tpl, rubric, profile=profile
+        )
+        snap = build_platform_services_snapshot(
+            store=store,
+            mem_bank=mem_bank,
+            tracer=tracer,
+            architecture_mode=runtime_cfg["architecture_mode"],
+            last_event=(
+                f"Saved deployment template '{validated_tpl.agent_name}' "
+                f"(score={evaluation['overall_score']}/100)"
+            ),
+            overrides=_template_to_service_overrides(validated_tpl, evaluation),
+        )
         return {
             "template": saved,
             "templates": workbench.list_templates(),
+            "evaluation": evaluation,
+            "platform_services": snap,
         }
 
     @bff.get("/api/ops/metrics")
@@ -2065,10 +2084,10 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         }
         allowed_orig = {
             "all",
-            "standard_enterprise_mock",
-            "standard_gcp_native",
-            "custom_composed",
-            "uploaded_manifest",
+            "google_gcp_standard",
+            "cymbal_baseline",
+            "custom_hybrid",
+            "imported_manifest",
         }
         bu_val = business_unit if business_unit in allowed_bu else "all"
         orig_val = origin if origin in allowed_orig else "all"
@@ -2080,6 +2099,10 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     bff.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @bff.get("/")
+    @bff.get("/build")
+    @bff.get("/evaluate")
+    @bff.get("/deploy")
+    @bff.get("/govern")
     @bff.get("/end-user")
     @bff.get("/governance-ops")
     @bff.get("/executive")

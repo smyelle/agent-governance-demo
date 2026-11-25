@@ -19,7 +19,7 @@ Configures:
 - `identity_type="AGENT_IDENTITY"` (SPIFFE SVID hardware/platform identity, zero static keys)
 - `GOOGLE_GENAI_USE_ENTERPRISE="TRUE"` & `GOOGLE_GENAI_API_TRANSPORT="rest"`
 - `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY="true"`
-- Registers / synchronizes `cymbal-ops-release-agent` in Agent Registry (`us-central1`).
+- Registers / synchronizes `agent-governance-demo` in Agent Registry (`us-central1`).
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _register_agent_in_agent_registry(
     re_url = (
         f"https://{location}-aiplatform.googleapis.com/v1beta1/{reasoning_engine_name}:streamQuery"
     )
-    svc_id = "cymbal-ops-release-agent"
+    svc_id = "agent-governance-demo"
     subprocess.run(
         [
             "gcloud",
@@ -115,7 +115,7 @@ def _register_agent_in_agent_registry(
             svc_id,
             f"--location={location}",
             f"--project={project_id}",
-            "--display-name=Cymbal Core Operations & Release Agent (ADK 2.0)",
+            "--display-name=agent-governance-demo",
             (
                 "--description=ADK 2.0 Workflow agent on Vertex AI Agent Runtime with SPIFFE "
                 "AGENT_IDENTITY, parallel MCP fan-out, gVisor sandbox, resumable AG3 HITL, "
@@ -164,16 +164,21 @@ def main() -> int:
         "CYMBAL_A2A_URL": os.getenv("CYMBAL_A2A_URL", ""),
     }
 
+    configured_re = os.getenv("CYMBAL_REASONING_ENGINE_NAME", "").strip()
     existing_name = ""
     for item in client.agent_engines.list():
         api_res = getattr(item, "api_resource", item)
+        res_name = getattr(api_res, "name", "") or ""
         disp = getattr(api_res, "display_name", "") or ""
-        if disp == "cymbal-ops-release-agent":
-            existing_name = getattr(api_res, "name", "")
+        if (configured_re and res_name == configured_re) or disp in {
+            "agent-governance-demo",
+            "cymbal-ops-release-agent",
+        }:
+            existing_name = res_name
             break
 
     config_kwargs = {
-        "display_name": "cymbal-ops-release-agent",
+        "display_name": "agent-governance-demo",
         "description": "Cymbal Core Operations & Release Agent (ADK 2.0, SPIFFE AGENT_IDENTITY)",
         "staging_bucket": staging_bucket,
         "requirements": RUNTIME_REQUIREMENTS,

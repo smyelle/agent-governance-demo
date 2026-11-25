@@ -1,177 +1,189 @@
 <!--
-Copyright 2026 Google LLC
+ Copyright 2026 Google LLC
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>End User - Agent Builder | Agent Governance Workbench</title>
-  <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build | Cymbal Platform</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <a href="#center-workspace" class="skip-link visually-hidden">Skip to workspace</a>
-  <div id="live-status-region" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  <a href="#center-workspace" class="skip-link visually-hidden">Skip to main content</a>
+  <div id="polite-announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ZONE 1: TOP SHELL & 3-PERSONA TAB BAR -->
-  <header class="top-shell">
-    <div class="brand-cluster">
-      <span class="brand-pill" id="brand-badge">4-Tier Coexistence | ADK 2.0</span>
-      <span class="runtime-pill" id="runtime-env-pill">Local Dev (127.0.0.1)</span>
-      <div class="brand-titles">
-        <h1 class="app-title" id="app-title">Cymbal Agent Governance, Optimization &amp; Deployment Workbench</h1>
-        <p class="app-subtitle" id="org-subtitle">Cymbal Enterprise AI Platform &amp; Governance Engineering</p>
-      </div>
-    </div>
-
-    <div class="top-nav-controls">
-      <div class="persona-tablist" role="tablist" aria-label="Persona Workspaces">
-        <button
-          type="button"
-          id="persona-tab-end-user"
-          role="tab"
-          aria-selected="true"
-          tabindex="0"
-          aria-controls="center-workspace"
-          data-persona="end-user"
-          class="persona-tab active"
-        >
-          1. End User (Agent Builder)
-        </button>
-        <button
-          type="button"
-          id="persona-tab-governance-ops"
-          role="tab"
-          aria-selected="false"
-          tabindex="-1"
-          aria-controls="center-workspace"
-          data-persona="governance-ops"
-          class="persona-tab"
-        >
-          2. Agent Governance Operations
-        </button>
-        <button
-          type="button"
-          id="persona-tab-executive"
-          role="tab"
-          aria-selected="false"
-          tabindex="-1"
-          aria-controls="center-workspace"
-          data-persona="executive"
-          class="persona-tab"
-        >
-          3. Executive Management (FinOps)
-        </button>
+  <div class="app-shell">
+    <aside class="left-rail">
+      <div class="brand-header">
+        <svg class="brand-icon" aria-hidden="true" viewBox="0 0 28 28">
+          <rect width="28" height="28" rx="6" fill="currentColor" opacity="0.14"></rect>
+          <path d="M14 5l7 3.5v5.2c0 4.8-3 8.5-7 9.8-4-1.3-7-5-7-9.8V8.5L14 5z" fill="currentColor"></path>
+        </svg>
+        <span id="sidebar-brand-title" class="brand-title">Cymbal Platform</span>
       </div>
 
-      <button
-        type="button"
-        id="btn-toggle-right-tray"
-        class="tray-toggle-btn"
-        aria-expanded="true"
-        aria-controls="right-dynamic-tray"
-      >
-        Hide Inspector Tray
-      </button>
-    </div>
-  </header>
+      <nav id="left-lifecycle-nav" class="lifecycle-nav" aria-label="Primary">
+        <ul class="lifecycle-nav-list">
+          <li>
+            <button type="button" class="lifecycle-nav-btn is-active" data-stage="build" aria-current="page">
+              <span class="nav-stage-label">Build</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="lifecycle-nav-btn" data-stage="evaluate">
+              <span class="nav-stage-label">Evaluate</span>
+              <span id="nav-eval-badge" class="nav-pill" hidden></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="lifecycle-nav-btn" data-stage="deploy">
+              <span class="nav-stage-label">Deploy</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="lifecycle-nav-btn" data-stage="govern">
+              <span class="nav-stage-label">Govern</span>
+            </button>
+          </li>
+        </ul>
+      </nav>
 
-  <!-- 3-COLUMN ENTERPRISE WORKSPACE SHELL -->
-  <div id="app-grid-shell" class="workbench-shell">
-    <!-- ZONE 2: LEFT-HAND DYNAMIC MENU TREE -->
-    <nav id="left-tree-sidebar" class="left-tree-panel" aria-label="Persona Navigation">
-      <div class="left-tree-header">
-        <span class="tree-persona-kicker" id="tree-persona-kicker">Persona 1</span>
-        <h2 class="tree-persona-heading" id="tree-persona-heading">End User Journeys</h2>
-      </div>
-      <div id="left-menu-tree" role="tree" aria-labelledby="tree-persona-heading" class="menu-tree-root"></div>
-    </nav>
-
-    <!-- ZONE 3: CENTER CONFIGURATION & VISUALIZATION SCREEN -->
-    <main id="center-workspace" class="center-screen" tabindex="-1">
-      <div id="global-alert-banner" role="alert" class="alert-banner hidden"></div>
-
-      <!-- CONTEXTUAL HEADER & WORKING TEMPLATE SUMMARY BAR -->
-      <div id="center-context-header" class="center-header-card"></div>
-
-      <!-- DYNAMIC CENTER CANVAS -->
-      <div id="center-stage-content" class="center-stage-stack"></div>
-    </main>
-
-    <!-- ZONE 4: RIGHT-HAND DYNAMIC MENU TRAY -->
-    <aside id="right-dynamic-tray" class="right-tray-panel" aria-label="Contextual Inspector and Execution Pipeline">
-      <div class="right-tray-header">
-        <div class="tray-mode-tabs" role="tablist" aria-label="Right Tray Views">
-          <button
-            type="button"
-            id="tray-tab-inspector"
-            role="tab"
-            aria-selected="true"
-            tabindex="0"
-            aria-controls="tray-inspector-view"
-            class="tray-tab-btn active"
-          >
-            Inspector &amp; Editor
-          </button>
-          <button
-            type="button"
-            id="tray-tab-pipeline"
-            role="tab"
-            aria-selected="false"
-            tabindex="-1"
-            aria-controls="tray-pipeline-view"
-            class="tray-tab-btn"
-          >
-            Live 4-Tier Pipeline
-          </button>
+      <div class="rail-footer">
+        <div id="rail-active-agent-card" class="rail-agent-summary">
+          <span class="rail-summary-label">Selected Agent</span>
+          <strong id="rail-agent-name" class="rail-agent-id">example-agent-1</strong>
+          <span id="rail-agent-meta" class="rail-agent-sub">ag2 | Score --</span>
         </div>
-      </div>
 
-      <!-- TRAY VIEW A: CONTEXTUAL INSPECTOR / PARAMETER EDITOR / DIFF / FINOPS DRILLDOWN -->
-      <div id="tray-inspector-view" role="tabpanel" aria-labelledby="tray-tab-inspector" class="tray-body">
-        <div id="tray-inspector-content" class="tray-inspector-stack"></div>
-      </div>
+        <button
+          type="button"
+          id="open-pipeline-drawer-btn"
+          class="secondary-btn full-width-btn"
+          aria-controls="right-inspector-drawer"
+          aria-expanded="false"
+        >
+          Runtime Pipeline (9)
+        </button>
 
-      <!-- TRAY VIEW B: LIVE 9-SERVICE 4-TIER EXECUTION PIPELINE -->
-      <div id="tray-pipeline-view" role="tabpanel" aria-labelledby="tray-tab-pipeline" class="tray-body hidden">
-        <div class="pipeline-meta-box">
-          <div class="pipeline-meta-top">
-            <strong id="viz-panel-title">4-Tier Coexistence Pipeline</strong>
-            <span id="viz-mode-pill" class="subtle-tag">4-Tier Coexistence</span>
-          </div>
-          <div class="pipeline-meta-top">
-            <span id="viz-trace-pill" class="mono-pill">W3C + OTLP Ready</span>
-            <div class="pipeline-mini-actions">
-              <button type="button" id="btn-replay-flow" class="small-btn">Replay</button>
-              <button type="button" id="btn-expand-all" class="small-btn">Expand All</button>
-            </div>
-          </div>
-          <p id="viz-last-event" class="pipeline-event-banner">
-            4-Tier Coexistence control plane initialized and ready
-          </p>
+        <div class="rail-env-row">
+          <span id="runtime-env-pill" class="env-pill">Local Dev (127.0.0.1)</span>
+          <button type="button" id="reset-session-btn" class="text-link-btn">Reset Session</button>
         </div>
-        <div id="vertical-pipeline-list" class="vertical-pipeline-list" role="list"></div>
       </div>
     </aside>
+
+    <main id="center-workspace" class="main-workspace" tabindex="-1">
+      <div id="global-alert-banner" class="alert-banner" role="alert" hidden></div>
+      <div id="status-toast-banner" class="toast-banner" hidden></div>
+
+      <section id="pinned-template-section" class="template-strip-section" aria-labelledby="template-strip-heading">
+        <div class="template-strip-header">
+          <div class="strip-title-group">
+            <h1 id="template-strip-heading" class="strip-title">Agent Deployment Template</h1>
+            <span id="active-agent-summary-pill" class="agent-context-pill">example-agent-1</span>
+          </div>
+
+          <div class="template-strip-controls">
+            <fieldset id="template-profile-fieldset" class="segmented-radio-group">
+              <legend class="visually-hidden">Template Profile</legend>
+              <span class="control-inline-label" aria-hidden="true">Template:</span>
+              <input type="radio" id="mode-google-gcp" name="template_mode" value="google_gcp" class="visually-hidden">
+              <label for="mode-google-gcp" class="segmented-radio-label">Google Cloud</label>
+              <input type="radio" id="mode-custom" name="template_mode" value="custom" class="visually-hidden" checked>
+              <label for="mode-custom" class="segmented-radio-label">Custom</label>
+            </fieldset>
+
+            <div id="strip-custom-actions" class="strip-action-group">
+              <button type="button" id="apply-cymbal-baseline-btn" class="secondary-btn sm-btn">Cymbal Baseline</button>
+              <button type="button" id="open-import-dialog-btn" class="secondary-btn sm-btn">Import Manifest</button>
+              <button type="button" id="export-manifest-btn" class="secondary-btn sm-btn">Export YAML</button>
+            </div>
+          </div>
+        </div>
+
+        <ul id="ten-tile-strip" class="ten-tile-strip" role="list"></ul>
+
+        <p id="strip-helper-bar" class="strip-helper-text">
+          Select any functional component tile to choose between Cymbal and Google Cloud components or configure policy parameters.
+        </p>
+      </section>
+
+      <div id="stage-body-content" class="stage-body"></div>
+
+      <footer class="workspace-footer">
+        <span>Cymbal Platform Lifecycle &amp; Governance Console (Apache-2.0) | Foundation Model Standard: gemini-3.8-flash</span>
+        <span>Cost figures represent non-binding engineering capacity models based on published cloud and enterprise unit rates.</span>
+      </footer>
+    </main>
   </div>
 
-  <footer class="app-footer">
-    Non-Production Sample Reference Architecture | Copyright 2026 Google LLC | Licensed under Apache-2.0 | Preview features evaluated under Google Cloud Pre-GA Offerings Terms | All cost figures and TCO comparisons are illustrative, non-binding budgetary estimates based on public list rates.
-  </footer>
+  <dialog id="right-inspector-drawer" class="slide-drawer" aria-labelledby="drawer-heading">
+    <div class="drawer-panel">
+      <header class="drawer-header">
+        <div class="drawer-title-wrap">
+          <p id="drawer-eyebrow" class="eyebrow">Component Inspector</p>
+          <h2 id="drawer-heading" class="drawer-title">Identity &amp; Access</h2>
+        </div>
+        <button type="button" id="close-drawer-btn" class="secondary-btn sm-btn">Close</button>
+      </header>
 
-  <script src="/static/app.js"></script>
+      <div class="drawer-tabs" role="tablist" aria-label="Inspector Views">
+        <button
+          type="button"
+          id="drawer-tab-inspector"
+          role="tab"
+          aria-selected="true"
+          aria-controls="drawer-panel-inspector"
+          class="drawer-tab-btn is-active"
+        >
+          Configuration &amp; Details
+        </button>
+        <button
+          type="button"
+          id="drawer-tab-pipeline"
+          role="tab"
+          aria-selected="false"
+          aria-controls="drawer-panel-pipeline"
+          tabindex="-1"
+          class="drawer-tab-btn"
+        >
+          Runtime Pipeline (9)
+        </button>
+      </div>
+
+      <div id="drawer-panel-inspector" role="tabpanel" aria-labelledby="drawer-tab-inspector" class="drawer-body"></div>
+
+      <div id="drawer-panel-pipeline" role="tabpanel" aria-labelledby="drawer-tab-pipeline" class="drawer-body" hidden>
+        <p id="pipeline-last-event" class="pipeline-event-banner">Control plane ready.</p>
+        <ol id="vertical-pipeline-list" class="pipeline-list"></ol>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="agent-modal-dialog" class="center-modal" aria-labelledby="agent-modal-heading">
+    <div class="modal-panel">
+      <header class="drawer-header">
+        <h2 id="agent-modal-heading" class="drawer-title">Register Agent</h2>
+        <button type="button" id="close-agent-modal-btn" class="secondary-btn sm-btn">Cancel</button>
+      </header>
+      <div id="agent-modal-body" class="drawer-body"></div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

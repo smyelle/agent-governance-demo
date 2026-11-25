@@ -122,14 +122,14 @@ async def run_single_proof(proof_id: int, *, live_cloud: bool = True) -> dict[st
 
     if proof_id == 1:
         store = AtomicWalletAndGovernanceStore(project_id=project_id, in_memory_only=not live_cloud)
-        store.set_agent_status("cymbal-ops-release-agent", "PAUSED")
+        store.set_agent_status("agent-governance-demo", "PAUSED")
         blocked_all_paths = False
         try:
-            store.assert_agent_active("cymbal-ops-release-agent")
+            store.assert_agent_active("agent-governance-demo")
         except KillSwitchHaltedError:
             blocked_all_paths = True
         finally:
-            store.set_agent_status("cymbal-ops-release-agent", "ACTIVE")
+            store.set_agent_status("agent-governance-demo", "ACTIVE")
 
         return {
             "proof_id": 1,
@@ -382,7 +382,7 @@ async def run_single_proof(proof_id: int, *, live_cloud: bool = True) -> dict[st
         live_store.reserve_preflight_budget("wallet-cymbal-ops")
         ledger_row = live_store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
-            agent_id="cymbal-ops-release-agent",
+            agent_id="agent-governance-demo",
             session_id=session_id,
             trace_id=trace_id,
             input_tokens=640,

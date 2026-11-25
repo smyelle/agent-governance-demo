@@ -238,16 +238,22 @@
     }
   }
 
-  /* Inline 10 Functional Blocks Grid (Scoped Inside Expanded Agent Row) */
-  function buildInstanceTenTileStrip(tpl) {
+  /* Sync highlight between the 10 horizontal blocks and the 10 nested expanders */
+  function syncHorizontalTilesWithOpenExpander(panelRoot) {
+    if (!panelRoot) return;
+    const openDet = panelRoot.querySelector("details.component-expander[open]");
+    const openSid = openDet ? openDet.dataset.slotId : null;
+    state.selectedSlotId = openSid;
+    panelRoot.querySelectorAll(".component-tile").forEach((btn) => {
+      const active = Boolean(openSid && btn.dataset.slotId === openSid);
+      btn.classList.toggle("is-selected", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  /* Inline 10 Horizontal Functional Blocks (Scoped Inside Expanded Agent Row) */
+  function buildInstanceTenTileStrip(tpl, panelRoot) {
     const wrapper = el("div", "instance-blocks-section");
-    wrapper.appendChild(
-      el(
-        "p",
-        "instance-blocks-heading",
-        "10 Functional Capabilities (Select any block to configure its component below)"
-      )
-    );
     const list = el("ul", "ten-tile-strip");
     list.setAttribute("role", "list");
 
@@ -277,8 +283,29 @@
       btn.append(topHeader, subSpan);
 
       btn.addEventListener("click", () => {
-        state.selectedSlotId = sid;
-        renderStageBody();
+        const targetDet =
+          panelRoot &&
+          panelRoot.querySelector(`details.component-expander[data-slot-id="${sid}"]`);
+        if (targetDet) {
+          const willOpen = !targetDet.open;
+          if (willOpen) {
+            panelRoot.querySelectorAll("details.component-expander[open]").forEach((other) => {
+              if (other !== targetDet) {
+                other.open = false;
+              }
+            });
+            targetDet.open = true;
+            state.selectedSlotId = sid;
+            targetDet.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          } else {
+            targetDet.open = false;
+            state.selectedSlotId = null;
+          }
+          syncHorizontalTilesWithOpenExpander(panelRoot);
+        } else {
+          state.selectedSlotId = sid;
+          renderStageBody();
+        }
       });
       li.appendChild(btn);
       list.appendChild(li);
@@ -589,35 +616,12 @@
     URL.revokeObjectURL(url);
   }
 
-  /* Reusable Inline Component Configurator Card */
-  function buildInlineComponentEditor(slotId) {
-    const spec = state.slotById[slotId] || state.slotCatalog[0];
-    const tpl = state.workingTemplate;
-    const card = el("div", "surface-card form-stack");
-    if (!spec || !tpl) return card;
-
-    const headerRow = el("div", "toolbar-row");
-    headerRow.appendChild(el("h3", "section-heading", "Component Configuration"));
-
-    const slotJumpSel = el("select");
-    slotJumpSel.setAttribute("aria-label", "Select functional capability");
-    state.slotCatalog.forEach((s) => {
-      const o = el("option", "", `${s.step}. ${s.functional_name}`);
-      o.value = s.slot_id;
-      if (s.slot_id === spec.slot_id) o.selected = true;
-      slotJumpSel.appendChild(o);
-    });
-    slotJumpSel.addEventListener("change", () => {
-      state.selectedSlotId = slotJumpSel.value;
-      renderStageBody();
-    });
-    headerRow.appendChild(slotJumpSel);
-    card.appendChild(headerRow);
-
-    card.appendChild(
+  /* Shared Per-Slot Component Radio & Policy Controls (Zero Dropdown) */
+  function populateSlotConfigurationBody(container, spec, tpl, radioGroupPrefix) {
+    container.appendChild(
       el("span", "status-badge status-ok", `${spec.pillar} Pillar | ${spec.workstream}`)
     );
-    card.appendChild(
+    container.appendChild(
       el("p", "field-hint", `API Surface: ${spec.api_surface} | Consolidates: ${spec.consolidates}`)
     );
 
@@ -640,14 +644,19 @@
       );
       const unlockBtn = el("button", "secondary-btn sm-btn", "Switch to Custom");
       unlockBtn.type = "button";
-      unlockBtn.addEventListener("click", () => applyInstanceTemplatePreset("custom"));
+      unlockBtn.addEventListener("click", () => {
+        state.selectedSlotId = spec.slot_id;
+        applyInstanceTemplatePreset("custom");
+      });
       lockBar.appendChild(unlockBtn);
-      card.appendChild(lockBar);
+      container.appendChild(lockBar);
     }
 
     const fs = el("fieldset", "radio-card-list");
     fs.disabled = lockedGcp;
-    fs.appendChild(el("legend", "visually-hidden", `Choose implementation for ${spec.functional_name}`));
+    fs.appendChild(
+      el("legend", "visually-hidden", `Choose implementation for ${spec.functional_name}`)
+    );
 
     const turns = Number(tpl.estimated_monthly_turns_millions || 3.5);
     [
@@ -663,12 +672,13 @@
       );
       const rad = el("input");
       rad.type = "radio";
-      rad.name = `inline_slot_provider_${spec.slot_id}`;
+      rad.name = `${radioGroupPrefix}_${tpl.template_id}_${spec.slot_id}`;
       rad.value = provKey;
       rad.checked = isChecked;
 
       rad.addEventListener("change", async () => {
         if (!rad.checked) return;
+        state.selectedSlotId = spec.slot_id;
         tpl.template_mode = "custom";
         tpl.origin = "custom_hybrid";
         tpl.components[spec.slot_id] = {
@@ -695,7 +705,7 @@
       lbl.append(rad, textCol);
       fs.appendChild(lbl);
     });
-    card.appendChild(fs);
+    container.appendChild(fs);
 
     if (
       spec.slot_id === "identity_access" &&
@@ -709,10 +719,11 @@
       );
       clearBtn.type = "button";
       clearBtn.addEventListener("click", async () => {
+        state.selectedSlotId = spec.slot_id;
         tpl.static_secrets_in_env = [];
         await refreshEvaluation(true);
       });
-      card.appendChild(clearBtn);
+      container.appendChild(clearBtn);
     }
 
     if (spec.slot_id === "ai_gateway") {
@@ -721,6 +732,7 @@
       celChk.type = "checkbox";
       celChk.checked = Boolean(tpl.uap_cel_per_tool_enforced);
       celChk.addEventListener("change", async () => {
+        state.selectedSlotId = spec.slot_id;
         tpl.uap_cel_per_tool_enforced = celChk.checked;
         await refreshEvaluation(true);
       });
@@ -728,12 +740,12 @@
         celChk,
         el("span", "", "Enforce inline per-tool UAP Policy V2 CEL authorization")
       );
-      card.appendChild(celLbl);
+      container.appendChild(celLbl);
     }
 
     if (spec.slot_id === "safety_guardrails") {
       const sdpGrp = el("div", "field-group");
-      const sdpId = `inline-sdp-mode-${tpl.template_id}`;
+      const sdpId = `${radioGroupPrefix}-sdp-${tpl.template_id}-${spec.slot_id}`;
       const sdpLbl = el("label", "", "Inline PII Inspection Mode");
       sdpLbl.setAttribute("for", sdpId);
       const sdpSel = el("select");
@@ -745,13 +757,82 @@
         sdpSel.appendChild(o);
       });
       sdpSel.addEventListener("change", async () => {
+        state.selectedSlotId = spec.slot_id;
         tpl.sdp_pii_mode = sdpSel.value;
         await refreshEvaluation(true);
       });
       sdpGrp.append(sdpLbl, sdpSel);
-      card.appendChild(sdpGrp);
+      container.appendChild(sdpGrp);
     }
+  }
 
+  /* Nested Set of 10 Functional Component Expanders (Under Expanded Agent Row) */
+  function buildNestedComponentExpanders(tpl, panelRoot) {
+    const card = el("div", "surface-card nested-expanders-card");
+    card.appendChild(el("h3", "section-heading", "Component Choices (10 Functional Areas)"));
+
+    const stack = el("div", "nested-expanders-stack");
+    const accordionGroupName = `slot-accordion-${tpl.template_id}`;
+
+    state.slotCatalog.forEach((spec) => {
+      const sid = spec.slot_id;
+      const comp = (tpl.components && tpl.components[sid]) || {
+        slot_id: sid,
+        provider: "unconfigured",
+        enabled: false,
+      };
+      const prov = comp.enabled === false ? "unconfigured" : comp.provider;
+      const implLabel = (spec.provider_labels && spec.provider_labels[prov]) || "Not Configured";
+
+      const det = el("details", "component-expander");
+      det.setAttribute("name", accordionGroupName);
+      det.dataset.slotId = sid;
+      if (state.selectedSlotId === sid) {
+        det.open = true;
+      }
+
+      const summary = el("summary", "component-expander-summary");
+      const titleSpan = el(
+        "span",
+        "expander-title-group",
+        `${spec.step}. ${spec.functional_name}`
+      );
+      const choicePill = el("span", "expander-choice-pill", implLabel);
+      summary.append(titleSpan, choicePill);
+
+      const body = el("div", "component-expander-body");
+      populateSlotConfigurationBody(body, spec, tpl, "nested_slot");
+
+      det.addEventListener("toggle", () => {
+        if (det.open) {
+          stack.querySelectorAll("details.component-expander[open]").forEach((other) => {
+            if (other !== det) {
+              other.open = false;
+            }
+          });
+        }
+        syncHorizontalTilesWithOpenExpander(panelRoot);
+      });
+
+      det.append(summary, body);
+      stack.appendChild(det);
+    });
+
+    card.appendChild(stack);
+    return card;
+  }
+
+  /* Single-Slot Inline Component Editor (Evaluate Rule Row Expansion - Zero Dropdown) */
+  function buildInlineComponentEditor(slotId) {
+    const spec = state.slotById[slotId] || state.slotCatalog[0];
+    const tpl = state.workingTemplate;
+    const card = el("div", "surface-card form-stack");
+    if (!spec || !tpl) return card;
+
+    card.appendChild(
+      el("h3", "section-heading", `${spec.step}. ${spec.functional_name} Configuration`)
+    );
+    populateSlotConfigurationBody(card, spec, tpl, "eval_slot");
     return card;
   }
 
@@ -1005,10 +1086,10 @@
     bar.append(fs, actionRight);
     panel.appendChild(bar);
 
-    // 2. Full-Width 10 Functional Blocks Grid (Scoped to This Agent Instance)
-    panel.appendChild(buildInstanceTenTileStrip(tpl));
+    // 2. Full-Width 10 Horizontal Functional Blocks (Scoped to This Agent Instance)
+    panel.appendChild(buildInstanceTenTileStrip(tpl, panel));
 
-    // 3. Two-Column Body: Left = Instance Metadata & System Prompt | Right = Active Component Configuration
+    // 3. Two-Column Body: Left = Instance Metadata | Right = 10 Nested Functional Component Expanders
     const twoCol = el("div", "instance-2col-grid");
 
     const metaCard = el("div", "surface-card form-stack");
@@ -1128,7 +1209,7 @@
 
     metaCard.append(gridTop, gridMid, gridBot, sysGrp);
 
-    const compCard = buildInlineComponentEditor(state.selectedSlotId);
+    const compCard = buildNestedComponentExpanders(tpl, panel);
     twoCol.append(metaCard, compCard);
     panel.appendChild(twoCol);
 

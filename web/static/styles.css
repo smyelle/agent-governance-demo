@@ -303,19 +303,19 @@ body {
   color: var(--text-secondary);
 }
 
-/* 10 Functional Cards Inside Expanded Agent Instance Row */
+/* 10 Horizontal Functional Blocks Inside Expanded Agent Instance Row */
 .ten-tile-strip {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0.5rem;
 }
 
-@media (min-width: 1580px) {
+@media (max-width: 1179px) {
   .ten-tile-strip {
-    grid-template-columns: repeat(10, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
@@ -586,9 +586,110 @@ body {
 
 .instance-2col-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.35fr);
   gap: 1rem;
   align-items: start;
+}
+
+/* Nested Functional Component Expanders (<details> Exclusive Accordion) */
+.nested-expanders-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.nested-expanders-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.component-expander {
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  background: var(--bg-surface);
+  overflow: clip;
+}
+
+.component-expander[open] {
+  border-color: var(--cymbal-primary-300);
+  box-shadow: 0 1px 4px rgba(109, 40, 217, 0.1);
+}
+
+.component-expander-summary {
+  list-style: none;
+  display: flex;
+  align-items: safe center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.62rem 0.85rem;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-surface);
+}
+
+.component-expander-summary::-webkit-details-marker {
+  display: none;
+}
+
+.component-expander-summary:hover {
+  background: var(--bg-subtle);
+}
+
+.component-expander[open] > .component-expander-summary {
+  background: var(--bg-selected-tint);
+  border-block-end: 1px solid var(--border-hairline);
+}
+
+.expander-title-group {
+  display: inline-flex;
+  align-items: safe center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-inline-size: 0;
+}
+
+.expander-title-group::before {
+  content: "\25B8";
+  display: inline-block;
+  inline-size: 0.8rem;
+  color: var(--cymbal-primary-300);
+  font-size: 0.78rem;
+  flex: 0 0 auto;
+}
+
+.component-expander[open] > .component-expander-summary .expander-title-group::before {
+  content: "\25BE";
+}
+
+.expander-choice-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.18rem 0.62rem;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  max-inline-size: 56%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.component-expander[open] > .component-expander-summary .expander-choice-pill {
+  background: var(--bg-surface);
+  color: var(--cymbal-primary-500);
+  border-color: var(--cymbal-primary-300);
+}
+
+.component-expander-body {
+  padding: 0.85rem 0.95rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: var(--bg-surface);
 }
 
 /* Segmented Pill Radio Group (Cymbal Chip / Pill Style) */
@@ -1114,9 +1215,6 @@ button:disabled {
 
 /* Responsive Breakpoints */
 @media (max-width: 1360px) {
-  .ten-tile-strip {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
   .kpi-grid-5 {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }

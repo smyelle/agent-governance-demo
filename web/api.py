@@ -816,6 +816,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/") or request.url.path in {
+            "/",
+            "/build",
+            "/evaluate",
+            "/deploy",
+            "/govern",
+        }:
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @bff.get("/healthz")

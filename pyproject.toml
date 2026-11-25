@@ -17,9 +17,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cymbal-agent-platform-reference"
-version = "1.1.0"
-description = "Cymbal Core Operations & Release Agent built on Google Agent Platform and ADK 2.0"
+name = "agent-governance-demo"
+version = "2.0.0"
+description = "Cymbal Platform Agent Governance, Optimization & Deployment Console on Google Agent Platform and ADK 2.0"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"

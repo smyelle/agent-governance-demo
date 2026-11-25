@@ -160,7 +160,7 @@
       (state.tenant &&
         state.tenant.terminology &&
         state.tenant.terminology.customer_provider_short) ||
-      "Cymbal"
+      "Third-Party / OSS"
     );
   }
 

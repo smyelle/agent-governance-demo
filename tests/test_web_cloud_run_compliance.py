@@ -330,8 +330,18 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     csrf = boot["csrf_token"]
     headers = {"X-CSRF-Token": csrf}
 
-    # 3. Verify 10 vendor-neutral functional components & seeded agent inventory
+    # 3. Verify 10 vendor-neutral functional components, real vendor/OSS + Google names & seeded inventory
     assert len(boot["slot_catalog"]) == 10
+    for slot_item in boot["slot_catalog"]:
+        assert slot_item["gcp_name"].startswith("Google "), slot_item
+        assert not slot_item["cymbal_name"].startswith("Cymbal "), slot_item
+    slot_map = {s["slot_id"]: s for s in boot["slot_catalog"]}
+    assert slot_map["identity_access"]["gcp_name"] == "Google Agent Identity (SPIFFE + WIF)"
+    assert slot_map["runtime_sandbox"]["gcp_name"] == "Google Agent Runtime (Agent Engine + gVisor)"
+    assert slot_map["identity_access"]["cymbal_name"] == "Okta OIDC + HashiCorp Vault"
+
+    css_text = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    assert "overflow: clip;" in css_text
     assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Agent Governance Platform"
     tpl_by_id = {t["template_id"]: t for t in boot["templates"]}
     assert "example-agent-1" in tpl_by_id

@@ -29,16 +29,16 @@ DEFAULT_PROFILE_PATH = REPO_ROOT / "config" / "tenant_profile.yaml"
 LOCAL_OVERRIDE_PATH = REPO_ROOT / "config" / "tenant_profile.local.yaml"
 
 DEFAULT_SLOT_CYMBAL_NAMES: dict[str, str] = {
-    "identity_access": "Cymbal SSO & OBO Identity",
-    "agent_registry": "Cymbal Catalog 360 & Atlas Graph",
-    "ai_gateway": "Cymbal Flow AI Gateway",
-    "safety_guardrails": "Cymbal Guardrail Ensemble",
-    "foundation_model": "Cymbal Model Collection",
-    "runtime_sandbox": "Cymbal Container Runtime",
-    "memory_knowledge": "Cymbal Knowledge & Session Store",
-    "observability_tracing": "Cymbal Telemetry & Langfuse",
-    "cost_kill_controls": "Cymbal FinOps Wallet & Gateway Switch",
-    "eval_optimization": "Cymbal CI Evaluation Suite",
+    "identity_access": "Okta OIDC + HashiCorp Vault",
+    "agent_registry": "Backstage + ServiceNow CMDB",
+    "ai_gateway": "Kong AI Gateway + LiteLLM",
+    "safety_guardrails": "Guardrails AI + Microsoft Presidio",
+    "foundation_model": "OpenAI GPT-4o / Meta Llama (vLLM)",
+    "runtime_sandbox": "LangGraph + E2B Firecracker Sandbox",
+    "memory_knowledge": "Mem0 + Redis Vector Store",
+    "observability_tracing": "Langfuse + OpenTelemetry",
+    "cost_kill_controls": "Revenium + Helicone",
+    "eval_optimization": "LangSmith + Promptfoo",
 }
 
 DEFAULT_BUSINESS_UNITS: dict[str, str] = {
@@ -52,7 +52,7 @@ DEFAULT_BUSINESS_UNITS: dict[str, str] = {
 class TerminologyMap(BaseModel):
     platform_name: str = "Cymbal Agent Governance Platform"
     sidebar_brand: str = "Cymbal Agent Governance Platform"
-    customer_provider_short: str = "Cymbal"
+    customer_provider_short: str = "Third-Party / OSS"
     gcp_provider_short: str = "Google Cloud"
     gateway_name: str
     intake_name: str

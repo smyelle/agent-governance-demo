@@ -115,7 +115,6 @@ body {
   block-size: 100dvb;
   overflow-y: auto;
   scrollbar-gutter: stable;
-  overscroll-behavior: contain;
 }
 
 .brand-header {
@@ -417,16 +416,26 @@ body {
   box-shadow: 0 0 0 3px rgba(109, 40, 217, 0.16);
 }
 
-/* Tables & Inline Row Expansion */
+/* Tables & Inline Row Expansion
+ * Use overflow: clip on desktop so .table-wrap is not a vertical scroll container
+ * and never intercepts vertical mouse-wheel scrolling when an instance row is expanded.
+ */
 .table-wrap {
   inline-size: 100%;
-  overflow-x: auto;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
+  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-card);
   background: var(--bg-surface);
   box-shadow: var(--shadow-card);
+}
+
+@media (max-width: 1023px) {
+  .table-wrap {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: auto;
+  }
 }
 
 .data-table {
@@ -446,14 +455,13 @@ body {
 }
 
 .data-table th {
-  padding: 0.72rem 0.95rem;
+  padding: 0.72rem 0.85rem;
   text-align: start;
   font-size: 0.8rem;
   font-weight: 700;
   color: var(--text-secondary);
   border-block-end: 1px solid var(--border-strong);
   background: var(--bg-surface);
-  white-space: nowrap;
 }
 
 .data-table td {
@@ -537,7 +545,7 @@ body {
 
 .instance-2col-grid {
   display: grid;
-  grid-template-columns: minmax(290px, 1fr) minmax(340px, 1.25fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
   gap: 1rem;
   align-items: start;
 }
@@ -777,8 +785,6 @@ button:disabled {
   overflow-x: auto;
   max-block-size: 300px;
   overflow-y: auto;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
 }
 
 /* Rectangular Govern Sub-Tabs (per Cymbal UI Guidelines: tabs retain rectangular shape) */
@@ -901,7 +907,7 @@ button:disabled {
   background: var(--bg-subtle);
 }
 
-.radio-card-option.is-checked {
+.radio-card-option:is(.is-checked, :has(:checked)) {
   border-color: var(--cymbal-primary-300);
   background: var(--bg-selected-tint);
 }
@@ -912,8 +918,8 @@ button:disabled {
   accent-color: var(--cymbal-primary-300);
 }
 
-/* Below-the-fold deferred rendering */
-.deferred-below-fold {
+/* Below-the-fold deferred rendering (disabled when an inline row is expanded so scroll height is exact) */
+.deferred-below-fold:not(:has(.expanded-editor-row)) {
   content-visibility: auto;
   contain-intrinsic-size: auto none auto 280px;
 }

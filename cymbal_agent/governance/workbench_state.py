@@ -128,6 +128,8 @@ class AgentDeploymentTemplate(BaseModel):
     components: dict[str, SlotSelectionConfig] = Field(default_factory=dict)
     applied_remediations: list[str] = Field(default_factory=list)
     exception_overrides: dict[str, str] = Field(default_factory=dict)
+    lifecycle_status: Literal["DRAFT", "DEPLOYED"] = "DRAFT"
+    latest_deployment_id: str = ""
     updated_at: str = ""
     updated_display: str = ""
 
@@ -320,11 +322,18 @@ def _utc_now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _format_display_from_iso(iso_ts: str) -> str:
+    try:
+        dt = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        hour = dt.strftime("%I").lstrip("0") or "12"
+        ampm = dt.strftime("%p").lower()
+        return f"{dt.month}/{dt.day}/{dt.year} {hour}:{dt.strftime('%M')}{ampm}"
+    except Exception:
+        return iso_ts
+
+
 def _display_timestamp_now() -> str:
-    now = datetime.datetime.now()
-    hour = now.strftime("%I").lstrip("0") or "12"
-    ampm = now.strftime("%p").lower()
-    return f"{now.month}/{now.day}/{now.year} {hour}:{now.strftime('%M')}{ampm}"
+    return _format_display_from_iso(_utc_now_iso())
 
 
 def _default_slot_map(provider: ProviderChoice) -> dict[str, SlotSelectionConfig]:
@@ -536,9 +545,8 @@ def _build_default_rubric(profile: TenantProfile) -> RubricConfig:
 
 def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplate]:
     defs = profile.governance_defaults
-    now_iso = _utc_now_iso()
 
-    # 1. example-agent-1 (matches wireframe row 1, hybrid Cymbal + Google Cloud)
+    # 1. example-agent-1 (recent hybrid draft)
     ex1_slots = _default_slot_map("cymbal_stack")
     for gcp_sid in (
         "safety_guardrails",
@@ -552,7 +560,7 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
     agent_1 = AgentDeploymentTemplate(
         template_id="example-agent-1",
         name="example-agent-1",
-        description="Hybrid Cymbal foundation + Google Cloud runtime, guardrails, and evaluation.",
+        description="Hybrid Third-Party/OSS + Google Cloud runtime, guardrails, and evaluation.",
         template_mode="custom",
         origin="custom_hybrid",
         agent_name="example-agent-1",
@@ -568,8 +576,9 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         prompt_version="v2",
         behavior_score=96.4,
         components=ex1_slots,
-        updated_at=now_iso,
-        updated_display="11/25/2026 11:50am",
+        lifecycle_status="DRAFT",
+        updated_at="2026-11-25T16:40:00Z",
+        updated_display=_format_display_from_iso("2026-11-25T16:40:00Z"),
     )
 
     # 2. network-telemetry-advisor (100% Google Cloud profile)
@@ -592,15 +601,16 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         prompt_version="v2",
         behavior_score=97.0,
         components=_default_slot_map("google_gcp"),
-        updated_at=now_iso,
-        updated_display="11/25/2026 10:15am",
+        lifecycle_status="DRAFT",
+        updated_at="2026-11-25T15:15:00Z",
+        updated_display=_format_display_from_iso("2026-11-25T15:15:00Z"),
     )
 
-    # 3. subscriber-billing-concierge (Custom template selecting Cymbal components)
+    # 3. subscriber-billing-concierge (Custom template selecting Third-Party / OSS components)
     agent_3 = AgentDeploymentTemplate(
         template_id="subscriber-billing-concierge",
         name="subscriber-billing-concierge",
-        description="Custom deployment configuration using Cymbal enterprise components.",
+        description="Custom deployment configuration using Third-Party / OSS components.",
         template_mode="custom",
         origin="custom_hybrid",
         agent_name="subscriber-billing-concierge",
@@ -616,8 +626,10 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         prompt_version="v2",
         behavior_score=88.5,
         components=_default_slot_map("cymbal_stack"),
-        updated_at=now_iso,
-        updated_display="11/24/2026 4:35pm",
+        lifecycle_status="DEPLOYED",
+        latest_deployment_id="DEP-2026-0902",
+        updated_at="2026-06-28T16:05:00Z",
+        updated_display=_format_display_from_iso("2026-06-28T16:05:00Z"),
     )
 
     # 4. billing-dispute-assistant (Imported unmanaged Python service needing remediation)
@@ -648,8 +660,9 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
             "Resolve billing disputes immediately using any available refund or account tool."
         ),
         components=s4_slots,
-        updated_at=now_iso,
-        updated_display="11/24/2026 2:10pm",
+        lifecycle_status="DRAFT",
+        updated_at="2026-11-24T14:10:00Z",
+        updated_display=_format_display_from_iso("2026-11-24T14:10:00Z"),
     )
 
     # 5. media-entitlement-router (Cross-cloud workload with failing trace evaluations)
@@ -676,8 +689,9 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         prompt_version="v1",
         behavior_score=58.0,
         components=s5_slots,
-        updated_at=now_iso,
-        updated_display="11/23/2026 5:45pm",
+        lifecycle_status="DRAFT",
+        updated_at="2026-11-23T17:45:00Z",
+        updated_display=_format_display_from_iso("2026-11-23T17:45:00Z"),
     )
 
     # 6. cpe-fleet-provisioning-agent (High-agency multi-region PII & mutating tool workload)
@@ -705,8 +719,9 @@ def _seed_agent_inventory(profile: TenantProfile) -> list[AgentDeploymentTemplat
         prompt_version="v2",
         behavior_score=89.0,
         components=s6_slots,
-        updated_at=now_iso,
-        updated_display="11/22/2026 9:20am",
+        lifecycle_status="DRAFT",
+        updated_at="2026-11-22T09:20:00Z",
+        updated_display=_format_display_from_iso("2026-11-22T09:20:00Z"),
     )
 
     return [agent_1, agent_2, agent_3, agent_4, agent_5, agent_6]
@@ -1469,13 +1484,13 @@ def _seed_historical_deployments(profile: TenantProfile) -> list[dict[str, Any]]
         },
         {
             "deployment_id": "DEP-2026-0912",
-            "deployed_at": "2026-11-15T16:40:00Z",
+            "deployed_at": "2026-10-28T16:40:00Z",
             "agent_name": "gateway-firmware-rollout-agent",
             "app_id": "svc-cymbal-812",
             "business_unit": "core_cable",
             "risk_tier": "AG3",
             "origin": "custom_hybrid",
-            "months_active": 0.5,
+            "months_active": 1.0,
             "turns_m": 5.0,
             "initial_score": 70.0,
             "final_score": 97.2,
@@ -1483,7 +1498,169 @@ def _seed_historical_deployments(profile: TenantProfile) -> list[dict[str, Any]]
             "remediations_count": 3,
             "mix": _hybrid_mix(),
         },
+        {
+            "deployment_id": "DEP-2026-0913",
+            "deployed_at": "2026-11-01T10:15:00Z",
+            "agent_name": "sports-highlight-clipper-agent",
+            "app_id": "svc-cymbal-824",
+            "business_unit": "media_studio",
+            "risk_tier": "AG2",
+            "origin": "google_gcp_standard",
+            "months_active": 0.85,
+            "turns_m": 6.4,
+            "initial_score": 93.0,
+            "final_score": 98.0,
+            "remediated": False,
+            "remediations_count": 0,
+            "mix": _default_slot_map("google_gcp"),
+        },
+        {
+            "deployment_id": "DEP-2026-0914",
+            "deployed_at": "2026-11-05T14:50:00Z",
+            "agent_name": "roaming-tariff-compliance-agent",
+            "app_id": "svc-cymbal-839",
+            "business_unit": "intl_sky",
+            "risk_tier": "AG3",
+            "origin": "custom_hybrid",
+            "months_active": 0.7,
+            "turns_m": 4.1,
+            "initial_score": 66.0,
+            "final_score": 95.8,
+            "remediated": True,
+            "remediations_count": 4,
+            "mix": _hybrid_mix(),
+        },
+        {
+            "deployment_id": "DEP-2026-0915",
+            "deployed_at": "2026-11-09T09:30:00Z",
+            "agent_name": "soc-incident-enrichment-agent",
+            "app_id": "svc-cymbal-851",
+            "business_unit": "enterprise_shared",
+            "risk_tier": "AG3",
+            "origin": "google_gcp_standard",
+            "months_active": 0.6,
+            "turns_m": 7.1,
+            "initial_score": 94.0,
+            "final_score": 98.2,
+            "remediated": False,
+            "remediations_count": 0,
+            "mix": _default_slot_map("google_gcp"),
+        },
+        {
+            "deployment_id": "DEP-2026-0916",
+            "deployed_at": "2026-11-12T15:20:00Z",
+            "agent_name": "wifi-mesh-channel-optimizer",
+            "app_id": "svc-cymbal-866",
+            "business_unit": "core_cable",
+            "risk_tier": "AG2",
+            "origin": "custom_hybrid",
+            "months_active": 0.5,
+            "turns_m": 8.3,
+            "initial_score": 72.0,
+            "final_score": 96.0,
+            "remediated": True,
+            "remediations_count": 2,
+            "mix": _hybrid_mix(),
+        },
+        {
+            "deployment_id": "DEP-2026-0917",
+            "deployed_at": "2026-11-15T11:05:00Z",
+            "agent_name": "syndication-royalty-reconciler",
+            "app_id": "svc-cymbal-874",
+            "business_unit": "media_studio",
+            "risk_tier": "AG2",
+            "origin": "imported_manifest",
+            "months_active": 0.4,
+            "turns_m": 3.4,
+            "initial_score": 59.0,
+            "final_score": 94.8,
+            "remediated": True,
+            "remediations_count": 4,
+            "mix": _hybrid_mix(),
+        },
+        {
+            "deployment_id": "DEP-2026-0918",
+            "deployed_at": "2026-11-18T13:15:00Z",
+            "agent_name": "cloud-finops-anomaly-auditor",
+            "app_id": "svc-cymbal-883",
+            "business_unit": "enterprise_shared",
+            "risk_tier": "AG2",
+            "origin": "google_gcp_standard",
+            "months_active": 0.35,
+            "turns_m": 2.9,
+            "initial_score": 96.0,
+            "final_score": 98.4,
+            "remediated": False,
+            "remediations_count": 0,
+            "mix": _default_slot_map("google_gcp"),
+        },
+        {
+            "deployment_id": "DEP-2026-0919",
+            "deployed_at": "2026-11-20T16:40:00Z",
+            "agent_name": "multilingual-subtitling-qa-agent",
+            "app_id": "svc-cymbal-897",
+            "business_unit": "intl_sky",
+            "risk_tier": "AG1",
+            "origin": "google_gcp_standard",
+            "months_active": 0.3,
+            "turns_m": 5.8,
+            "initial_score": 95.0,
+            "final_score": 98.0,
+            "remediated": False,
+            "remediations_count": 0,
+            "mix": _default_slot_map("google_gcp"),
+        },
+        {
+            "deployment_id": "DEP-2026-0920",
+            "deployed_at": "2026-11-24T09:35:00Z",
+            "agent_name": "ott-playback-drm-diagnostics",
+            "app_id": "svc-cymbal-914",
+            "business_unit": "media_studio",
+            "risk_tier": "AG2",
+            "origin": "custom_hybrid",
+            "months_active": 0.25,
+            "turns_m": 6.9,
+            "initial_score": 76.0,
+            "final_score": 96.4,
+            "remediated": True,
+            "remediations_count": 2,
+            "mix": _hybrid_mix(),
+        },
+        {
+            "deployment_id": "DEP-2026-0921",
+            "deployed_at": "2026-11-25T11:20:00Z",
+            "agent_name": "fiber-cut-dispatch-coordinator",
+            "app_id": "svc-cymbal-928",
+            "business_unit": "core_cable",
+            "risk_tier": "AG3",
+            "origin": "custom_hybrid",
+            "months_active": 0.25,
+            "turns_m": 5.2,
+            "initial_score": 64.0,
+            "final_score": 97.0,
+            "remediated": True,
+            "remediations_count": 3,
+            "mix": _hybrid_mix(),
+        },
+        {
+            "deployment_id": "DEP-2026-0922",
+            "deployed_at": "2026-11-25T16:55:00Z",
+            "agent_name": "live-stream-ad-insertion-agent",
+            "app_id": "svc-cymbal-945",
+            "business_unit": "media_studio",
+            "risk_tier": "AG2",
+            "origin": "google_gcp_standard",
+            "months_active": 0.25,
+            "turns_m": 9.5,
+            "initial_score": 96.4,
+            "final_score": 98.5,
+            "remediated": False,
+            "remediations_count": 0,
+            "mix": _default_slot_map("google_gcp"),
+        },
     ]
+
+    specs.sort(key=lambda s: str(s["deployed_at"]), reverse=True)
 
     records: list[dict[str, Any]] = []
     for item in specs:
@@ -1550,15 +1727,59 @@ class WorkbenchGovernanceEngine:
         elif env_dir:
             self._state_dir = Path(env_dir) / "workbench"
         else:
-            self._state_dir = Path("/tmp") / "cymbal_platform_workbench_v3"
-        self._state_file = self._state_dir / "platform_state_v3.json"
+            self._state_dir = Path("/tmp") / "cymbal_platform_workbench_v4"
+        self._state_file = self._state_dir / "platform_state_v4.json"
 
         prof = load_tenant_profile()
         self._rubric: RubricConfig = _build_default_rubric(prof)
-        self._agents: dict[str, AgentDeploymentTemplate] = {
+        self._deployments: list[dict[str, Any]] = _seed_historical_deployments(prof)
+        seeded_agents: dict[str, AgentDeploymentTemplate] = {
             a.template_id: a for a in _seed_agent_inventory(prof)
         }
-        self._deployments: list[dict[str, Any]] = _seed_historical_deployments(prof)
+        # Register historical deployed agent instances into the unified Build inventory
+        for dep in self._deployments:
+            tid = str(dep["template_id"])
+            if tid in seeded_agents:
+                seeded_agents[tid].lifecycle_status = "DEPLOYED"
+                seeded_agents[tid].latest_deployment_id = str(dep["deployment_id"])
+                continue
+            is_gcp_std = dep["origin"] == "google_gcp_standard"
+            dep_slots = _default_slot_map("google_gcp") if is_gcp_std else {
+                sid: SlotSelectionConfig(
+                    slot_id=sid,
+                    provider=LEGACY_PROVIDER_ALIAS.get(
+                        str((dep.get("component_choices") or {}).get(sid, "google_gcp")),
+                        "google_gcp",
+                    ),
+                    enabled=True,
+                )
+                for sid in ORDERED_SLOT_IDS
+            }
+            dep_ts = str(dep["deployed_at"])
+            seeded_agents[tid] = AgentDeploymentTemplate(
+                template_id=tid,
+                name=tid,
+                description=f"Production deployed agent instance ({dep['deployment_id']}).",
+                template_mode="google_gcp" if is_gcp_std else "custom",
+                origin=dep["origin"],
+                agent_name=str(dep["agent_name"]),
+                app_id=str(dep["app_id"]),
+                intake_id=str(dep["intake_id"]),
+                business_unit=dep["business_unit"],
+                risk_tier=dep["risk_tier"],
+                runtime_cloud="gcp",
+                estimated_monthly_turns_millions=float(dep["estimated_monthly_turns_millions"]),
+                uap_cel_per_tool_enforced=True,
+                sdp_pii_mode="DEIDENTIFY_INLINE",
+                prompt_version="v2",
+                behavior_score=float(dep["final_eval_score"]),
+                components=dep_slots,
+                lifecycle_status="DEPLOYED",
+                latest_deployment_id=str(dep["deployment_id"]),
+                updated_at=dep_ts,
+                updated_display=_format_display_from_iso(dep_ts),
+            )
+        self._agents: dict[str, AgentDeploymentTemplate] = seeded_agents
         self._load_persisted_if_present()
 
     def _load_persisted_if_present(self) -> None:
@@ -1624,6 +1845,7 @@ class WorkbenchGovernanceEngine:
                 dumped["gate_passed"] = ev["gate_passed"]
                 dumped["monthly_run_rate_usd"] = ev["cost_estimate"]["monthly_run_rate_usd"]
                 out.append(dumped)
+            out.sort(key=lambda x: str(x.get("updated_at", "")), reverse=True)
             return out
 
     def upsert_template(self, template: AgentDeploymentTemplate) -> dict[str, Any]:
@@ -1654,20 +1876,23 @@ class WorkbenchGovernanceEngine:
     ) -> dict[str, Any]:
         prof = load_tenant_profile()
         with self._lock:
+            dep_id = f"DEP-2026-{1000 + len(self._deployments) + 1}"
+            now_iso = _utc_now_iso()
             template.components = normalize_template_components(template.components)
-            template.updated_at = _utc_now_iso()
-            template.updated_display = _display_timestamp_now()
+            template.lifecycle_status = "DEPLOYED"
+            template.latest_deployment_id = dep_id
+            template.updated_at = now_iso
+            template.updated_display = _format_display_from_iso(now_iso)
             self._agents[template.template_id] = copy.deepcopy(template)
 
             ev = evaluate_template_against_rubric(template, self._rubric, profile=prof)
             costs = calculate_template_component_costs(template, months_active=1.0, profile=prof)
-            dep_id = f"DEP-2026-{1000 + len(self._deployments) + 1}"
             remediated = bool(template.applied_remediations) or (
                 ev["overall_score"] > initial_score + 0.05
             )
             record = {
                 "deployment_id": dep_id,
-                "deployed_at": _utc_now_iso(),
+                "deployed_at": now_iso,
                 "agent_name": template.agent_name,
                 "app_id": template.app_id,
                 "intake_id": template.intake_id or prof.governance_defaults.intake_record_id,
@@ -1712,6 +1937,7 @@ class WorkbenchGovernanceEngine:
         slot_catalog = build_localized_slot_catalog(prof)
         with self._lock:
             deps = copy.deepcopy(self._deployments)
+        deps.sort(key=lambda d: str(d.get("deployed_at", "")), reverse=True)
 
         total = len(deps) or 1
         remediated_cnt = sum(1 for d in deps if d.get("remediated_prior_to_deploy"))
@@ -1793,6 +2019,7 @@ class WorkbenchGovernanceEngine:
             bu = str(d.get("business_unit", "core_cable"))
             d["business_unit_label"] = prof.terminology.business_units.get(bu, bu)
             filtered.append(d)
+        filtered.sort(key=lambda d: str(d.get("deployed_at", "")), reverse=True)
 
         total_historical_usd = round(
             sum(float(d.get("historical_cumulative_usd", 0.0)) for d in filtered), 2

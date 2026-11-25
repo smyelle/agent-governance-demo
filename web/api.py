@@ -2022,6 +2022,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         )
         return {
             "deployment": dep_record,
+            "templates": workbench.list_templates(),
             "wallet_settlement": ledger_row,
             "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
             "operations_metrics": workbench.build_operations_metrics(),

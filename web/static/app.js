@@ -59,6 +59,11 @@
     expandedDeploymentId: null,
     expandedFinopsSlotId: null,
     agentSearchFilter: "",
+    agentStatusFilter: "all",
+    buildPagination: { page: 1, pageSize: 10 },
+    deployPagination: { page: 1, pageSize: 10 },
+    governFleetPagination: { page: 1, pageSize: 10 },
+    governFinopsPagination: { page: 1, pageSize: 10 },
     finopsFilters: { business_unit: "all", origin: "all" },
   };
 
@@ -220,13 +225,7 @@
       }
     });
 
-    const pinned = document.getElementById("pinned-template-section");
-    if (pinned) {
-      pinned.hidden = nextStage === "govern";
-    }
-
     renderHeaderAndBrand();
-    renderTenTileStrip();
     renderStageBody();
   }
 
@@ -237,28 +236,20 @@
     if (subEl && fullBrand.toLowerCase().startsWith("cymbal ")) {
       subEl.textContent = fullBrand.slice(7);
     }
-
-    const tpl = state.workingTemplate;
-    if (tpl) {
-      const ctxPill = document.getElementById("active-agent-summary-pill");
-      if (ctxPill) {
-        ctxPill.textContent = `${tpl.agent_name} | ${buLabel(tpl.business_unit)} | ${String(
-          tpl.risk_tier
-        ).toLowerCase()}`;
-      }
-    }
   }
 
-  /* 10 Clean Top-Aligned Functional Component Cards (Zero Vendor Pills) */
-  function renderTenTileStrip() {
-    const container = document.getElementById("ten-tile-strip");
-    if (!container || !state.workingTemplate) return;
-    container.replaceChildren();
-
-    const tpl = state.workingTemplate;
-    const slotStatuses =
-      (state.currentEvaluation && state.currentEvaluation.slot_statuses) || {};
-    const highlightEval = state.activeStage === "evaluate" || state.activeStage === "deploy";
+  /* Inline 10 Functional Blocks Grid (Scoped Inside Expanded Agent Row) */
+  function buildInstanceTenTileStrip(tpl) {
+    const wrapper = el("div", "instance-blocks-section");
+    wrapper.appendChild(
+      el(
+        "p",
+        "instance-blocks-heading",
+        "10 Functional Capabilities (Select any block to configure its component below)"
+      )
+    );
+    const list = el("ul", "ten-tile-strip");
+    list.setAttribute("role", "list");
 
     state.slotCatalog.forEach((spec) => {
       const sid = spec.slot_id;
@@ -269,64 +260,184 @@
       };
       const prov = comp.enabled === false ? "unconfigured" : comp.provider;
       const implLabel = (spec.provider_labels && spec.provider_labels[prov]) || "Not Configured";
-      const st = slotStatuses[sid] || "PASSED";
 
       const li = el("li", "tile-list-item");
       const btn = el("button", "component-tile");
       btn.type = "button";
       btn.dataset.slotId = sid;
-
-      const isSelectedCard =
-        (state.activeStage === "build" &&
-          state.expandedAgentId === tpl.template_id &&
-          state.selectedSlotId === sid) ||
-        (state.activeStage === "evaluate" && state.selectedSlotId === sid);
-      if (isSelectedCard) {
+      const isSelected = state.selectedSlotId === sid;
+      if (isSelected) {
         btn.classList.add("is-selected");
       }
-
-      if (highlightEval) {
-        if (st === "FAILED") {
-          btn.classList.add("tile-status-failed");
-        } else if (st === "ADVISORY") {
-          btn.classList.add("tile-status-advisory");
-        } else {
-          btn.classList.add("tile-status-passed", "eval-highlight");
-        }
-      }
+      btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
 
       const topHeader = el("span", "tile-top-header");
       topHeader.appendChild(el("span", "tile-functional-name", spec.functional_name));
-      if (highlightEval) {
-        const sym = st === "FAILED" ? "[!]" : st === "ADVISORY" ? "[~]" : "[OK]";
-        topHeader.appendChild(el("span", "tile-eval-marker", sym));
-      }
-
       const subSpan = el("span", "tile-impl-caption", implLabel);
       btn.append(topHeader, subSpan);
 
-      btn.addEventListener("click", () => handleTileClick(sid));
+      btn.addEventListener("click", () => {
+        state.selectedSlotId = sid;
+        renderStageBody();
+      });
       li.appendChild(btn);
-      container.appendChild(li);
+      list.appendChild(li);
     });
+
+    wrapper.appendChild(list);
+    return wrapper;
   }
 
-  function handleTileClick(slotId) {
-    state.selectedSlotId = slotId;
-    if (state.activeStage === "build" && state.workingTemplate) {
-      state.expandedAgentId = state.workingTemplate.template_id;
-      renderTenTileStrip();
-      renderStageBody();
-    } else if (state.activeStage === "evaluate" && state.currentEvaluation) {
-      const match = (state.currentEvaluation.rule_results || []).find(
-        (r) => r.slot_id === slotId
+  /* Compact Active Agent Switcher Bar (Evaluate & Deploy) */
+  function buildActiveAgentContextBar(idPrefix) {
+    const bar = el("div", "active-agent-bar");
+    const tpl = state.workingTemplate;
+    if (!tpl) return bar;
+
+    const leftGrp = el("div", "active-agent-switcher-group");
+    const selId = `${idPrefix}-active-agent-select`;
+    const lbl = el("label", "", "Active Agent Instance");
+    lbl.setAttribute("for", selId);
+
+    const sel = el("select", "inline-select");
+    sel.id = selId;
+    state.templates.forEach((item) => {
+      const stText = item.lifecycle_status === "DEPLOYED" ? "Deployed" : "Draft";
+      const opt = el(
+        "option",
+        "",
+        `${item.agent_name} (${stText} | ${item.updated_display || item.updated_at || ""})`
       );
-      if (match) {
-        state.expandedEvalRuleId = match.rule_id;
+      opt.value = item.template_id;
+      if (item.template_id === tpl.template_id) {
+        opt.selected = true;
       }
-      renderTenTileStrip();
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", async () => {
+      const chosen = state.templates.find((t) => t.template_id === sel.value);
+      if (!chosen) return;
+      state.workingTemplate = cloneJson(chosen);
+      const res = await apiPost("/api/templates/evaluate", {
+        template: state.workingTemplate,
+      });
+      state.currentEvaluation = res.evaluation;
+      state.initialScoreBaseline = res.evaluation.overall_score;
       renderStageBody();
+    });
+
+    const isDep = tpl.lifecycle_status === "DEPLOYED";
+    const statusBadge = el(
+      "span",
+      isDep ? "status-badge status-ok" : "status-badge status-draft",
+      isDep
+        ? `Deployed${tpl.latest_deployment_id ? " (" + tpl.latest_deployment_id + ")" : ""}`
+        : "Draft"
+    );
+    const metaPill = el(
+      "span",
+      "agent-context-pill",
+      `${buLabel(tpl.business_unit)} | ${String(tpl.risk_tier || "AG2").toLowerCase()}`
+    );
+
+    leftGrp.append(lbl, sel, statusBadge, metaPill);
+
+    const rightGrp = el("div", "toolbar-right");
+    const openBuildBtn = el("button", "secondary-btn sm-btn", "Open in Build");
+    openBuildBtn.type = "button";
+    openBuildBtn.addEventListener("click", () => {
+      state.agentSearchFilter = "";
+      state.agentStatusFilter = "all";
+      const idx = state.templates.findIndex((t) => t.template_id === tpl.template_id);
+      if (idx >= 0) {
+        state.buildPagination.page = Math.floor(idx / state.buildPagination.pageSize) + 1;
+      }
+      state.expandedAgentId = tpl.template_id;
+      setStage("build");
+    });
+    rightGrp.appendChild(openBuildBtn);
+
+    bar.append(leftGrp, rightGrp);
+    return bar;
+  }
+
+  /* Accessible Pagination Bar (10 / 25 / 50 rows per page) */
+  function buildPaginationControls({ totalItems, paginationState, navLabel, idPrefix }) {
+    const totalPages = Math.max(1, Math.ceil(totalItems / paginationState.pageSize));
+    if (paginationState.page > totalPages) {
+      paginationState.page = totalPages;
     }
+    if (paginationState.page < 1) {
+      paginationState.page = 1;
+    }
+    const startIdx = totalItems === 0 ? 0 : (paginationState.page - 1) * paginationState.pageSize + 1;
+    const endIdx = Math.min(totalItems, paginationState.page * paginationState.pageSize);
+
+    const nav = el("nav", "pagination-bar");
+    nav.setAttribute("aria-label", navLabel);
+
+    const meta = el("div", "pagination-meta");
+    meta.appendChild(
+      el("span", "", `Showing ${startIdx}-${endIdx} of ${totalItems} instances`)
+    );
+
+    const sizeId = `${idPrefix}-rows-per-page`;
+    const sizeLbl = el("label", "", "Rows per page");
+    sizeLbl.setAttribute("for", sizeId);
+    const sizeSel = el("select", "inline-select");
+    sizeSel.id = sizeId;
+    [10, 25, 50].forEach((sz) => {
+      const o = el("option", "", String(sz));
+      o.value = String(sz);
+      if (paginationState.pageSize === sz) o.selected = true;
+      sizeSel.appendChild(o);
+    });
+    sizeSel.addEventListener("change", () => {
+      paginationState.pageSize = Number(sizeSel.value || 10);
+      paginationState.page = 1;
+      renderStageBody();
+    });
+    meta.append(sizeLbl, sizeSel);
+
+    const controls = el("div", "pagination-controls");
+    const prevBtn = el("button", "page-btn", "Previous");
+    prevBtn.type = "button";
+    prevBtn.disabled = paginationState.page <= 1;
+    prevBtn.addEventListener("click", () => {
+      if (paginationState.page > 1) {
+        paginationState.page -= 1;
+        renderStageBody();
+      }
+    });
+    controls.appendChild(prevBtn);
+
+    for (let p = 1; p <= totalPages; p += 1) {
+      const pBtn = el("button", "page-btn", String(p));
+      pBtn.type = "button";
+      pBtn.setAttribute("aria-label", `Page ${p}`);
+      if (p === paginationState.page) {
+        pBtn.setAttribute("aria-current", "page");
+      }
+      pBtn.addEventListener("click", () => {
+        paginationState.page = p;
+        renderStageBody();
+      });
+      controls.appendChild(pBtn);
+    }
+
+    const nextBtn = el("button", "page-btn", "Next");
+    nextBtn.type = "button";
+    nextBtn.disabled = paginationState.page >= totalPages;
+    nextBtn.addEventListener("click", () => {
+      if (paginationState.page < totalPages) {
+        paginationState.page += 1;
+        renderStageBody();
+      }
+    });
+    controls.appendChild(nextBtn);
+
+    nav.append(meta, controls);
+    return nav;
   }
 
   async function refreshEvaluation(reRenderStage = true) {
@@ -338,7 +449,6 @@
       state.currentEvaluation = res.evaluation;
       syncWorkingTemplateIntoList();
       renderHeaderAndBrand();
-      renderTenTileStrip();
       if (reRenderStage) {
         renderStageBody();
       }
@@ -368,7 +478,6 @@
     const isSameExpanded = state.expandedAgentId === item.template_id;
     if (isSameExpanded) {
       state.expandedAgentId = null;
-      renderTenTileStrip();
       renderStageBody();
       return;
     }
@@ -386,7 +495,6 @@
       state.selectedSlotId = state.slotCatalog[0].slot_id;
     }
     renderHeaderAndBrand();
-    renderTenTileStrip();
     renderStageBody();
   }
 
@@ -427,7 +535,6 @@
         state.workingTemplate.origin = "custom_hybrid";
       }
       renderHeaderAndBrand();
-      renderTenTileStrip();
       renderStageBody();
     }
   }
@@ -439,9 +546,9 @@
       state.workingTemplate = res.template;
       state.templates = res.templates;
       state.currentEvaluation = res.evaluation;
+      state.buildPagination.page = 1;
       state.expandedAgentId = state.workingTemplate.template_id;
       renderHeaderAndBrand();
-      renderTenTileStrip();
       renderStageBody();
       showNotice(`Saved changes to '${state.workingTemplate.agent_name}'.`);
     } catch (err) {
@@ -502,7 +609,6 @@
     });
     slotJumpSel.addEventListener("change", () => {
       state.selectedSlotId = slotJumpSel.value;
-      renderTenTileStrip();
       renderStageBody();
     });
     headerRow.appendChild(slotJumpSel);
@@ -670,9 +776,9 @@
     const terms = (state.tenant && state.tenant.terminology) || {};
     const toolbar = el("div", "toolbar-row");
     const left = el("div", "toolbar-left");
-    left.appendChild(el("h2", "section-heading", "Registered & Draft Agents"));
+    left.appendChild(el("h1", "strip-title", "Agent Instances"));
 
-    const filterLabel = el("label", "visually-hidden", "Filter agents");
+    const filterLabel = el("label", "visually-hidden", "Filter agent instances");
     filterLabel.setAttribute("for", "agent-table-filter");
     const filterInput = el("input", "search-input");
     filterInput.type = "search";
@@ -681,6 +787,7 @@
     filterInput.value = state.agentSearchFilter;
     filterInput.addEventListener("input", (e) => {
       state.agentSearchFilter = e.target.value;
+      state.buildPagination.page = 1;
       renderStageBody();
       const restored = document.getElementById("agent-table-filter");
       if (restored) {
@@ -688,7 +795,28 @@
         restored.setSelectionRange(restored.value.length, restored.value.length);
       }
     });
-    left.append(filterLabel, filterInput);
+
+    const stFilterLbl = el("label", "visually-hidden", "Filter by lifecycle status");
+    stFilterLbl.setAttribute("for", "agent-status-filter");
+    const stFilterSel = el("select", "inline-select");
+    stFilterSel.id = "agent-status-filter";
+    [
+      ["all", "All Statuses"],
+      ["DEPLOYED", "Deployed"],
+      ["DRAFT", "Draft"],
+    ].forEach(([val, txt]) => {
+      const o = el("option", "", txt);
+      o.value = val;
+      if (state.agentStatusFilter === val) o.selected = true;
+      stFilterSel.appendChild(o);
+    });
+    stFilterSel.addEventListener("change", () => {
+      state.agentStatusFilter = stFilterSel.value;
+      state.buildPagination.page = 1;
+      renderStageBody();
+    });
+
+    left.append(filterLabel, filterInput, stFilterLbl, stFilterSel);
 
     const right = el("div", "toolbar-right");
     const newBtn = el("button", "primary-btn", "+ New Agent");
@@ -705,7 +833,7 @@
       el(
         "caption",
         "",
-        "Select any agent row to expand its instance template controls, metadata, and component configuration."
+        "Sorted newest-first by activity. Select any agent row to expand its 10 functional blocks, template controls, metadata, and component configuration."
       )
     );
 
@@ -713,7 +841,8 @@
     const hr = el("tr");
     const cols = [
       "Agent ID",
-      "Last Updated",
+      "Status",
+      "Last Activity",
       "Business Unit",
       terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
       terms.intake_col_label || "ATLAS Intake ID",
@@ -729,27 +858,40 @@
 
     const tbody = el("tbody");
     const q = state.agentSearchFilter.trim().toLowerCase();
-    const filtered = state.templates.filter((item) => {
+    const sortedTemplates = [...state.templates].sort((a, b) =>
+      String(b.updated_at || "").localeCompare(String(a.updated_at || ""))
+    );
+    const filtered = sortedTemplates.filter((item) => {
+      if (
+        state.agentStatusFilter !== "all" &&
+        (item.lifecycle_status || "DRAFT") !== state.agentStatusFilter
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         String(item.agent_name).toLowerCase().includes(q) ||
         String(item.business_unit_label || "").toLowerCase().includes(q) ||
         String(item.app_id || "").toLowerCase().includes(q) ||
-        String(item.intake_id || "").toLowerCase().includes(q)
+        String(item.intake_id || "").toLowerCase().includes(q) ||
+        String(item.latest_deployment_id || "").toLowerCase().includes(q)
       );
     });
 
-    filtered.forEach((item) => {
-      const isActive =
-        state.workingTemplate && state.workingTemplate.template_id === item.template_id;
+    const totalPages = Math.max(1, Math.ceil(filtered.length / state.buildPagination.pageSize));
+    if (state.buildPagination.page > totalPages) {
+      state.buildPagination.page = totalPages;
+    }
+    const pageStart = (state.buildPagination.page - 1) * state.buildPagination.pageSize;
+    const pagedItems = filtered.slice(pageStart, pageStart + state.buildPagination.pageSize);
+
+    pagedItems.forEach((item) => {
       const isExpanded = state.expandedAgentId === item.template_id;
+      const isDeployed = item.lifecycle_status === "DEPLOYED";
 
       const tr = el("tr", "clickable-row");
-      if (isActive) {
-        tr.classList.add("is-active-agent-row");
-      }
       if (isExpanded) {
-        tr.classList.add("is-expanded-parent");
+        tr.classList.add("is-active-agent-row", "is-expanded-parent");
       }
 
       const tdId = el("td");
@@ -764,13 +906,22 @@
       });
       tdId.appendChild(selBtn);
 
+      const tdStatus = el("td");
+      tdStatus.appendChild(
+        el(
+          "span",
+          isDeployed ? "status-badge status-ok" : "status-badge status-draft",
+          isDeployed ? "Deployed" : "Draft"
+        )
+      );
+
       const tdUpd = el("td", "", item.updated_display || item.updated_at || "--");
       const tdBu = el("td", "", item.business_unit_label || buLabel(item.business_unit));
       const tdApp = el("td", "", item.app_id);
       const tdIntake = el("td", "", item.intake_id || "Pending");
       const tdRisk = el("td", "", String(item.risk_tier || "AG2").toLowerCase());
 
-      tr.append(tdId, tdUpd, tdBu, tdApp, tdIntake, tdRisk);
+      tr.append(tdId, tdStatus, tdUpd, tdBu, tdApp, tdIntake, tdRisk);
       tr.addEventListener("click", () => toggleAgentRowExpansion(item));
       tbody.appendChild(tr);
 
@@ -781,6 +932,14 @@
 
     table.appendChild(tbody);
     tableWrap.appendChild(table);
+    tableWrap.appendChild(
+      buildPaginationControls({
+        totalItems: filtered.length,
+        paginationState: state.buildPagination,
+        navLabel: "Agent instances pages",
+        idPrefix: "build-agents",
+      })
+    );
     root.appendChild(tableWrap);
   }
 
@@ -788,11 +947,11 @@
     const terms = (state.tenant && state.tenant.terminology) || {};
     const expTr = el("tr", "expanded-editor-row");
     const td = el("td", "expanded-editor-cell");
-    td.colSpan = 6;
+    td.colSpan = 7;
 
     const panel = el("div", "expanded-instance-panel");
 
-    // 1. Instance-Scoped Toolbar: Template [Google Cloud | Cymbal | Custom] + Import / Export / Save / Evaluate
+    // 1. Instance-Scoped Toolbar: Template [Google Cloud | Custom] + Import / Export / Save / Evaluate
     const bar = el("div", "instance-toolbar");
     const activePreset = resolveTemplatePresetKey(tpl);
     const fs = el("fieldset", "segmented-radio-group");
@@ -846,7 +1005,10 @@
     bar.append(fs, actionRight);
     panel.appendChild(bar);
 
-    // 2. Two-Column Body: Left = Instance Metadata & System Prompt | Right = Active Component Configuration
+    // 2. Full-Width 10 Functional Blocks Grid (Scoped to This Agent Instance)
+    panel.appendChild(buildInstanceTenTileStrip(tpl));
+
+    // 3. Two-Column Body: Left = Instance Metadata & System Prompt | Right = Active Component Configuration
     const twoCol = el("div", "instance-2col-grid");
 
     const metaCard = el("div", "surface-card form-stack");
@@ -979,6 +1141,11 @@
     const ev = state.currentEvaluation;
     const tpl = state.workingTemplate;
     if (!ev || !tpl) return;
+
+    const headRow = el("div", "toolbar-row");
+    headRow.appendChild(el("h1", "strip-title", "Governance Readiness & Evaluation"));
+    root.appendChild(headRow);
+    root.appendChild(buildActiveAgentContextBar("evaluate"));
 
     const kpiRow = el("div", "kpi-grid-5");
     const mainScoreCard = el("div", "surface-card hero-metric-card");
@@ -1166,7 +1333,6 @@
             state.currentEvaluation = r.evaluation;
             syncWorkingTemplateIntoList();
             renderHeaderAndBrand();
-            renderTenTileStrip();
             renderStageBody();
           } catch (err) {
             showError(err.message);
@@ -1180,7 +1346,6 @@
         cfgBtn.addEventListener("click", () => {
           state.selectedSlotId = rec.slot_id;
           state.expandedEvalRuleId = rec.rule_id;
-          renderTenTileStrip();
           renderStageBody();
           const rowTarget = document.getElementById(`eval-rule-row-${rec.rule_id}`);
           if (rowTarget) {
@@ -1215,7 +1380,6 @@
             state.currentEvaluation = r.evaluation;
             syncWorkingTemplateIntoList();
             renderHeaderAndBrand();
-            renderTenTileStrip();
             renderStageBody();
           } catch (err) {
             showError(err.message);
@@ -1275,7 +1439,6 @@
       const toggleRule = () => {
         state.expandedEvalRuleId = isExp ? null : r.rule_id;
         state.selectedSlotId = r.slot_id;
-        renderTenTileStrip();
         renderStageBody();
       };
       rBtn.addEventListener("click", (e) => {
@@ -1321,6 +1484,11 @@
     const ev = state.currentEvaluation;
     const tpl = state.workingTemplate;
     if (!ev || !tpl) return;
+
+    const headRow = el("div", "toolbar-row");
+    headRow.appendChild(el("h1", "strip-title", "Release & Deployment Gate"));
+    root.appendChild(headRow);
+    root.appendChild(buildActiveAgentContextBar("deploy"));
 
     const gateCard = el("div", "surface-card form-stack");
     const topBar = el("div", "toolbar-row");
@@ -1444,9 +1612,20 @@
           approver_principal: appInp.value || "platform-governance-lead",
           vp_exception_ticket: tktInp.value || null,
         });
+        if (depRes.templates) {
+          state.templates = depRes.templates;
+          const refreshed = state.templates.find(
+            (t) => t.template_id === state.workingTemplate.template_id
+          );
+          if (refreshed) {
+            state.workingTemplate = cloneJson(refreshed);
+          }
+        }
         state.operationsMetrics = depRes.operations_metrics;
         state.executiveCosts = depRes.executive_costs;
         state.walletState = depRes.wallet_state;
+        state.deployPagination.page = 1;
+        state.buildPagination.page = 1;
         state.expandedDeploymentId = depRes.deployment.deployment_id;
         renderStageBody();
         showNotice(
@@ -1499,12 +1678,25 @@
     root.appendChild(
       buildDeploymentsTable(
         deps,
-        "Active Production Fleet Deployments (Select any row to expand 10-component cost attribution)"
+        "Active Production Fleet Deployments - Sorted Newest-First (Select any row to expand 10-component cost attribution)",
+        state.deployPagination,
+        "deploy-fleet"
       )
     );
   }
 
-  function buildDeploymentsTable(deps, captionText) {
+  function buildDeploymentsTable(deps, captionText, paginationState, idPrefix) {
+    const pag = paginationState || state.deployPagination;
+    const sortedDeps = [...deps].sort((a, b) =>
+      String(b.deployed_at || "").localeCompare(String(a.deployed_at || ""))
+    );
+    const totalPages = Math.max(1, Math.ceil(sortedDeps.length / pag.pageSize));
+    if (pag.page > totalPages) {
+      pag.page = totalPages;
+    }
+    const startIdx = (pag.page - 1) * pag.pageSize;
+    const pagedDeps = sortedDeps.slice(startIdx, startIdx + pag.pageSize);
+
     const wrap = el("div", "table-wrap deferred-below-fold");
     const tbl = el("table", "data-table");
     tbl.appendChild(el("caption", "", captionText));
@@ -1512,6 +1704,7 @@
     const hr = el("tr");
     [
       "Deployment ID",
+      "Deployed At",
       "Agent ID",
       "Business Unit",
       "Agency Tier",
@@ -1528,7 +1721,7 @@
     tbl.appendChild(thead);
 
     const tbody = el("tbody");
-    deps.forEach((d) => {
+    pagedDeps.forEach((d) => {
       const isExp = state.expandedDeploymentId === d.deployment_id;
       const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
 
@@ -1551,7 +1744,9 @@
       });
       tdDep.appendChild(btn);
 
+      const depDate = d.deployed_at ? d.deployed_at.slice(0, 10) : "--";
       tr.appendChild(tdDep);
+      tr.appendChild(el("td", "", depDate));
       tr.appendChild(el("td", "", d.agent_name));
       tr.appendChild(el("td", "", d.business_unit_label || buLabel(d.business_unit)));
       tr.appendChild(el("td", "", String(d.risk_tier).toLowerCase()));
@@ -1565,7 +1760,7 @@
       if (isExp) {
         const expTr = el("tr", "expanded-editor-row");
         const expTd = el("td", "expanded-editor-cell");
-        expTd.colSpan = 8;
+        expTd.colSpan = 9;
         const panel = el("div", "expanded-instance-panel");
         panel.appendChild(
           el(
@@ -1612,6 +1807,14 @@
     });
     tbl.appendChild(tbody);
     wrap.appendChild(tbl);
+    wrap.appendChild(
+      buildPaginationControls({
+        totalItems: sortedDeps.length,
+        paginationState: pag,
+        navLabel: `${idPrefix || "deployments"} pages`,
+        idPrefix: idPrefix || "deployments",
+      })
+    );
     return wrap;
   }
 
@@ -1896,7 +2099,9 @@
     panel.appendChild(
       buildDeploymentsTable(
         m.deployments || [],
-        "Fleet Deployment Audit Log (Select any row to expand component cost attribution)"
+        "Fleet Deployment Audit Log - Sorted Newest-First (Select any row to expand component cost attribution)",
+        state.governFleetPagination,
+        "govern-fleet"
       )
     );
   }
@@ -1948,6 +2153,7 @@
     const reloadFinops = async () => {
       state.finopsFilters.business_unit = buSel.value;
       state.finopsFilters.origin = origSel.value;
+      state.governFinopsPagination.page = 1;
       try {
         const params = new URLSearchParams(state.finopsFilters);
         state.executiveCosts = await apiGet(`/api/executive/costs?${params.toString()}`);
@@ -2127,7 +2333,9 @@
     panel.appendChild(
       buildDeploymentsTable(
         ec.deployments || [],
-        "Per-Agent Deployment Cost Ledger (Select any row to expand 10-component cost attribution)"
+        "Per-Agent Deployment Cost Ledger - Sorted Newest-First (Select any row to expand 10-component cost attribution)",
+        state.governFinopsPagination,
+        "govern-finops"
       )
     );
 
@@ -2542,10 +2750,10 @@
         state.templates = res.templates;
         state.workingTemplate = res.template;
         state.currentEvaluation = res.evaluation;
+        state.buildPagination.page = 1;
         state.expandedAgentId = slug;
         dlg.close();
         renderHeaderAndBrand();
-        renderTenTileStrip();
         renderStageBody();
       } catch (err) {
         showError(err.message);
@@ -2636,10 +2844,10 @@
         state.workingTemplate = saved.template;
         state.currentEvaluation = saved.evaluation;
         state.initialScoreBaseline = saved.evaluation.overall_score;
+        state.buildPagination.page = 1;
         state.expandedAgentId = state.workingTemplate.template_id;
         dlg.close();
         renderHeaderAndBrand();
-        renderTenTileStrip();
         renderStageBody();
       } catch (err) {
         showError(err.message);

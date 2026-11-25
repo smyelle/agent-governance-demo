@@ -45,7 +45,8 @@ def test_local_http_bootstrap_and_security_headers(bff_client: TestClient) -> No
     idx = bff_client.get("/")
     assert idx.status_code == 200
     assert 'id="sidebar-brand-title"' in idx.text
-    assert 'id="ten-tile-strip"' in idx.text
+    assert 'id="pinned-template-section"' not in idx.text
+    assert 'id="ten-tile-strip"' not in idx.text
     assert 'id="right-inspector-drawer"' not in idx.text
     assert 'id="runtime-env-pill"' not in idx.text
 
@@ -305,7 +306,7 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
         assert html_res.status_code == 200
         assert "Cymbal Agent Governance Platform" in html_res.text
         assert 'id="left-lifecycle-nav"' in html_res.text
-        assert 'id="ten-tile-strip"' in html_res.text
+        assert 'id="pinned-template-section"' not in html_res.text
         assert 'id="center-workspace"' in html_res.text
         assert 'id="right-inspector-drawer"' not in html_res.text
         assert 'id="template-profile-fieldset"' not in html_res.text
@@ -342,7 +343,19 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
 
     css_text = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
     assert "overflow: clip;" in css_text
+    assert ".pagination-bar" in css_text
     assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Agent Governance Platform"
+
+    assert len(boot["templates"]) >= 25
+    tpl_timestamps = [t["updated_at"] for t in boot["templates"]]
+    assert tpl_timestamps == sorted(tpl_timestamps, reverse=True)
+    statuses = {t["lifecycle_status"] for t in boot["templates"]}
+    assert statuses == {"DEPLOYED", "DRAFT"}
+
+    dep_list = boot["operations_metrics"]["deployments"]
+    assert len(dep_list) >= 22
+    dep_timestamps = [d["deployed_at"] for d in dep_list]
+    assert dep_timestamps == sorted(dep_timestamps, reverse=True)
     tpl_by_id = {t["template_id"]: t for t in boot["templates"]}
     assert "example-agent-1" in tpl_by_id
     assert "network-telemetry-advisor" in tpl_by_id

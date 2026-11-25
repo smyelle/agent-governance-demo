@@ -281,14 +281,14 @@ def run_functional_and_security_checks(
             and d_html.status_code == 200
             and g_html.status_code == 200
             and 'id="left-lifecycle-nav"' in b_html.text
-            and 'id="ten-tile-strip"' in b_html.text
+            and 'id="pinned-template-section"' not in b_html.text
             and "mock" not in lower_html
             and "persona" not in lower_html
             and ops_m.status_code == 200
             and exec_c.status_code == 200
             and len(exec_json.get("component_cost_rollup") or []) == 10
             and len(exec_json.get("pillar_cost_rollup") or []) == 4
-            and int(exec_json.get("deployment_count") or 0) >= 12
+            and int(exec_json.get("deployment_count") or 0) >= 22
         )
         checks.append(
             {

@@ -122,9 +122,17 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 PROMPTS_DIR = REPO_ROOT / "config" / "prompts"
 
 FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" rx="7" fill="#0284c7"/>'
-    '<path d="M16 6l8 4v6c0 5.5-3.4 9.7-8 11-4.6-1.3-8-5.5-8-11v-6l8-4z" fill="#ffffff"/>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 32">'
+    "<defs>"
+    '<linearGradient id="cmg" x1="0%" y1="0%" x2="100%" y2="100%">'
+    '<stop offset="0%" stop-color="#6D28D9"/>'
+    '<stop offset="55%" stop-color="#EC4899"/>'
+    '<stop offset="100%" stop-color="#2563EB"/>'
+    "</linearGradient>"
+    "</defs>"
+    '<path d="M4 6.5C4 4.3 6.4 3 8.3 4.1l12.2 7.4c1.8 1.1 1.8 3.9 0 5L8.3 23.9C6.4 25 4 23.7 4 21.5V6.5z" fill="url(#cmg)"/>'
+    '<path d="M23.5 8.5a10.5 10.5 0 0 1 0 11" fill="none" stroke="url(#cmg)" stroke-width="3" stroke-linecap="round"/>'
+    '<path d="M28.5 5a16 16 0 0 1 0 18" fill="none" stroke="#2563EB" stroke-width="3" stroke-linecap="round"/>'
     "</svg>"
 )
 

@@ -50,8 +50,8 @@ DEFAULT_BUSINESS_UNITS: dict[str, str] = {
 
 
 class TerminologyMap(BaseModel):
-    platform_name: str
-    sidebar_brand: str = "Cymbal Platform"
+    platform_name: str = "Cymbal Agent Governance Platform"
+    sidebar_brand: str = "Cymbal Agent Governance Platform"
     customer_provider_short: str = "Cymbal"
     gcp_provider_short: str = "Google Cloud"
     gateway_name: str
@@ -93,9 +93,9 @@ class GovernanceDefaults(BaseModel):
 
 
 class ThemeConfig(BaseModel):
-    accent_primary: str = "#0284c7"
-    accent_secondary: str = "#0f766e"
-    badge_text: str = "Cymbal Platform | ADK 2.0"
+    accent_primary: str = "#6D28D9"
+    accent_secondary: str = "#4C1D95"
+    badge_text: str = "Cymbal Agent Governance Platform"
 
 
 class TenantProfile(BaseModel):

@@ -44,8 +44,10 @@ def test_local_http_bootstrap_and_security_headers(bff_client: TestClient) -> No
 
     idx = bff_client.get("/")
     assert idx.status_code == 200
-    assert 'id="runtime-env-pill"' in idx.text
-    assert 'id="vertical-pipeline-list"' in idx.text
+    assert 'id="sidebar-brand-title"' in idx.text
+    assert 'id="ten-tile-strip"' in idx.text
+    assert 'id="right-inspector-drawer"' not in idx.text
+    assert 'id="runtime-env-pill"' not in idx.text
 
     csp = idx.headers.get("content-security-policy", "")
     assert "default-src 'self'" in csp
@@ -297,15 +299,16 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     app = create_bff_app(offline_mode=True)
     client = TestClient(app, base_url="http://127.0.0.1:8080")
 
-    # 1. Verify all 4 Lifecycle SPA routes & production Cymbal wireframe structure
+    # 1. Verify all 4 Lifecycle SPA routes & production Cymbal Agent Governance Platform shell
     for route in ("/", "/build", "/evaluate", "/deploy", "/govern"):
         html_res = client.get(route)
         assert html_res.status_code == 200
-        assert "Cymbal Platform" in html_res.text
+        assert "Cymbal Agent Governance Platform" in html_res.text
         assert 'id="left-lifecycle-nav"' in html_res.text
         assert 'id="ten-tile-strip"' in html_res.text
         assert 'id="center-workspace"' in html_res.text
-        assert 'id="right-inspector-drawer"' in html_res.text
+        assert 'id="right-inspector-drawer"' not in html_res.text
+        assert 'id="template-profile-fieldset"' not in html_res.text
         assert 'data-stage="build"' in html_res.text
         assert 'data-stage="evaluate"' in html_res.text
         assert 'data-stage="deploy"' in html_res.text
@@ -329,7 +332,7 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
 
     # 3. Verify 10 vendor-neutral functional components & seeded agent inventory
     assert len(boot["slot_catalog"]) == 10
-    assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Platform"
+    assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Agent Governance Platform"
     tpl_by_id = {t["template_id"]: t for t in boot["templates"]}
     assert "example-agent-1" in tpl_by_id
     assert "network-telemetry-advisor" in tpl_by_id

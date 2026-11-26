@@ -205,7 +205,11 @@ def audit_repository() -> dict[str, object]:
         if not path.exists():
             continue
 
-        if path.name in FORBIDDEN_FILENAMES or rel_path.startswith("scape_docs"):
+        if (
+            path.name in FORBIDDEN_FILENAMES
+            or rel_path.startswith("scape_docs")
+            or rel_path.startswith("docs/")
+        ):
             findings.append(
                 {
                     "file": rel_path,

@@ -71,7 +71,10 @@ async def test_platform_8_capability_suite_and_ensemble_tco_math() -> None:
     assert summary["passed_count"] == 8
     assert summary["total_count"] == 8
 
-    doc_text = (REPO_ROOT / "docs" / "GOOGLE_AGENT_PLATFORM_BENCHMARK.md").read_text(encoding="utf-8")
+    out_p = Path(summary["benchmark_markdown_path"])
+    if not out_p.is_absolute():
+        out_p = REPO_ROOT / out_p
+    doc_text = out_p.read_text(encoding="utf-8")
     assert "\u2014" not in doc_text
     assert "\u2013" not in doc_text
     assert "Cymbal Agent Governance, Optimization & Deployment Workbench" in doc_text

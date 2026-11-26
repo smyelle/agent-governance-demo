@@ -346,13 +346,22 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     assert ".pagination-bar" in css_text
     assert ".component-expander" in css_text
     assert ".segmented-radio-input" in css_text
+    assert ".table-filter-row" in css_text
     js_text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert "Select functional capability" not in js_text
+    assert "buildActiveAgentContextBar" not in js_text
     assert "buildNestedComponentExpanders" in js_text
+    assert "buildNestedEvaluateExpanders" in js_text
+    assert "buildExpandedDeployRow" in js_text
+    assert "buildInteractiveTableHead" in js_text
     assert 'providers.every((p) => p === "google_gcp")' not in js_text
     assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Agent Governance Platform"
 
     assert len(boot["templates"]) >= 25
+    for t_item in boot["templates"]:
+        assert "gate_verdict" in t_item
+        assert "recommendations_count" in t_item
+        assert "component_costs" in t_item
     tpl_timestamps = [t["updated_at"] for t in boot["templates"]]
     assert tpl_timestamps == sorted(tpl_timestamps, reverse=True)
     statuses = {t["lifecycle_status"] for t in boot["templates"]}

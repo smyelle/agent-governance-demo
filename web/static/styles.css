@@ -497,13 +497,117 @@ body {
 }
 
 .data-table th {
-  padding: 0.72rem 0.85rem;
+  padding: 0.62rem 0.78rem;
   text-align: start;
   font-size: 0.8rem;
   font-weight: 700;
   color: var(--text-secondary);
   border-block-end: 1px solid var(--border-strong);
   background: var(--bg-surface);
+  vertical-align: middle;
+}
+
+/* Per-Column Sort Buttons & Inline thead Filter Controls */
+.th-sort-btn {
+  inline-size: 100%;
+  display: inline-flex;
+  align-items: safe center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: start;
+  cursor: pointer;
+}
+
+.th-sort-btn:hover {
+  color: var(--cymbal-primary-300);
+}
+
+.sort-indicator {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+th[aria-sort="ascending"] .sort-indicator,
+th[aria-sort="descending"] .sort-indicator {
+  color: var(--cymbal-primary-300);
+}
+
+.table-filter-row th {
+  padding: 0.42rem 0.65rem 0.52rem;
+  background: var(--bg-subtle);
+  border-block-end: 1px solid var(--border-strong);
+  font-weight: 500;
+}
+
+.col-filter-input,
+.col-filter-select {
+  inline-size: 100%;
+  min-inline-size: 68px;
+  padding: 0.32rem 0.52rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.76rem;
+}
+
+.col-filter-input:focus-visible,
+.col-filter-select:focus-visible {
+  border-color: var(--cymbal-primary-300);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 40, 217, 0.16);
+}
+
+.table-active-filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: safe center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.48rem 0.95rem;
+  background: var(--bg-selected-tint);
+  border-block-end: 1px solid var(--border-hairline);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--cymbal-primary-500);
+}
+
+.expander-summary-right {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: safe center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  max-inline-size: 62%;
+}
+
+.finding-callout {
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.finding-callout.is-mandatory {
+  border-inline-start: 4px solid var(--status-err-border);
+  background: var(--status-err-bg);
+}
+
+.finding-callout.is-advisory {
+  border-inline-start: 4px solid var(--status-warn-border);
+  background: var(--status-warn-bg);
 }
 
 .data-table td {

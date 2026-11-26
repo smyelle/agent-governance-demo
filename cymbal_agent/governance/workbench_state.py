@@ -1828,6 +1828,30 @@ class WorkbenchGovernanceEngine:
             self._persist_locked()
             return copy.deepcopy(self._rubric)
 
+    def _enrich_template_dump(
+        self,
+        norm_tpl: AgentDeploymentTemplate,
+        ev: dict[str, Any],
+        prof: TenantProfile,
+    ) -> dict[str, Any]:
+        dumped = norm_tpl.model_dump()
+        cost_est = ev["cost_estimate"]
+        dumped["business_unit_label"] = prof.terminology.business_units.get(
+            norm_tpl.business_unit, norm_tpl.business_unit
+        )
+        dumped["latest_eval_score"] = ev["overall_score"]
+        dumped["passing_threshold"] = ev["passing_threshold"]
+        dumped["gate_passed"] = ev["gate_passed"]
+        dumped["gate_verdict"] = ev["gate_verdict"]
+        dumped["mandatory_failures_count"] = ev["mandatory_failures_count"]
+        dumped["recommendations_count"] = ev["recommendations_count"]
+        dumped["monthly_run_rate_usd"] = cost_est["monthly_run_rate_usd"]
+        dumped["onboarding_eval_cost_usd"] = cost_est["onboarding_eval_cost_usd"]
+        dumped["monthly_savings_usd"] = cost_est["monthly_savings_usd"]
+        dumped["historical_cumulative_usd"] = cost_est["historical_cumulative_usd"]
+        dumped["component_costs"] = cost_est["component_costs"]
+        return dumped
+
     def list_templates(self) -> list[dict[str, Any]]:
         prof = load_tenant_profile()
         with self._lock:
@@ -1837,14 +1861,7 @@ class WorkbenchGovernanceEngine:
                 norm_tpl = copy.deepcopy(tpl)
                 norm_tpl.components = normalize_template_components(norm_tpl.components)
                 ev = evaluate_template_against_rubric(norm_tpl, rub, profile=prof)
-                dumped = norm_tpl.model_dump()
-                dumped["business_unit_label"] = prof.terminology.business_units.get(
-                    norm_tpl.business_unit, norm_tpl.business_unit
-                )
-                dumped["latest_eval_score"] = ev["overall_score"]
-                dumped["gate_passed"] = ev["gate_passed"]
-                dumped["monthly_run_rate_usd"] = ev["cost_estimate"]["monthly_run_rate_usd"]
-                out.append(dumped)
+                out.append(self._enrich_template_dump(norm_tpl, ev, prof))
             out.sort(key=lambda x: str(x.get("updated_at", "")), reverse=True)
             return out
 
@@ -1857,14 +1874,7 @@ class WorkbenchGovernanceEngine:
             self._agents[template.template_id] = copy.deepcopy(template)
             self._persist_locked()
             ev = evaluate_template_against_rubric(template, self._rubric, profile=prof)
-            dumped = template.model_dump()
-            dumped["business_unit_label"] = prof.terminology.business_units.get(
-                template.business_unit, template.business_unit
-            )
-            dumped["latest_eval_score"] = ev["overall_score"]
-            dumped["gate_passed"] = ev["gate_passed"]
-            dumped["monthly_run_rate_usd"] = ev["cost_estimate"]["monthly_run_rate_usd"]
-            return dumped
+            return self._enrich_template_dump(template, ev, prof)
 
     def record_deployment(
         self,

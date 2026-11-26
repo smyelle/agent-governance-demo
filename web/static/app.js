@@ -31,6 +31,8 @@
     imported_manifest: "Imported Manifest",
   };
 
+  const NUMERIC_FILTER_RE = /^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/;
+
   const state = {
     csrfToken: "",
     tenant: null,
@@ -54,17 +56,20 @@
     activeStage: "build",
     activeGovernTab: "policies",
     selectedSlotId: "identity_access",
+    selectedEvalSlotId: null,
+    selectedDeploySection: "approval",
     expandedAgentId: null,
-    expandedEvalRuleId: null,
+    expandedEvalAgentId: null,
+    expandedDeployAgentId: null,
     expandedDeploymentId: null,
     expandedFinopsSlotId: null,
-    agentSearchFilter: "",
-    agentStatusFilter: "all",
     buildPagination: { page: 1, pageSize: 10 },
+    evalPagination: { page: 1, pageSize: 10 },
     deployPagination: { page: 1, pageSize: 10 },
     governFleetPagination: { page: 1, pageSize: 10 },
     governFinopsPagination: { page: 1, pageSize: 10 },
-    finopsFilters: { business_unit: "all", origin: "all" },
+    tableControls: {},
+    pendingFocusRestore: null,
   };
 
   function el(tag, className, text) {
@@ -188,6 +193,243 @@
     return JSON.parse(JSON.stringify(obj));
   }
 
+  function resolveReleaseStateLabel(item) {
+    if (item.lifecycle_status === "DEPLOYED") {
+      return "Deployed";
+    }
+    return item.gate_passed ? "Ready to Deploy" : "Gate Blocked";
+  }
+
+  function resolveGateVerdictLabel(item) {
+    return item.gate_passed ? "Ready" : "Remediation Needed";
+  }
+
+  /* =========================================================================
+   * Universal Per-Column Table Sort & Inline Filter Engine
+   * ========================================================================= */
+  function ensureTableState(tableKey, defaultSortCol, defaultSortDir = "desc") {
+    if (!state.tableControls[tableKey]) {
+      state.tableControls[tableKey] = {
+        sortCol: defaultSortCol || "",
+        sortDir: defaultSortDir,
+        filters: {},
+      };
+    }
+    return state.tableControls[tableKey];
+  }
+
+  function clearTableFilters(tableKey, paginationState) {
+    const ctrl = state.tableControls[tableKey];
+    if (ctrl) {
+      ctrl.filters = {};
+    }
+    if (paginationState) {
+      paginationState.page = 1;
+    }
+  }
+
+  function countActiveTableFilters(tableKey) {
+    const ctrl = state.tableControls[tableKey];
+    if (!ctrl || !ctrl.filters) return 0;
+    return Object.values(ctrl.filters).filter((v) => String(v || "").trim() !== "").length;
+  }
+
+  function matchesColumnFilter(rawVal, displayStr, filterQuery, colType, filterType) {
+    const q = String(filterQuery || "").trim();
+    if (!q) return true;
+    if (filterType === "select") {
+      return String(rawVal ?? "") === q;
+    }
+    if (colType === "number") {
+      const m = NUMERIC_FILTER_RE.exec(q);
+      if (m) {
+        const op = m[1];
+        const target = Number(m[2]);
+        const numVal = Number(rawVal ?? 0);
+        if (op === ">=") return numVal >= target;
+        if (op === "<=") return numVal <= target;
+        if (op === ">") return numVal > target;
+        if (op === "<") return numVal < target;
+        if (op === "=") return numVal === target;
+      }
+    }
+    const hay = `${String(rawVal ?? "")} ${String(displayStr ?? "")}`.toLowerCase();
+    return hay.includes(q.toLowerCase());
+  }
+
+  function applyTableSortAndFilters(rows, columns, tableKey, defaultSortCol, defaultSortDir = "desc") {
+    const ctrl = ensureTableState(tableKey, defaultSortCol, defaultSortDir);
+    const colByKey = {};
+    columns.forEach((c) => {
+      colByKey[c.key] = c;
+    });
+
+    const filtered = rows.filter((row) =>
+      columns.every((col) => {
+        const fVal = ctrl.filters[col.key];
+        if (!fVal || String(fVal).trim() === "") return true;
+        const rawV = col.getValue ? col.getValue(row) : row[col.key];
+        const dispV = col.getFilterText ? col.getFilterText(row) : rawV;
+        return matchesColumnFilter(rawV, dispV, fVal, col.type || "string", col.filterType || "text");
+      })
+    );
+
+    const sortColObj = colByKey[ctrl.sortCol];
+    if (!sortColObj) {
+      return filtered;
+    }
+    const mult = ctrl.sortDir === "asc" ? 1 : -1;
+    const cType = sortColObj.type || "string";
+
+    return [...filtered].sort((a, b) => {
+      const va = sortColObj.getValue ? sortColObj.getValue(a) : a[sortColObj.key];
+      const vb = sortColObj.getValue ? sortColObj.getValue(b) : b[sortColObj.key];
+      if (cType === "number") {
+        const na = Number(va ?? 0);
+        const nb = Number(vb ?? 0);
+        if (na === nb) return 0;
+        return (na < nb ? -1 : 1) * mult;
+      }
+      const sa = String(va ?? "");
+      const sb = String(vb ?? "");
+      return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: "base" }) * mult;
+    });
+  }
+
+  function buildInteractiveTableHead({
+    tableKey,
+    columns,
+    allRows,
+    defaultSortCol,
+    defaultSortDir = "desc",
+    paginationState,
+  }) {
+    const ctrl = ensureTableState(tableKey, defaultSortCol, defaultSortDir);
+    const thead = el("thead");
+    const sortRow = el("tr");
+    const filterRow = el("tr", "table-filter-row");
+
+    columns.forEach((col) => {
+      const th = el("th");
+      th.scope = "col";
+      const isSorted = ctrl.sortCol === col.key;
+      th.setAttribute(
+        "aria-sort",
+        isSorted ? (ctrl.sortDir === "asc" ? "ascending" : "descending") : "none"
+      );
+
+      const sortBtn = el("button", "th-sort-btn");
+      sortBtn.type = "button";
+      sortBtn.appendChild(el("span", "", col.label));
+      const arrow = isSorted ? (ctrl.sortDir === "asc" ? "\u2191" : "\u2193") : "\u2195";
+      const ind = el("span", "sort-indicator", arrow);
+      ind.setAttribute("aria-hidden", "true");
+      sortBtn.appendChild(ind);
+
+      sortBtn.addEventListener("click", () => {
+        if (ctrl.sortCol === col.key) {
+          ctrl.sortDir = ctrl.sortDir === "asc" ? "desc" : "asc";
+        } else {
+          ctrl.sortCol = col.key;
+          ctrl.sortDir = col.type === "number" || col.type === "date" ? "desc" : "asc";
+        }
+        if (paginationState) {
+          paginationState.page = 1;
+        }
+        renderStageBody();
+      });
+      th.appendChild(sortBtn);
+      sortRow.appendChild(th);
+
+      const fTh = el("th");
+      const filterId = `tbl-flt-${tableKey}-${col.key}`;
+      const srLbl = el("label", "visually-hidden", `Filter ${col.label}`);
+      srLbl.setAttribute("for", filterId);
+      fTh.appendChild(srLbl);
+
+      if (col.filterType === "select") {
+        const sel = el("select", "col-filter-select");
+        sel.id = filterId;
+        const allOpt = el("option", "", "All");
+        allOpt.value = "";
+        sel.appendChild(allOpt);
+
+        let opts = col.options;
+        if (!opts) {
+          const uniq = Array.from(
+            new Set(
+              (allRows || [])
+                .map((r) => String((col.getValue ? col.getValue(r) : r[col.key]) ?? ""))
+                .filter((v) => v !== "")
+            )
+          ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          opts = uniq.map((v) => [v, v]);
+        }
+        const curVal = String(ctrl.filters[col.key] || "");
+        opts.forEach(([val, txt]) => {
+          const o = el("option", "", txt);
+          o.value = String(val);
+          if (curVal === String(val)) {
+            o.selected = true;
+          }
+          sel.appendChild(o);
+        });
+        sel.addEventListener("change", () => {
+          ctrl.filters[col.key] = sel.value;
+          if (paginationState) {
+            paginationState.page = 1;
+          }
+          renderStageBody();
+        });
+        fTh.appendChild(sel);
+      } else {
+        const inp = el("input", "col-filter-input");
+        inp.type = "search";
+        inp.id = filterId;
+        inp.placeholder = col.type === "number" ? "Filter or >=..." : "Filter...";
+        inp.value = String(ctrl.filters[col.key] || "");
+        inp.addEventListener("input", () => {
+          ctrl.filters[col.key] = inp.value;
+          if (paginationState) {
+            paginationState.page = 1;
+          }
+          state.pendingFocusRestore = {
+            id: filterId,
+            start: inp.selectionStart ?? inp.value.length,
+            end: inp.selectionEnd ?? inp.value.length,
+          };
+          renderStageBody();
+        });
+        fTh.appendChild(inp);
+      }
+      filterRow.appendChild(fTh);
+    });
+
+    thead.append(sortRow, filterRow);
+    return thead;
+  }
+
+  function buildActiveFiltersBanner(tableKey, filteredCount, totalCount, paginationState) {
+    const activeCnt = countActiveTableFilters(tableKey);
+    if (activeCnt === 0) return null;
+    const bar = el("div", "table-active-filters-bar");
+    bar.appendChild(
+      el(
+        "span",
+        "",
+        `${activeCnt} column filter(s) active - matching ${filteredCount} of ${totalCount} rows`
+      )
+    );
+    const clearBtn = el("button", "secondary-btn sm-btn", "Clear Column Filters");
+    clearBtn.type = "button";
+    clearBtn.addEventListener("click", () => {
+      clearTableFilters(tableKey, paginationState);
+      renderStageBody();
+    });
+    bar.appendChild(clearBtn);
+    return bar;
+  }
+
   function resolveInitialStageFromPath() {
     const p = window.location.pathname.toLowerCase();
     if (p.startsWith("/evaluate")) return "evaluate";
@@ -229,6 +471,36 @@
     renderStageBody();
   }
 
+  function jumpToAgentOnStage(targetStage, templateId) {
+    const pagMap = {
+      build: { pag: state.buildPagination, tableKey: "build-agents", defaultCol: "updated_at" },
+      evaluate: { pag: state.evalPagination, tableKey: "eval-agents", defaultCol: "updated_at" },
+      deploy: { pag: state.deployPagination, tableKey: "deploy-agents", defaultCol: "updated_at" },
+    };
+    const cfg = pagMap[targetStage];
+    if (cfg) {
+      clearTableFilters(cfg.tableKey, cfg.pag);
+      ensureTableState(cfg.tableKey, cfg.defaultCol, "desc");
+      state.tableControls[cfg.tableKey].sortCol = cfg.defaultCol;
+      state.tableControls[cfg.tableKey].sortDir = "desc";
+      const sorted = [...state.templates].sort((a, b) =>
+        String(b.updated_at || "").localeCompare(String(a.updated_at || ""))
+      );
+      const idx = sorted.findIndex((t) => t.template_id === templateId);
+      if (idx >= 0) {
+        cfg.pag.page = Math.floor(idx / cfg.pag.pageSize) + 1;
+      }
+    }
+    if (targetStage === "build") {
+      state.expandedAgentId = templateId;
+    } else if (targetStage === "evaluate") {
+      state.expandedEvalAgentId = templateId;
+    } else if (targetStage === "deploy") {
+      state.expandedDeployAgentId = templateId;
+    }
+    setStage(targetStage);
+  }
+
   function renderHeaderAndBrand() {
     const terms = (state.tenant && state.tenant.terminology) || {};
     const fullBrand = terms.sidebar_brand || "Cymbal Agent Governance Platform";
@@ -238,12 +510,12 @@
     }
   }
 
-  /* Sync highlight between the 10 horizontal blocks and the 10 nested expanders */
-  function syncHorizontalTilesWithOpenExpander(panelRoot) {
+  /* Sync highlight between 10 horizontal blocks and 10 nested expanders */
+  function syncHorizontalTilesWithOpenExpander(panelRoot, slotStateField = "selectedSlotId") {
     if (!panelRoot) return;
     const openDet = panelRoot.querySelector("details.component-expander[open]");
     const openSid = openDet ? openDet.dataset.slotId : null;
-    state.selectedSlotId = openSid;
+    state[slotStateField] = openSid;
     panelRoot.querySelectorAll(".component-tile").forEach((btn) => {
       const active = Boolean(openSid && btn.dataset.slotId === openSid);
       btn.classList.toggle("is-selected", active);
@@ -251,11 +523,12 @@
     });
   }
 
-  /* Inline 10 Horizontal Functional Blocks (Scoped Inside Expanded Agent Row) */
-  function buildInstanceTenTileStrip(tpl, panelRoot) {
+  /* Inline 10 Horizontal Functional Blocks (Build & Evaluate Expanded Rows) */
+  function buildInstanceTenTileStrip(tpl, panelRoot, evalObj = null, slotStateField = "selectedSlotId") {
     const wrapper = el("div", "instance-blocks-section");
     const list = el("ul", "ten-tile-strip");
     list.setAttribute("role", "list");
+    const slotStatuses = (evalObj && evalObj.slot_statuses) || {};
 
     state.slotCatalog.forEach((spec) => {
       const sid = spec.slot_id;
@@ -271,14 +544,30 @@
       const btn = el("button", "component-tile");
       btn.type = "button";
       btn.dataset.slotId = sid;
-      const isSelected = state.selectedSlotId === sid;
+      const isSelected = state[slotStateField] === sid;
       if (isSelected) {
         btn.classList.add("is-selected");
       }
       btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
 
+      if (evalObj) {
+        const st = slotStatuses[sid] || "PASSED";
+        if (st === "FAILED") {
+          btn.classList.add("tile-status-failed");
+        } else if (st === "ADVISORY") {
+          btn.classList.add("tile-status-advisory");
+        } else {
+          btn.classList.add("tile-status-passed", "eval-highlight");
+        }
+      }
+
       const topHeader = el("span", "tile-top-header");
       topHeader.appendChild(el("span", "tile-functional-name", spec.functional_name));
+      if (evalObj) {
+        const st = slotStatuses[sid] || "PASSED";
+        const sym = st === "FAILED" ? "[!]" : st === "ADVISORY" ? "[~]" : "[OK]";
+        topHeader.appendChild(el("span", "tile-eval-marker", sym));
+      }
       const subSpan = el("span", "tile-impl-caption", implLabel);
       btn.append(topHeader, subSpan);
 
@@ -295,15 +584,15 @@
               }
             });
             targetDet.open = true;
-            state.selectedSlotId = sid;
+            state[slotStateField] = sid;
             targetDet.scrollIntoView({ behavior: "smooth", block: "nearest" });
           } else {
             targetDet.open = false;
-            state.selectedSlotId = null;
+            state[slotStateField] = null;
           }
-          syncHorizontalTilesWithOpenExpander(panelRoot);
+          syncHorizontalTilesWithOpenExpander(panelRoot, slotStateField);
         } else {
-          state.selectedSlotId = sid;
+          state[slotStateField] = sid;
           renderStageBody();
         }
       });
@@ -313,79 +602,6 @@
 
     wrapper.appendChild(list);
     return wrapper;
-  }
-
-  /* Compact Active Agent Switcher Bar (Evaluate & Deploy) */
-  function buildActiveAgentContextBar(idPrefix) {
-    const bar = el("div", "active-agent-bar");
-    const tpl = state.workingTemplate;
-    if (!tpl) return bar;
-
-    const leftGrp = el("div", "active-agent-switcher-group");
-    const selId = `${idPrefix}-active-agent-select`;
-    const lbl = el("label", "", "Active Agent Instance");
-    lbl.setAttribute("for", selId);
-
-    const sel = el("select", "inline-select");
-    sel.id = selId;
-    state.templates.forEach((item) => {
-      const stText = item.lifecycle_status === "DEPLOYED" ? "Deployed" : "Draft";
-      const opt = el(
-        "option",
-        "",
-        `${item.agent_name} (${stText} | ${item.updated_display || item.updated_at || ""})`
-      );
-      opt.value = item.template_id;
-      if (item.template_id === tpl.template_id) {
-        opt.selected = true;
-      }
-      sel.appendChild(opt);
-    });
-    sel.addEventListener("change", async () => {
-      const chosen = state.templates.find((t) => t.template_id === sel.value);
-      if (!chosen) return;
-      state.workingTemplate = cloneJson(chosen);
-      const res = await apiPost("/api/templates/evaluate", {
-        template: state.workingTemplate,
-      });
-      state.currentEvaluation = res.evaluation;
-      state.initialScoreBaseline = res.evaluation.overall_score;
-      renderStageBody();
-    });
-
-    const isDep = tpl.lifecycle_status === "DEPLOYED";
-    const statusBadge = el(
-      "span",
-      isDep ? "status-badge status-ok" : "status-badge status-draft",
-      isDep
-        ? `Deployed${tpl.latest_deployment_id ? " (" + tpl.latest_deployment_id + ")" : ""}`
-        : "Draft"
-    );
-    const metaPill = el(
-      "span",
-      "agent-context-pill",
-      `${buLabel(tpl.business_unit)} | ${String(tpl.risk_tier || "AG2").toLowerCase()}`
-    );
-
-    leftGrp.append(lbl, sel, statusBadge, metaPill);
-
-    const rightGrp = el("div", "toolbar-right");
-    const openBuildBtn = el("button", "secondary-btn sm-btn", "Open in Build");
-    openBuildBtn.type = "button";
-    openBuildBtn.addEventListener("click", () => {
-      state.agentSearchFilter = "";
-      state.agentStatusFilter = "all";
-      const idx = state.templates.findIndex((t) => t.template_id === tpl.template_id);
-      if (idx >= 0) {
-        state.buildPagination.page = Math.floor(idx / state.buildPagination.pageSize) + 1;
-      }
-      state.expandedAgentId = tpl.template_id;
-      setStage("build");
-    });
-    rightGrp.appendChild(openBuildBtn);
-
-    bar.append(leftGrp, rightGrp);
-    return bar;
   }
 
   /* Accessible Pagination Bar (10 / 25 / 50 rows per page) */
@@ -404,9 +620,7 @@
     nav.setAttribute("aria-label", navLabel);
 
     const meta = el("div", "pagination-meta");
-    meta.appendChild(
-      el("span", "", `Showing ${startIdx}-${endIdx} of ${totalItems} instances`)
-    );
+    meta.appendChild(el("span", "", `Showing ${startIdx}-${endIdx} of ${totalItems} rows`));
 
     const sizeId = `${idPrefix}-rows-per-page`;
     const sizeLbl = el("label", "", "Rows per page");
@@ -490,25 +704,30 @@
       (t) => t.template_id === state.workingTemplate.template_id
     );
     if (idx >= 0) {
-      const merged = cloneJson(state.workingTemplate);
+      const merged = cloneJson(state.templates[idx]);
+      Object.assign(merged, cloneJson(state.workingTemplate));
       merged.business_unit_label = buLabel(merged.business_unit);
       if (state.currentEvaluation) {
-        merged.latest_eval_score = state.currentEvaluation.overall_score;
-        merged.gate_passed = state.currentEvaluation.gate_passed;
+        const ev = state.currentEvaluation;
+        merged.latest_eval_score = ev.overall_score;
+        merged.passing_threshold = ev.passing_threshold;
+        merged.gate_passed = ev.gate_passed;
+        merged.gate_verdict = ev.gate_verdict;
+        merged.mandatory_failures_count = ev.mandatory_failures_count;
+        merged.recommendations_count = ev.recommendations_count;
+        if (ev.cost_estimate) {
+          merged.monthly_run_rate_usd = ev.cost_estimate.monthly_run_rate_usd;
+          merged.onboarding_eval_cost_usd = ev.cost_estimate.onboarding_eval_cost_usd;
+          merged.monthly_savings_usd = ev.cost_estimate.monthly_savings_usd;
+          merged.historical_cumulative_usd = ev.cost_estimate.historical_cumulative_usd;
+          merged.component_costs = ev.cost_estimate.component_costs;
+        }
       }
       state.templates[idx] = merged;
     }
   }
 
-  async function toggleAgentRowExpansion(item) {
-    clearBanners();
-    const isSameExpanded = state.expandedAgentId === item.template_id;
-    if (isSameExpanded) {
-      state.expandedAgentId = null;
-      renderStageBody();
-      return;
-    }
-
+  async function ensureWorkingTemplateLoaded(item) {
     if (!state.workingTemplate || state.workingTemplate.template_id !== item.template_id) {
       state.workingTemplate = cloneJson(item);
       const res = await apiPost("/api/templates/evaluate", {
@@ -516,11 +735,45 @@
       });
       state.currentEvaluation = res.evaluation;
       state.initialScoreBaseline = res.evaluation.overall_score;
+      syncWorkingTemplateIntoList();
+    } else if (!state.currentEvaluation) {
+      const res = await apiPost("/api/templates/evaluate", {
+        template: state.workingTemplate,
+      });
+      state.currentEvaluation = res.evaluation;
+      syncWorkingTemplateIntoList();
     }
-    state.expandedAgentId = item.template_id;
-    if (!state.selectedSlotId && state.slotCatalog.length > 0) {
-      state.selectedSlotId = state.slotCatalog[0].slot_id;
+  }
+
+  async function toggleAgentRowExpansion(item, expandStateField = "expandedAgentId") {
+    clearBanners();
+    const isSameExpanded = state[expandStateField] === item.template_id;
+    if (isSameExpanded) {
+      state[expandStateField] = null;
+      renderStageBody();
+      return;
     }
+
+    await ensureWorkingTemplateLoaded(item);
+    state[expandStateField] = item.template_id;
+
+    if (expandStateField === "expandedAgentId") {
+      if (!state.selectedSlotId && state.slotCatalog.length > 0) {
+        state.selectedSlotId = state.slotCatalog[0].slot_id;
+      }
+    } else if (expandStateField === "expandedEvalAgentId" && state.currentEvaluation) {
+      const firstFail = (state.currentEvaluation.rule_results || []).find(
+        (r) => r.status === "FAILED"
+      );
+      state.selectedEvalSlotId = firstFail
+        ? firstFail.slot_id
+        : state.slotCatalog[0]
+        ? state.slotCatalog[0].slot_id
+        : null;
+    } else if (expandStateField === "expandedDeployAgentId") {
+      state.selectedDeploySection = "approval";
+    }
+
     renderHeaderAndBrand();
     renderStageBody();
   }
@@ -614,7 +867,13 @@
   }
 
   /* Shared Per-Slot Component Radio & Policy Controls (Zero Dropdown) */
-  function populateSlotConfigurationBody(container, spec, tpl, radioGroupPrefix) {
+  function populateSlotConfigurationBody(
+    container,
+    spec,
+    tpl,
+    radioGroupPrefix,
+    slotStateField = "selectedSlotId"
+  ) {
     container.appendChild(
       el("span", "status-badge status-ok", `${spec.pillar} Pillar | ${spec.workstream}`)
     );
@@ -642,7 +901,7 @@
       const unlockBtn = el("button", "secondary-btn sm-btn", "Switch to Custom");
       unlockBtn.type = "button";
       unlockBtn.addEventListener("click", () => {
-        state.selectedSlotId = spec.slot_id;
+        state[slotStateField] = spec.slot_id;
         applyInstanceTemplatePreset("custom");
       });
       lockBar.appendChild(unlockBtn);
@@ -675,7 +934,7 @@
 
       rad.addEventListener("change", async () => {
         if (!rad.checked) return;
-        state.selectedSlotId = spec.slot_id;
+        state[slotStateField] = spec.slot_id;
         tpl.template_mode = "custom";
         tpl.origin = "custom_hybrid";
         tpl.components[spec.slot_id] = {
@@ -716,7 +975,7 @@
       );
       clearBtn.type = "button";
       clearBtn.addEventListener("click", async () => {
-        state.selectedSlotId = spec.slot_id;
+        state[slotStateField] = spec.slot_id;
         tpl.static_secrets_in_env = [];
         await refreshEvaluation(true);
       });
@@ -729,7 +988,7 @@
       celChk.type = "checkbox";
       celChk.checked = Boolean(tpl.uap_cel_per_tool_enforced);
       celChk.addEventListener("change", async () => {
-        state.selectedSlotId = spec.slot_id;
+        state[slotStateField] = spec.slot_id;
         tpl.uap_cel_per_tool_enforced = celChk.checked;
         await refreshEvaluation(true);
       });
@@ -754,7 +1013,7 @@
         sdpSel.appendChild(o);
       });
       sdpSel.addEventListener("change", async () => {
-        state.selectedSlotId = spec.slot_id;
+        state[slotStateField] = spec.slot_id;
         tpl.sdp_pii_mode = sdpSel.value;
         await refreshEvaluation(true);
       });
@@ -763,7 +1022,7 @@
     }
   }
 
-  /* Nested Set of 10 Functional Component Expanders (Under Expanded Agent Row) */
+  /* Nested Set of 10 Functional Component Expanders (Build Page) */
   function buildNestedComponentExpanders(tpl, panelRoot) {
     const card = el("div", "surface-card nested-expanders-card");
     card.appendChild(el("h3", "section-heading", "Component Choices (10 Functional Areas)"));
@@ -798,7 +1057,7 @@
       summary.append(titleSpan, choicePill);
 
       const body = el("div", "component-expander-body");
-      populateSlotConfigurationBody(body, spec, tpl, "nested_slot");
+      populateSlotConfigurationBody(body, spec, tpl, "nested_slot", "selectedSlotId");
 
       det.addEventListener("toggle", () => {
         if (det.open) {
@@ -808,7 +1067,7 @@
             }
           });
         }
-        syncHorizontalTilesWithOpenExpander(panelRoot);
+        syncHorizontalTilesWithOpenExpander(panelRoot, "selectedSlotId");
       });
 
       det.append(summary, body);
@@ -819,21 +1078,94 @@
     return card;
   }
 
-  /* Single-Slot Inline Component Editor (Evaluate Rule Row Expansion - Zero Dropdown) */
-  function buildInlineComponentEditor(slotId) {
-    const spec = state.slotById[slotId] || state.slotCatalog[0];
-    const tpl = state.workingTemplate;
-    const card = el("div", "surface-card form-stack");
-    if (!spec || !tpl) return card;
+  /* Reusable Sortable + Filterable 10-Component Cost Breakdown Sub-Table */
+  function buildSortableComponentCostSubTable(componentCosts, captionText, tableKey) {
+    const subWrap = el("div", "table-wrap");
+    const subTbl = el("table", "data-table");
+    subTbl.appendChild(el("caption", "", captionText));
 
-    card.appendChild(
-      el("h3", "section-heading", `${spec.step}. ${spec.functional_name} Configuration`)
+    const cols = [
+      {
+        key: "functional_name",
+        label: "Functional Component",
+        type: "string",
+        filterType: "text",
+        getValue: (c) => c.functional_name || c.capability_name || "",
+      },
+      {
+        key: "pillar",
+        label: "Pillar",
+        type: "string",
+        filterType: "select",
+        getValue: (c) => c.pillar || "Control",
+      },
+      {
+        key: "provider_display_name",
+        label: "Selected Component",
+        type: "string",
+        filterType: "text",
+        getValue: (c) => c.provider_display_name || "",
+      },
+      {
+        key: "monthly_cost_usd",
+        label: "Monthly Cost",
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.monthly_cost_usd || 0),
+        getFilterText: (c) => formatUsd(c.monthly_cost_usd),
+      },
+      {
+        key: "historical_cumulative_usd",
+        label: "Cumulative Spend",
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.historical_cumulative_usd || 0),
+        getFilterText: (c) => formatUsd(c.historical_cumulative_usd),
+      },
+    ];
+
+    const srcRows = componentCosts || [];
+    const processed = applyTableSortAndFilters(
+      srcRows,
+      cols,
+      tableKey,
+      "monthly_cost_usd",
+      "desc"
     );
-    populateSlotConfigurationBody(card, spec, tpl, "eval_slot");
-    return card;
+    const activeBanner = buildActiveFiltersBanner(tableKey, processed.length, srcRows.length, null);
+    if (activeBanner) {
+      subWrap.appendChild(activeBanner);
+    }
+
+    subTbl.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: srcRows,
+        defaultSortCol: "monthly_cost_usd",
+        defaultSortDir: "desc",
+        paginationState: null,
+      })
+    );
+
+    const stb = el("tbody");
+    processed.forEach((c) => {
+      const r = el("tr");
+      r.appendChild(el("td", "", c.functional_name || c.capability_name));
+      r.appendChild(el("td", "", c.pillar || "Control"));
+      r.appendChild(el("td", "", c.provider_display_name));
+      r.appendChild(el("td", "", formatUsd(c.monthly_cost_usd)));
+      r.appendChild(el("td", "", formatUsd(c.historical_cumulative_usd)));
+      stb.appendChild(r);
+    });
+    subTbl.appendChild(stb);
+    subWrap.appendChild(subTbl);
+    return subWrap;
   }
 
-  /* Stage Renderers */
+  /* =========================================================================
+   * Stage Renderers (Build, Evaluate, Deploy, Govern)
+   * ========================================================================= */
   function renderStageBody() {
     const root = document.getElementById("stage-body-content");
     if (!root) return;
@@ -848,121 +1180,148 @@
     } else {
       renderGovernStage(root);
     }
+
+    if (state.pendingFocusRestore) {
+      const { id, start, end } = state.pendingFocusRestore;
+      state.pendingFocusRestore = null;
+      const target = document.getElementById(id);
+      if (target && typeof target.focus === "function") {
+        target.focus();
+        if (typeof target.setSelectionRange === "function") {
+          try {
+            target.setSelectionRange(start, end);
+          } catch (_) {
+            /* non-text input */
+          }
+        }
+      }
+    }
   }
 
+  /* ------------------------------ 1. BUILD ------------------------------ */
   function renderBuildStage(root) {
     const terms = (state.tenant && state.tenant.terminology) || {};
     const toolbar = el("div", "toolbar-row");
-    const left = el("div", "toolbar-left");
-    left.appendChild(el("h1", "strip-title", "Agent Instances"));
-
-    const filterLabel = el("label", "visually-hidden", "Filter agent instances");
-    filterLabel.setAttribute("for", "agent-table-filter");
-    const filterInput = el("input", "search-input");
-    filterInput.type = "search";
-    filterInput.id = "agent-table-filter";
-    filterInput.placeholder = "Filter by Agent ID, BU, or App ID...";
-    filterInput.value = state.agentSearchFilter;
-    filterInput.addEventListener("input", (e) => {
-      state.agentSearchFilter = e.target.value;
-      state.buildPagination.page = 1;
-      renderStageBody();
-      const restored = document.getElementById("agent-table-filter");
-      if (restored) {
-        restored.focus();
-        restored.setSelectionRange(restored.value.length, restored.value.length);
-      }
-    });
-
-    const stFilterLbl = el("label", "visually-hidden", "Filter by lifecycle status");
-    stFilterLbl.setAttribute("for", "agent-status-filter");
-    const stFilterSel = el("select", "inline-select");
-    stFilterSel.id = "agent-status-filter";
-    [
-      ["all", "All Statuses"],
-      ["DEPLOYED", "Deployed"],
-      ["DRAFT", "Draft"],
-    ].forEach(([val, txt]) => {
-      const o = el("option", "", txt);
-      o.value = val;
-      if (state.agentStatusFilter === val) o.selected = true;
-      stFilterSel.appendChild(o);
-    });
-    stFilterSel.addEventListener("change", () => {
-      state.agentStatusFilter = stFilterSel.value;
-      state.buildPagination.page = 1;
-      renderStageBody();
-    });
-
-    left.append(filterLabel, filterInput, stFilterLbl, stFilterSel);
+    toolbar.appendChild(el("h1", "strip-title", "Agent Instances"));
 
     const right = el("div", "toolbar-right");
     const newBtn = el("button", "primary-btn", "+ New Agent");
     newBtn.type = "button";
     newBtn.addEventListener("click", () => openNewAgentModal());
     right.appendChild(newBtn);
-
-    toolbar.append(left, right);
+    toolbar.appendChild(right);
     root.appendChild(toolbar);
 
+    const tableKey = "build-agents";
+    const cols = [
+      {
+        key: "agent_name",
+        label: "Agent ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.agent_name,
+      },
+      {
+        key: "lifecycle_status",
+        label: "Status",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["DEPLOYED", "Deployed"],
+          ["DRAFT", "Draft"],
+        ],
+        getValue: (r) => r.lifecycle_status || "DRAFT",
+      },
+      {
+        key: "updated_at",
+        label: "Last Activity",
+        type: "date",
+        filterType: "text",
+        getValue: (r) => r.updated_at || "",
+        getFilterText: (r) => `${r.updated_display || ""} ${r.updated_at || ""}`,
+      },
+      {
+        key: "business_unit_label",
+        label: "Business Unit",
+        type: "string",
+        filterType: "select",
+        getValue: (r) => r.business_unit_label || buLabel(r.business_unit),
+      },
+      {
+        key: "app_id",
+        label: terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.app_id || "",
+      },
+      {
+        key: "intake_id",
+        label: terms.intake_col_label || "ATLAS Intake ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.intake_id || "Pending",
+      },
+      {
+        key: "risk_tier",
+        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["ag1", "ag1"],
+          ["ag2", "ag2"],
+          ["ag3", "ag3"],
+          ["ag4", "ag4"],
+        ],
+        getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
+      },
+    ];
+
+    const processed = applyTableSortAndFilters(
+      state.templates,
+      cols,
+      tableKey,
+      "updated_at",
+      "desc"
+    );
+
+    const totalPages = Math.max(1, Math.ceil(processed.length / state.buildPagination.pageSize));
+    if (state.buildPagination.page > totalPages) {
+      state.buildPagination.page = totalPages;
+    }
+    const pageStart = (state.buildPagination.page - 1) * state.buildPagination.pageSize;
+    const pagedItems = processed.slice(pageStart, pageStart + state.buildPagination.pageSize);
+
     const tableWrap = el("div", "table-wrap");
+    const activeBanner = buildActiveFiltersBanner(
+      tableKey,
+      processed.length,
+      state.templates.length,
+      state.buildPagination
+    );
+    if (activeBanner) {
+      tableWrap.appendChild(activeBanner);
+    }
+
     const table = el("table", "data-table");
     table.appendChild(
       el(
         "caption",
         "",
-        "Sorted newest-first by activity. Select any agent row to expand its 10 functional blocks, template controls, metadata, and component configuration."
+        "Sorted newest-first by activity. Select any agent row to expand its 10 horizontal blocks, metadata, and nested component expanders."
       )
     );
-
-    const thead = el("thead");
-    const hr = el("tr");
-    const cols = [
-      "Agent ID",
-      "Status",
-      "Last Activity",
-      "Business Unit",
-      terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
-      terms.intake_col_label || "ATLAS Intake ID",
-      terms.risk_col_label || "SENTINEL Agency Tier",
-    ];
-    cols.forEach((c) => {
-      const th = el("th", "", c);
-      th.scope = "col";
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    table.appendChild(thead);
+    table.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: state.templates,
+        defaultSortCol: "updated_at",
+        defaultSortDir: "desc",
+        paginationState: state.buildPagination,
+      })
+    );
 
     const tbody = el("tbody");
-    const q = state.agentSearchFilter.trim().toLowerCase();
-    const sortedTemplates = [...state.templates].sort((a, b) =>
-      String(b.updated_at || "").localeCompare(String(a.updated_at || ""))
-    );
-    const filtered = sortedTemplates.filter((item) => {
-      if (
-        state.agentStatusFilter !== "all" &&
-        (item.lifecycle_status || "DRAFT") !== state.agentStatusFilter
-      ) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        String(item.agent_name).toLowerCase().includes(q) ||
-        String(item.business_unit_label || "").toLowerCase().includes(q) ||
-        String(item.app_id || "").toLowerCase().includes(q) ||
-        String(item.intake_id || "").toLowerCase().includes(q) ||
-        String(item.latest_deployment_id || "").toLowerCase().includes(q)
-      );
-    });
-
-    const totalPages = Math.max(1, Math.ceil(filtered.length / state.buildPagination.pageSize));
-    if (state.buildPagination.page > totalPages) {
-      state.buildPagination.page = totalPages;
-    }
-    const pageStart = (state.buildPagination.page - 1) * state.buildPagination.pageSize;
-    const pagedItems = filtered.slice(pageStart, pageStart + state.buildPagination.pageSize);
-
     pagedItems.forEach((item) => {
       const isExpanded = state.expandedAgentId === item.template_id;
       const isDeployed = item.lifecycle_status === "DEPLOYED";
@@ -980,7 +1339,7 @@
       selBtn.appendChild(el("span", "", item.agent_name));
       selBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        toggleAgentRowExpansion(item);
+        toggleAgentRowExpansion(item, "expandedAgentId");
       });
       tdId.appendChild(selBtn);
 
@@ -1000,7 +1359,7 @@
       const tdRisk = el("td", "", String(item.risk_tier || "AG2").toLowerCase());
 
       tr.append(tdId, tdStatus, tdUpd, tdBu, tdApp, tdIntake, tdRisk);
-      tr.addEventListener("click", () => toggleAgentRowExpansion(item));
+      tr.addEventListener("click", () => toggleAgentRowExpansion(item, "expandedAgentId"));
       tbody.appendChild(tr);
 
       if (isExpanded && state.workingTemplate) {
@@ -1012,7 +1371,7 @@
     tableWrap.appendChild(table);
     tableWrap.appendChild(
       buildPaginationControls({
-        totalItems: filtered.length,
+        totalItems: processed.length,
         paginationState: state.buildPagination,
         navLabel: "Agent instances pages",
         idPrefix: "build-agents",
@@ -1076,19 +1435,24 @@
     evalBtn.type = "button";
     evalBtn.addEventListener("click", async () => {
       await refreshEvaluation(false);
-      setStage("evaluate");
+      if (state.currentEvaluation) {
+        const firstFail = (state.currentEvaluation.rule_results || []).find(
+          (r) => r.status === "FAILED"
+        );
+        state.selectedEvalSlotId = firstFail ? firstFail.slot_id : "identity_access";
+      }
+      jumpToAgentOnStage("evaluate", tpl.template_id);
     });
 
     actionRight.append(impBtn, expBtn, saveBtn, evalBtn);
     bar.append(fs, actionRight);
     panel.appendChild(bar);
 
-    // 2. Full-Width 10 Horizontal Functional Blocks (Scoped to This Agent Instance)
-    panel.appendChild(buildInstanceTenTileStrip(tpl, panel));
+    // 2. Full-Width 10 Horizontal Functional Blocks
+    panel.appendChild(buildInstanceTenTileStrip(tpl, panel, null, "selectedSlotId"));
 
     // 3. Two-Column Body: Left = Instance Metadata | Right = 10 Nested Functional Component Expanders
     const twoCol = el("div", "instance-2col-grid");
-
     const metaCard = el("div", "surface-card form-stack");
     metaCard.appendChild(el("h3", "section-heading", "Agent Instance Metadata"));
 
@@ -1215,60 +1579,215 @@
     return expTr;
   }
 
+  /* ----------------------------- 2. EVALUATE ---------------------------- */
   function renderEvaluateStage(root) {
-    const ev = state.currentEvaluation;
-    const tpl = state.workingTemplate;
-    if (!ev || !tpl) return;
-
+    const terms = (state.tenant && state.tenant.terminology) || {};
     const headRow = el("div", "toolbar-row");
     headRow.appendChild(el("h1", "strip-title", "Governance Readiness & Evaluation"));
     root.appendChild(headRow);
-    root.appendChild(buildActiveAgentContextBar("evaluate"));
 
-    const kpiRow = el("div", "kpi-grid-5");
-    const mainScoreCard = el("div", "surface-card hero-metric-card");
-    mainScoreCard.appendChild(el("p", "kpi-label", "Overall Governance Readiness"));
-    mainScoreCard.appendChild(el("p", "kpi-value", `${ev.overall_score.toFixed(1)} / 100`));
-    const gateBadge = el(
-      "span",
-      ev.gate_passed ? "status-badge status-ok" : "status-badge status-err",
-      ev.gate_passed
-        ? "[OK] Gate Passed"
-        : `[!] ${ev.mandatory_failures_count} Blocking Gate(s)`
+    const tableKey = "eval-agents";
+    const cols = [
+      {
+        key: "agent_name",
+        label: "Agent ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.agent_name,
+      },
+      {
+        key: "lifecycle_status",
+        label: "Status",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["DEPLOYED", "Deployed"],
+          ["DRAFT", "Draft"],
+        ],
+        getValue: (r) => r.lifecycle_status || "DRAFT",
+      },
+      {
+        key: "updated_at",
+        label: "Last Activity",
+        type: "date",
+        filterType: "text",
+        getValue: (r) => r.updated_at || "",
+        getFilterText: (r) => `${r.updated_display || ""} ${r.updated_at || ""}`,
+      },
+      {
+        key: "business_unit_label",
+        label: "Business Unit",
+        type: "string",
+        filterType: "select",
+        getValue: (r) => r.business_unit_label || buLabel(r.business_unit),
+      },
+      {
+        key: "risk_tier",
+        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["ag1", "ag1"],
+          ["ag2", "ag2"],
+          ["ag3", "ag3"],
+          ["ag4", "ag4"],
+        ],
+        getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
+      },
+      {
+        key: "latest_eval_score",
+        label: "Readiness Score",
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.latest_eval_score ?? 0),
+        getFilterText: (r) => `${Number(r.latest_eval_score ?? 0).toFixed(1)}`,
+      },
+      {
+        key: "gate_verdict_label",
+        label: "Gate Verdict",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Ready", "Ready"],
+          ["Remediation Needed", "Remediation Needed"],
+        ],
+        getValue: (r) => resolveGateVerdictLabel(r),
+      },
+      {
+        key: "recommendations_count",
+        label: "Open Findings",
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.recommendations_count ?? 0),
+      },
+    ];
+
+    const processed = applyTableSortAndFilters(
+      state.templates,
+      cols,
+      tableKey,
+      "updated_at",
+      "desc"
     );
-    mainScoreCard.appendChild(gateBadge);
-    mainScoreCard.appendChild(
+
+    const totalPages = Math.max(1, Math.ceil(processed.length / state.evalPagination.pageSize));
+    if (state.evalPagination.page > totalPages) {
+      state.evalPagination.page = totalPages;
+    }
+    const pageStart = (state.evalPagination.page - 1) * state.evalPagination.pageSize;
+    const pagedItems = processed.slice(pageStart, pageStart + state.evalPagination.pageSize);
+
+    const tableWrap = el("div", "table-wrap");
+    const activeBanner = buildActiveFiltersBanner(
+      tableKey,
+      processed.length,
+      state.templates.length,
+      state.evalPagination
+    );
+    if (activeBanner) {
+      tableWrap.appendChild(activeBanner);
+    }
+
+    const table = el("table", "data-table");
+    table.appendChild(
       el(
-        "p",
-        "kpi-sub",
-        `Required: >= ${ev.passing_threshold.toFixed(1)} | Est. Run-Rate: ${formatUsd(
-          ev.cost_estimate.monthly_run_rate_usd
-        )}/mo`
+        "caption",
+        "",
+        "Select any agent instance row to expand its readiness KPIs, 10 horizontal status blocks, and 10 nested Rule & Remediation expanders."
       )
     );
-    kpiRow.appendChild(mainScoreCard);
+    table.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: state.templates,
+        defaultSortCol: "updated_at",
+        defaultSortDir: "desc",
+        paginationState: state.evalPagination,
+      })
+    );
 
-    ["Control", "Intelligence", "Economics", "Experience"].forEach((pillar) => {
-      const pData = (ev.pillar_scores && ev.pillar_scores[pillar]) || {
-        earned_pts: 0,
-        possible_pts: 0,
-        pct: 100,
-      };
-      const pCard = el("div", "surface-card");
-      pCard.appendChild(el("p", "kpi-label", `${pillar} Pillar`));
-      pCard.appendChild(el("p", "kpi-value", `${pData.pct.toFixed(0)}%`));
-      const meter = el("progress", "meter-bar");
-      meter.max = 100;
-      meter.value = pData.pct;
-      pCard.appendChild(meter);
-      pCard.appendChild(
-        el("p", "kpi-sub", `${pData.earned_pts} / ${pData.possible_pts} rubric pts`)
+    const tbody = el("tbody");
+    pagedItems.forEach((item) => {
+      const isExpanded = state.expandedEvalAgentId === item.template_id;
+      const isDeployed = item.lifecycle_status === "DEPLOYED";
+      const scoreVal = Number(item.latest_eval_score ?? 0);
+      const gateOk = Boolean(item.gate_passed);
+      const recCnt = Number(item.recommendations_count ?? 0);
+
+      const tr = el("tr", "clickable-row");
+      if (isExpanded) {
+        tr.classList.add("is-active-agent-row", "is-expanded-parent");
+      }
+
+      const tdId = el("td");
+      const selBtn = el("button", "row-select-btn");
+      selBtn.type = "button";
+      selBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      selBtn.appendChild(el("span", "row-chevron", isExpanded ? "\u25BE" : "\u25B8"));
+      selBtn.appendChild(el("span", "", item.agent_name));
+      selBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        toggleAgentRowExpansion(item, "expandedEvalAgentId");
+      });
+      tdId.appendChild(selBtn);
+
+      const tdStatus = el("td");
+      tdStatus.appendChild(
+        el(
+          "span",
+          isDeployed ? "status-badge status-ok" : "status-badge status-draft",
+          isDeployed ? "Deployed" : "Draft"
+        )
       );
-      kpiRow.appendChild(pCard);
-    });
-    root.appendChild(kpiRow);
 
-    const actionCard = el("div", "surface-card toolbar-row");
+      const tdUpd = el("td", "", item.updated_display || item.updated_at || "--");
+      const tdBu = el("td", "", item.business_unit_label || buLabel(item.business_unit));
+      const tdRisk = el("td", "", String(item.risk_tier || "AG2").toLowerCase());
+      const tdScore = el("td", "", `${scoreVal.toFixed(1)} / 100`);
+
+      const tdGate = el("td");
+      tdGate.appendChild(
+        el(
+          "span",
+          gateOk ? "status-badge status-ok" : "status-badge status-err",
+          gateOk ? "[OK] Ready" : "[!] Remediation Needed"
+        )
+      );
+
+      const tdRecs = el("td", "", recCnt > 0 ? `${recCnt} open` : "0");
+
+      tr.append(tdId, tdStatus, tdUpd, tdBu, tdRisk, tdScore, tdGate, tdRecs);
+      tr.addEventListener("click", () => toggleAgentRowExpansion(item, "expandedEvalAgentId"));
+      tbody.appendChild(tr);
+
+      if (isExpanded && state.workingTemplate && state.currentEvaluation) {
+        tbody.appendChild(buildExpandedEvaluateRow(state.workingTemplate, state.currentEvaluation));
+      }
+    });
+
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    tableWrap.appendChild(
+      buildPaginationControls({
+        totalItems: processed.length,
+        paginationState: state.evalPagination,
+        navLabel: "Evaluation instances pages",
+        idPrefix: "eval-agents",
+      })
+    );
+    root.appendChild(tableWrap);
+  }
+
+  function buildExpandedEvaluateRow(tpl, ev) {
+    const expTr = el("tr", "expanded-editor-row");
+    const td = el("td", "expanded-editor-cell");
+    td.colSpan = 8;
+
+    const panel = el("div", "expanded-instance-panel");
+
+    // 1. Instance Action Bar
+    const bar = el("div", "instance-toolbar");
     const leftInfo = el("div", "toolbar-left");
     leftInfo.appendChild(
       el(
@@ -1281,12 +1800,16 @@
       el(
         "span",
         "field-hint",
-        "Optimize prompt traces or expand any capability row below to adjust selections."
+        "Select any horizontal block or nested rule expander below to remediate or configure."
       )
     );
 
     const rightBtns = el("div", "toolbar-right");
-    const optBtn = el("button", "secondary-btn", "Optimize Prompt & Traces");
+    const openBuildBtn = el("button", "secondary-btn sm-btn", "Open in Build");
+    openBuildBtn.type = "button";
+    openBuildBtn.addEventListener("click", () => jumpToAgentOnStage("build", tpl.template_id));
+
+    const optBtn = el("button", "secondary-btn sm-btn", "Optimize Prompt & Traces");
     optBtn.type = "button";
     optBtn.addEventListener("click", async () => {
       optBtn.disabled = true;
@@ -1312,7 +1835,7 @@
       }
     });
 
-    const auditBtn = el("button", "secondary-btn", "Run ADK Workflow Audit");
+    const auditBtn = el("button", "secondary-btn sm-btn", "Run ADK Workflow Audit");
     auditBtn.type = "button";
     auditBtn.addEventListener("click", async () => {
       auditBtn.disabled = true;
@@ -1343,54 +1866,153 @@
       }
     });
 
-    const toDeployBtn = el("button", "primary-btn", "Proceed to Deploy ->");
+    const toDeployBtn = el("button", "primary-btn sm-btn", "Proceed to Deploy ->");
     toDeployBtn.type = "button";
-    toDeployBtn.addEventListener("click", () => setStage("deploy"));
+    toDeployBtn.addEventListener("click", () => {
+      state.selectedDeploySection = "approval";
+      jumpToAgentOnStage("deploy", tpl.template_id);
+    });
 
-    rightBtns.append(optBtn, auditBtn, toDeployBtn);
-    actionCard.append(leftInfo, rightBtns);
-    root.appendChild(actionCard);
+    rightBtns.append(openBuildBtn, optBtn, auditBtn, toDeployBtn);
+    bar.append(leftInfo, rightBtns);
+    panel.appendChild(bar);
 
-    const recs = ev.recommendations || [];
-    if (recs.length > 0) {
-      root.appendChild(
-        el("h2", "section-heading", `Remediation Queue (${recs.length} Open Finding(s))`)
+    // 2. Compact 5-KPI Readiness & Pillar Strip
+    const kpiRow = el("div", "kpi-grid-5");
+    const mainScoreCard = el("div", "surface-card hero-metric-card");
+    mainScoreCard.appendChild(el("p", "kpi-label", "Overall Governance Readiness"));
+    mainScoreCard.appendChild(el("p", "kpi-value", `${ev.overall_score.toFixed(1)} / 100`));
+    mainScoreCard.appendChild(
+      el(
+        "span",
+        ev.gate_passed ? "status-badge status-ok" : "status-badge status-err",
+        ev.gate_passed
+          ? "[OK] Gate Passed"
+          : `[!] ${ev.mandatory_failures_count} Blocking Gate(s)`
+      )
+    );
+    mainScoreCard.appendChild(
+      el(
+        "p",
+        "kpi-sub",
+        `Required: >= ${ev.passing_threshold.toFixed(1)} | Est. Run-Rate: ${formatUsd(
+          ev.cost_estimate.monthly_run_rate_usd
+        )}/mo`
+      )
+    );
+    kpiRow.appendChild(mainScoreCard);
+
+    ["Control", "Intelligence", "Economics", "Experience"].forEach((pillar) => {
+      const pData = (ev.pillar_scores && ev.pillar_scores[pillar]) || {
+        earned_pts: 0,
+        possible_pts: 0,
+        pct: 100,
+      };
+      const pCard = el("div", "surface-card");
+      pCard.appendChild(el("p", "kpi-label", `${pillar} Pillar`));
+      pCard.appendChild(el("p", "kpi-value", `${pData.pct.toFixed(0)}%`));
+      const meter = el("progress", "meter-bar");
+      meter.max = 100;
+      meter.value = pData.pct;
+      pCard.appendChild(meter);
+      pCard.appendChild(
+        el("p", "kpi-sub", `${pData.earned_pts} / ${pData.possible_pts} rubric pts`)
       );
-      const grid = el("div", "remediation-list");
-      recs.forEach((rec) => {
-        const card = el(
+      kpiRow.appendChild(pCard);
+    });
+    panel.appendChild(kpiRow);
+
+    // 3. 10 Horizontal Functional Status Blocks
+    panel.appendChild(buildInstanceTenTileStrip(tpl, panel, ev, "selectedEvalSlotId"));
+
+    // 4. 10 Nested Rule & Remediation Expanders
+    panel.appendChild(buildNestedEvaluateExpanders(tpl, ev, panel));
+
+    td.appendChild(panel);
+    expTr.appendChild(td);
+    return expTr;
+  }
+
+  function buildNestedEvaluateExpanders(tpl, ev, panelRoot) {
+    const card = el("div", "surface-card nested-expanders-card");
+    const openCnt = (ev.recommendations || []).length;
+    card.appendChild(
+      el(
+        "h3",
+        "section-heading",
+        `${ev.rubric_name} - 10 Governance Rules (${openCnt} Open Finding(s))`
+      )
+    );
+
+    const recByRule = {};
+    (ev.recommendations || []).forEach((rec) => {
+      recByRule[rec.rule_id] = rec;
+    });
+
+    const stack = el("div", "nested-expanders-stack");
+    const groupName = `eval-accordion-${tpl.template_id}`;
+
+    (ev.rule_results || []).forEach((r) => {
+      const spec = state.slotById[r.slot_id] || state.slotCatalog[0];
+      const rec = recByRule[r.rule_id] || null;
+
+      const det = el("details", "component-expander");
+      det.setAttribute("name", groupName);
+      det.dataset.slotId = r.slot_id;
+      if (state.selectedEvalSlotId === r.slot_id) {
+        det.open = true;
+      }
+
+      const summary = el("summary", "component-expander-summary");
+      const titleSpan = el(
+        "span",
+        "expander-title-group",
+        `${r.rule_id} (${r.functional_name}): ${r.title}`
+      );
+
+      const rightMeta = el("span", "expander-summary-right");
+      rightMeta.appendChild(el("span", "expander-choice-pill", `${r.weight_points} pts`));
+      rightMeta.appendChild(el("span", "expander-choice-pill", r.current_provider_label));
+      const badgeCls =
+        r.status === "PASSED"
+          ? "status-badge status-ok"
+          : r.status === "EXCEPTION_APPROVED"
+          ? "status-badge status-warn"
+          : r.mandatory
+          ? "status-badge status-err"
+          : "status-badge status-warn";
+      const badgeTxt =
+        r.status === "PASSED"
+          ? "PASSED"
+          : r.status === "EXCEPTION_APPROVED"
+          ? "EXCEPTION"
+          : r.mandatory
+          ? "[!] MANDATORY GATE"
+          : "[~] ADVISORY";
+      rightMeta.appendChild(el("span", badgeCls, badgeTxt));
+      summary.append(titleSpan, rightMeta);
+
+      const body = el("div", "component-expander-body");
+      if (rec) {
+        const callout = el(
           "div",
           rec.severity === "MANDATORY_GATE"
-            ? "remediation-card is-mandatory"
-            : "remediation-card is-advisory"
-        );
-        const top = el("div", "toolbar-row");
-        top.appendChild(
-          el(
-            "span",
-            rec.severity === "MANDATORY_GATE"
-              ? "status-badge status-err"
-              : "status-badge status-warn",
-            rec.severity === "MANDATORY_GATE" ? "[!] Mandatory Gate" : "[~] Advisory"
-          )
+            ? "finding-callout is-mandatory"
+            : "finding-callout is-advisory"
         );
         const deltaSign = rec.monthly_cost_delta_usd >= 0 ? "+" : "";
-        top.appendChild(
+        callout.appendChild(
           el(
-            "span",
-            "field-hint",
-            `${rec.pillar} | +${rec.score_uplift_pts} pts | ${deltaSign}${formatUsd(
+            "strong",
+            "",
+            `Finding (+${rec.score_uplift_pts} pts | ${deltaSign}${formatUsd(
               rec.monthly_cost_delta_usd
-            )}/mo`
+            )}/mo): ${rec.finding_detail}`
           )
         );
-
-        card.appendChild(top);
-        card.appendChild(el("strong", "", `${rec.functional_name}: ${rec.title}`));
-        card.appendChild(el("p", "kpi-sub", rec.finding_detail));
-        card.appendChild(
+        callout.appendChild(
           el(
-            "p",
+            "span",
             "field-hint",
             `Recommended: ${rec.recommended_provider_label} - ${rec.recommendation_summary}`
           )
@@ -1402,13 +2024,14 @@
         fixBtn.addEventListener("click", async () => {
           fixBtn.disabled = true;
           try {
-            const r = await apiPost("/api/templates/remediate", {
+            state.selectedEvalSlotId = r.slot_id;
+            const res = await apiPost("/api/templates/remediate", {
               template: state.workingTemplate,
               rule_id: rec.rule_id,
               action: "accept",
             });
-            state.workingTemplate = r.template;
-            state.currentEvaluation = r.evaluation;
+            state.workingTemplate = res.template;
+            state.currentEvaluation = res.evaluation;
             syncWorkingTemplateIntoList();
             renderHeaderAndBrand();
             renderStageBody();
@@ -1419,24 +2042,12 @@
           }
         });
 
-        const cfgBtn = el("button", "secondary-btn sm-btn", "Configure Component");
-        cfgBtn.type = "button";
-        cfgBtn.addEventListener("click", () => {
-          state.selectedSlotId = rec.slot_id;
-          state.expandedEvalRuleId = rec.rule_id;
-          renderStageBody();
-          const rowTarget = document.getElementById(`eval-rule-row-${rec.rule_id}`);
-          if (rowTarget) {
-            rowTarget.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-        });
-
         const excToggleBtn = el("button", "secondary-btn sm-btn", "Record Exception");
         excToggleBtn.type = "button";
 
         const excBox = el("div", "form-stack");
         excBox.hidden = true;
-        const excId = `exc-input-${rec.rule_id}`;
+        const excId = `exc-input-${tpl.template_id}-${rec.rule_id}`;
         const excLbl = el("label", "", "Policy Exception Justification");
         excLbl.setAttribute("for", excId);
         const excInput = el("input");
@@ -1448,14 +2059,15 @@
         excSubmit.type = "button";
         excSubmit.addEventListener("click", async () => {
           try {
-            const r = await apiPost("/api/templates/remediate", {
+            state.selectedEvalSlotId = r.slot_id;
+            const res = await apiPost("/api/templates/remediate", {
               template: state.workingTemplate,
               rule_id: rec.rule_id,
               action: "exception",
               exception_reason: excInput.value,
             });
-            state.workingTemplate = r.template;
-            state.currentEvaluation = r.evaluation;
+            state.workingTemplate = res.template;
+            state.currentEvaluation = res.evaluation;
             syncWorkingTemplateIntoList();
             renderHeaderAndBrand();
             renderStageBody();
@@ -1466,112 +2078,243 @@
         const excField = el("div", "field-group");
         excField.append(excLbl, excInput);
         excBox.append(excField, excSubmit);
-
         excToggleBtn.addEventListener("click", () => {
           excBox.hidden = !excBox.hidden;
         });
 
-        btnRow.append(fixBtn, cfgBtn, excToggleBtn);
-        card.append(btnRow, excBox);
-        grid.appendChild(card);
-      });
-      root.appendChild(grid);
-    }
-
-    // 10-Rule Governance Scorecard Table with Inline Row Expansion
-    const wrap = el("div", "table-wrap deferred-below-fold");
-    const tbl = el("table", "data-table");
-    tbl.appendChild(
-      el(
-        "caption",
-        "",
-        `${ev.rubric_name} - Select any rule row to expand inline component configuration`
-      )
-    );
-    const thead = el("thead");
-    const hr = el("tr");
-    ["Rule", "Component", "Pillar / Workstream", "Selected Component", "Weight", "Status"].forEach(
-      (h) => {
-        const th = el("th", "", h);
-        th.scope = "col";
-        hr.appendChild(th);
+        btnRow.append(fixBtn, excToggleBtn);
+        callout.append(btnRow, excBox);
+        body.appendChild(callout);
+      } else if (r.exception_note) {
+        body.appendChild(
+          el("p", "field-hint", `Approved Exception Recorded: ${r.exception_note}`)
+        );
       }
-    );
-    thead.appendChild(hr);
-    tbl.appendChild(thead);
 
-    const tbody = el("tbody");
-    (ev.rule_results || []).forEach((r) => {
-      const isExp = state.expandedEvalRuleId === r.rule_id;
-      const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
-      tr.id = `eval-rule-row-${r.rule_id}`;
-
-      const tdRule = el("td");
-      const rBtn = el("button", "row-select-btn");
-      rBtn.type = "button";
-      rBtn.setAttribute("aria-expanded", isExp ? "true" : "false");
-      rBtn.append(
-        el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
-        el("span", "", r.rule_id)
-      );
-      const toggleRule = () => {
-        state.expandedEvalRuleId = isExp ? null : r.rule_id;
-        state.selectedSlotId = r.slot_id;
-        renderStageBody();
-      };
-      rBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleRule();
-      });
-      tdRule.appendChild(rBtn);
-
-      tr.appendChild(tdRule);
-      tr.appendChild(el("td", "", r.functional_name));
-      tr.appendChild(el("td", "", `${r.pillar} - ${r.workstream}`));
-      tr.appendChild(el("td", "", r.current_provider_label));
-      tr.appendChild(el("td", "", `${r.weight_points} pts`));
-      const tdSt = el("td");
-      const cls =
-        r.status === "PASSED"
-          ? "status-badge status-ok"
-          : r.status === "EXCEPTION_APPROVED"
-          ? "status-badge status-warn"
-          : "status-badge status-err";
-      tdSt.appendChild(el("span", cls, r.status));
-      tr.appendChild(tdSt);
-      tr.addEventListener("click", toggleRule);
-      tbody.appendChild(tr);
-
-      if (isExp) {
-        const expTr = el("tr", "expanded-editor-row");
-        const expTd = el("td", "expanded-editor-cell");
-        expTd.colSpan = 6;
-        const panel = el("div", "expanded-instance-panel");
-        panel.appendChild(buildInlineComponentEditor(r.slot_id));
-        expTd.appendChild(panel);
-        expTr.appendChild(expTd);
-        tbody.appendChild(expTr);
+      if (spec) {
+        populateSlotConfigurationBody(
+          body,
+          spec,
+          tpl,
+          `eval_nested_${r.rule_id}`,
+          "selectedEvalSlotId"
+        );
       }
+
+      det.addEventListener("toggle", () => {
+        if (det.open) {
+          stack.querySelectorAll("details.component-expander[open]").forEach((other) => {
+            if (other !== det) {
+              other.open = false;
+            }
+          });
+        }
+        syncHorizontalTilesWithOpenExpander(panelRoot, "selectedEvalSlotId");
+      });
+
+      det.append(summary, body);
+      stack.appendChild(det);
     });
-    tbl.appendChild(tbody);
-    wrap.appendChild(tbl);
-    root.appendChild(wrap);
+
+    card.appendChild(stack);
+    return card;
   }
 
+  /* ------------------------------ 3. DEPLOY ----------------------------- */
   function renderDeployStage(root) {
-    const ev = state.currentEvaluation;
-    const tpl = state.workingTemplate;
-    if (!ev || !tpl) return;
-
+    const terms = (state.tenant && state.tenant.terminology) || {};
     const headRow = el("div", "toolbar-row");
     headRow.appendChild(el("h1", "strip-title", "Release & Deployment Gate"));
     root.appendChild(headRow);
-    root.appendChild(buildActiveAgentContextBar("deploy"));
 
-    const gateCard = el("div", "surface-card form-stack");
-    const topBar = el("div", "toolbar-row");
+    const tableKey = "deploy-agents";
+    const cols = [
+      {
+        key: "agent_name",
+        label: "Agent ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.agent_name,
+      },
+      {
+        key: "release_state",
+        label: "Release State",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Deployed", "Deployed"],
+          ["Ready to Deploy", "Ready to Deploy"],
+          ["Gate Blocked", "Gate Blocked"],
+        ],
+        getValue: (r) => resolveReleaseStateLabel(r),
+      },
+      {
+        key: "latest_deployment_id",
+        label: "Deployment ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.latest_deployment_id || "Pending",
+      },
+      {
+        key: "updated_at",
+        label: "Last Activity",
+        type: "date",
+        filterType: "text",
+        getValue: (r) => r.updated_at || "",
+        getFilterText: (r) => `${r.updated_display || ""} ${r.updated_at || ""}`,
+      },
+      {
+        key: "business_unit_label",
+        label: "Business Unit",
+        type: "string",
+        filterType: "select",
+        getValue: (r) => r.business_unit_label || buLabel(r.business_unit),
+      },
+      {
+        key: "risk_tier",
+        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["ag1", "ag1"],
+          ["ag2", "ag2"],
+          ["ag3", "ag3"],
+          ["ag4", "ag4"],
+        ],
+        getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
+      },
+      {
+        key: "latest_eval_score",
+        label: "Readiness Score",
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.latest_eval_score ?? 0),
+        getFilterText: (r) => `${Number(r.latest_eval_score ?? 0).toFixed(1)}`,
+      },
+      {
+        key: "monthly_run_rate_usd",
+        label: "Monthly Run-Rate",
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.monthly_run_rate_usd ?? 0),
+        getFilterText: (r) => formatUsd(r.monthly_run_rate_usd),
+      },
+    ];
+
+    const processed = applyTableSortAndFilters(
+      state.templates,
+      cols,
+      tableKey,
+      "updated_at",
+      "desc"
+    );
+
+    const totalPages = Math.max(1, Math.ceil(processed.length / state.deployPagination.pageSize));
+    if (state.deployPagination.page > totalPages) {
+      state.deployPagination.page = totalPages;
+    }
+    const pageStart = (state.deployPagination.page - 1) * state.deployPagination.pageSize;
+    const pagedItems = processed.slice(pageStart, pageStart + state.deployPagination.pageSize);
+
+    const tableWrap = el("div", "table-wrap");
+    const activeBanner = buildActiveFiltersBanner(
+      tableKey,
+      processed.length,
+      state.templates.length,
+      state.deployPagination
+    );
+    if (activeBanner) {
+      tableWrap.appendChild(activeBanner);
+    }
+
+    const table = el("table", "data-table");
+    table.appendChild(
+      el(
+        "caption",
+        "",
+        "Sorted newest-first. Select any agent row to expand its Release Gate, Generated Terraform Module, Dynamic Guardrail Policy, and 10-Component Cost Attribution."
+      )
+    );
+    table.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: state.templates,
+        defaultSortCol: "updated_at",
+        defaultSortDir: "desc",
+        paginationState: state.deployPagination,
+      })
+    );
+
+    const tbody = el("tbody");
+    pagedItems.forEach((item) => {
+      const isExpanded = state.expandedDeployAgentId === item.template_id;
+      const relState = resolveReleaseStateLabel(item);
+      const scoreVal = Number(item.latest_eval_score ?? 0);
+
+      const tr = el("tr", "clickable-row");
+      if (isExpanded) {
+        tr.classList.add("is-active-agent-row", "is-expanded-parent");
+      }
+
+      const tdId = el("td");
+      const selBtn = el("button", "row-select-btn");
+      selBtn.type = "button";
+      selBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      selBtn.appendChild(el("span", "row-chevron", isExpanded ? "\u25BE" : "\u25B8"));
+      selBtn.appendChild(el("span", "", item.agent_name));
+      selBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        toggleAgentRowExpansion(item, "expandedDeployAgentId");
+      });
+      tdId.appendChild(selBtn);
+
+      const tdState = el("td");
+      const stCls =
+        relState === "Deployed"
+          ? "status-badge status-ok"
+          : relState === "Ready to Deploy"
+          ? "status-badge status-draft"
+          : "status-badge status-err";
+      tdState.appendChild(el("span", stCls, relState));
+
+      const tdDepId = el("td", "", item.latest_deployment_id || "Pending");
+      const tdUpd = el("td", "", item.updated_display || item.updated_at || "--");
+      const tdBu = el("td", "", item.business_unit_label || buLabel(item.business_unit));
+      const tdRisk = el("td", "", String(item.risk_tier || "AG2").toLowerCase());
+      const tdScore = el("td", "", `${scoreVal.toFixed(1)} / 100`);
+      const tdCost = el("td", "", formatUsd(item.monthly_run_rate_usd));
+
+      tr.append(tdId, tdState, tdDepId, tdUpd, tdBu, tdRisk, tdScore, tdCost);
+      tr.addEventListener("click", () => toggleAgentRowExpansion(item, "expandedDeployAgentId"));
+      tbody.appendChild(tr);
+
+      if (isExpanded && state.workingTemplate && state.currentEvaluation) {
+        tbody.appendChild(buildExpandedDeployRow(state.workingTemplate, state.currentEvaluation));
+      }
+    });
+
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    tableWrap.appendChild(
+      buildPaginationControls({
+        totalItems: processed.length,
+        paginationState: state.deployPagination,
+        navLabel: "Release and deployment instances pages",
+        idPrefix: "deploy-agents",
+      })
+    );
+    root.appendChild(tableWrap);
+  }
+
+  function buildExpandedDeployRow(tpl, ev) {
+    const expTr = el("tr", "expanded-editor-row");
+    const td = el("td", "expanded-editor-cell");
+    td.colSpan = 8;
+
+    const panel = el("div", "expanded-instance-panel");
+    const bar = el("div", "instance-toolbar");
     const left = el("div", "toolbar-left");
-    left.appendChild(el("h2", "section-heading", `Release & Deployment Gate: ${tpl.agent_name}`));
     left.appendChild(
       el(
         "span",
@@ -1581,222 +2324,399 @@
           : `[!] Gate Blocked (${ev.overall_score.toFixed(1)} / ${ev.passing_threshold.toFixed(1)})`
       )
     );
-    topBar.appendChild(left);
-    gateCard.appendChild(topBar);
-
-    const kpis = el("div", "kpi-grid-4");
-    const cEst = ev.cost_estimate;
-    [
-      [
-        "Projected Monthly Run-Rate",
-        formatUsd(cEst.monthly_run_rate_usd),
-        `${cEst.estimated_monthly_turns_millions}M turns/mo`,
-      ],
-      [
-        "One-Time Onboarding & Eval",
-        formatUsd(cEst.onboarding_eval_cost_usd),
-        "Initial provisioning & benchmarks",
-      ],
-      [
-        "Monthly Consolidation Delta",
-        formatUsd(cEst.monthly_savings_usd),
-        `vs. ${customerShortName()} baseline`,
-      ],
-      [
-        "SENTINEL Agency Tier",
-        tpl.risk_tier,
-        tpl.risk_tier === "AG3" || tpl.risk_tier === "AG4"
-          ? "Reviewer sign-off enforced"
-          : "Automated release eligible",
-      ],
-    ].forEach(([lbl, val, sub], idx) => {
-      const c = el("div", idx === 0 ? "surface-card hero-metric-card" : "surface-card");
-      c.append(el("p", "kpi-label", lbl), el("p", "kpi-value", val), el("p", "kpi-sub", sub));
-      kpis.appendChild(c);
-    });
-    gateCard.appendChild(kpis);
-
-    const deployForm = el("form", "form-grid-2");
-    const appGrp = el("div", "field-group");
-    const appLbl = el("label", "", "Approver Principal");
-    appLbl.setAttribute("for", "deploy-approver-input");
-    const appInp = el("input");
-    appInp.type = "text";
-    appInp.id = "deploy-approver-input";
-    appInp.required = true;
-    appInp.value = "platform-governance-lead";
-    appGrp.append(appLbl, appInp);
-
-    const tktGrp = el("div", "field-group");
-    const tktLbl = el("label", "", "Release Change / Approval Ticket");
-    tktLbl.setAttribute("for", "deploy-ticket-input");
-    const tktInp = el("input");
-    tktInp.type = "text";
-    tktInp.id = "deploy-ticket-input";
-    tktInp.value = "CHG-2026-8841";
-    tktGrp.append(tktLbl, tktInp);
-
-    const submitWrap = el("div", "toolbar-left");
-    const deployBtn = el("button", "primary-btn", "Deploy Agent to Fleet");
-    deployBtn.type = "submit";
-
-    if (!ev.gate_passed) {
-      const backBtn = el("button", "secondary-btn", "<- Return to Evaluate");
-      backBtn.type = "button";
-      backBtn.addEventListener("click", () => setStage("evaluate"));
-      submitWrap.appendChild(backBtn);
+    if (tpl.latest_deployment_id) {
+      left.appendChild(
+        el("span", "agent-context-pill", `Active Deployment: ${tpl.latest_deployment_id}`)
+      );
     }
 
-    if (state.pendingHitl) {
-      const hitlBtn = el(
-        "button",
-        "secondary-btn",
-        `Approve ADK Checkpoint (${state.pendingHitl.interrupt_id})`
+    const right = el("div", "toolbar-right");
+    const openBuildBtn = el("button", "secondary-btn sm-btn", "Open in Build");
+    openBuildBtn.type = "button";
+    openBuildBtn.addEventListener("click", () => jumpToAgentOnStage("build", tpl.template_id));
+
+    const backEvalBtn = el("button", "secondary-btn sm-btn", "<- Open in Evaluate");
+    backEvalBtn.type = "button";
+    backEvalBtn.addEventListener("click", () => jumpToAgentOnStage("evaluate", tpl.template_id));
+
+    right.append(openBuildBtn, backEvalBtn);
+    bar.append(left, right);
+    panel.appendChild(bar);
+
+    const stack = el("div", "nested-expanders-stack");
+    const groupName = `deploy-accordion-${tpl.template_id}`;
+    const cEst = ev.cost_estimate;
+
+    const makeDeployExpander = (sectionKey, titleText, pillText, buildBodyFn) => {
+      const det = el("details", "component-expander");
+      det.setAttribute("name", groupName);
+      det.dataset.sectionKey = sectionKey;
+      if (state.selectedDeploySection === sectionKey) {
+        det.open = true;
+      }
+      const sum = el("summary", "component-expander-summary");
+      sum.append(
+        el("span", "expander-title-group", titleText),
+        el("span", "expander-choice-pill", pillText)
       );
-      hitlBtn.type = "button";
-      hitlBtn.addEventListener("click", async () => {
-        hitlBtn.disabled = true;
-        try {
-          await apiPost("/api/agent/resume", {
-            session_id: state.pendingHitl.session_id,
-            interrupt_id: state.pendingHitl.interrupt_id,
-            approved: true,
-            approver_principal: appInp.value || "platform-governance-lead",
-            vp_exception_ticket: tktInp.value || null,
-            reason: "Approved via Cymbal Agent Governance Platform Deploy Gate.",
+      const body = el("div", "component-expander-body");
+      buildBodyFn(body);
+      det.addEventListener("toggle", () => {
+        if (det.open) {
+          state.selectedDeploySection = sectionKey;
+          stack.querySelectorAll("details.component-expander[open]").forEach((other) => {
+            if (other !== det) {
+              other.open = false;
+            }
           });
-          state.pendingHitl = null;
-          renderStageBody();
-          showNotice("Resumed and completed ADK 2.0 AG3 deployment checkpoint.");
-        } catch (err) {
-          showError(err.message);
-        } finally {
-          hitlBtn.disabled = false;
         }
       });
-      submitWrap.appendChild(hitlBtn);
-    }
+      det.append(sum, body);
+      return det;
+    };
 
-    submitWrap.appendChild(deployBtn);
-    deployForm.append(appGrp, tktGrp, submitWrap);
+    // Nested Expander 1: Release Gate & Production Approval
+    stack.appendChild(
+      makeDeployExpander(
+        "approval",
+        "1. Release Gate & Production Approval",
+        tpl.lifecycle_status === "DEPLOYED"
+          ? `Deployed (${tpl.latest_deployment_id || "Active"})`
+          : ev.gate_passed
+          ? "Ready to Deploy"
+          : "Gate Blocked",
+        (body) => {
+          const kpis = el("div", "kpi-grid-4");
+          [
+            [
+              "Projected Monthly Run-Rate",
+              formatUsd(cEst.monthly_run_rate_usd),
+              `${cEst.estimated_monthly_turns_millions}M turns/mo`,
+            ],
+            [
+              "One-Time Onboarding & Eval",
+              formatUsd(cEst.onboarding_eval_cost_usd),
+              "Initial provisioning & benchmarks",
+            ],
+            [
+              "Monthly Consolidation Delta",
+              formatUsd(cEst.monthly_savings_usd),
+              `vs. ${customerShortName()} baseline`,
+            ],
+            [
+              "SENTINEL Agency Tier",
+              tpl.risk_tier,
+              tpl.risk_tier === "AG3" || tpl.risk_tier === "AG4"
+                ? "Reviewer sign-off enforced"
+                : "Automated release eligible",
+            ],
+          ].forEach(([lbl, val, sub], idx) => {
+            const c = el("div", idx === 0 ? "surface-card hero-metric-card" : "surface-card");
+            c.append(
+              el("p", "kpi-label", lbl),
+              el("p", "kpi-value", val),
+              el("p", "kpi-sub", sub)
+            );
+            kpis.appendChild(c);
+          });
+          body.appendChild(kpis);
 
-    deployForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      deployBtn.disabled = true;
-      try {
-        const depRes = await apiPost("/api/templates/deploy", {
-          template: state.workingTemplate,
-          initial_score: state.initialScoreBaseline,
-          approver_principal: appInp.value || "platform-governance-lead",
-          vp_exception_ticket: tktInp.value || null,
-        });
-        if (depRes.templates) {
-          state.templates = depRes.templates;
-          const refreshed = state.templates.find(
-            (t) => t.template_id === state.workingTemplate.template_id
-          );
-          if (refreshed) {
-            state.workingTemplate = cloneJson(refreshed);
+          const deployForm = el("form", "form-grid-2");
+          const appGrp = el("div", "field-group");
+          const appId = `deploy-approver-${tpl.template_id}`;
+          const appLbl = el("label", "", "Approver Principal");
+          appLbl.setAttribute("for", appId);
+          const appInp = el("input");
+          appInp.type = "text";
+          appInp.id = appId;
+          appInp.required = true;
+          appInp.value = "platform-governance-lead";
+          appGrp.append(appLbl, appInp);
+
+          const tktGrp = el("div", "field-group");
+          const tktId = `deploy-ticket-${tpl.template_id}`;
+          const tktLbl = el("label", "", "Release Change / Approval Ticket");
+          tktLbl.setAttribute("for", tktId);
+          const tktInp = el("input");
+          tktInp.type = "text";
+          tktInp.id = tktId;
+          tktInp.value = "CHG-2026-8841";
+          tktGrp.append(tktLbl, tktInp);
+
+          const submitWrap = el("div", "toolbar-left");
+          const deployBtn = el("button", "primary-btn", "Deploy Agent to Fleet");
+          deployBtn.type = "submit";
+
+          if (!ev.gate_passed) {
+            const fixFirstBtn = el("button", "secondary-btn", "<- Remediate in Evaluate");
+            fixFirstBtn.type = "button";
+            fixFirstBtn.addEventListener("click", () =>
+              jumpToAgentOnStage("evaluate", tpl.template_id)
+            );
+            submitWrap.appendChild(fixFirstBtn);
           }
+
+          if (state.pendingHitl) {
+            const hitlBtn = el(
+              "button",
+              "secondary-btn",
+              `Approve ADK Checkpoint (${state.pendingHitl.interrupt_id})`
+            );
+            hitlBtn.type = "button";
+            hitlBtn.addEventListener("click", async () => {
+              hitlBtn.disabled = true;
+              try {
+                await apiPost("/api/agent/resume", {
+                  session_id: state.pendingHitl.session_id,
+                  interrupt_id: state.pendingHitl.interrupt_id,
+                  approved: true,
+                  approver_principal: appInp.value || "platform-governance-lead",
+                  vp_exception_ticket: tktInp.value || null,
+                  reason: "Approved via Cymbal Agent Governance Platform Deploy Gate.",
+                });
+                state.pendingHitl = null;
+                renderStageBody();
+                showNotice("Resumed and completed ADK 2.0 AG3 deployment checkpoint.");
+              } catch (err) {
+                showError(err.message);
+              } finally {
+                hitlBtn.disabled = false;
+              }
+            });
+            submitWrap.appendChild(hitlBtn);
+          }
+
+          submitWrap.appendChild(deployBtn);
+          deployForm.append(appGrp, tktGrp, submitWrap);
+
+          deployForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            deployBtn.disabled = true;
+            try {
+              const depRes = await apiPost("/api/templates/deploy", {
+                template: state.workingTemplate,
+                initial_score: state.initialScoreBaseline,
+                approver_principal: appInp.value || "platform-governance-lead",
+                vp_exception_ticket: tktInp.value || null,
+              });
+              if (depRes.templates) {
+                state.templates = depRes.templates;
+                const refreshed = state.templates.find(
+                  (t) => t.template_id === state.workingTemplate.template_id
+                );
+                if (refreshed) {
+                  state.workingTemplate = cloneJson(refreshed);
+                }
+              }
+              state.operationsMetrics = depRes.operations_metrics;
+              state.executiveCosts = depRes.executive_costs;
+              state.walletState = depRes.wallet_state;
+              clearTableFilters("deploy-agents", state.deployPagination);
+              state.deployPagination.page = 1;
+              state.buildPagination.page = 1;
+              state.expandedDeployAgentId = state.workingTemplate.template_id;
+              state.selectedDeploySection = "costs";
+              renderStageBody();
+              showNotice(
+                `Deployed ${depRes.deployment.agent_name} (${depRes.deployment.deployment_id}) at ${formatUsd(
+                  depRes.deployment.monthly_run_rate_usd
+                )}/mo.`
+              );
+            } catch (err) {
+              showError(err.message);
+            } finally {
+              deployBtn.disabled = false;
+            }
+          });
+
+          body.appendChild(deployForm);
         }
-        state.operationsMetrics = depRes.operations_metrics;
-        state.executiveCosts = depRes.executive_costs;
-        state.walletState = depRes.wallet_state;
-        state.deployPagination.page = 1;
-        state.buildPagination.page = 1;
-        state.expandedDeploymentId = depRes.deployment.deployment_id;
-        renderStageBody();
-        showNotice(
-          `Deployed ${depRes.deployment.agent_name} (${depRes.deployment.deployment_id}) at ${formatUsd(
-            depRes.deployment.monthly_run_rate_usd
-          )}/mo.`
-        );
-      } catch (err) {
-        showError(err.message);
-      } finally {
-        deployBtn.disabled = false;
-      }
-    });
-
-    gateCard.appendChild(deployForm);
-    root.appendChild(gateCard);
-
-    const split = el("div", "split-2-col");
-    const tfCard = el("div", "surface-card");
-    const tfHead = el("div", "toolbar-row");
-    tfHead.appendChild(el("strong", "", "Generated Terraform Module (infra/terraform)"));
-    const copyTfBtn = el("button", "secondary-btn sm-btn", "Copy HCL");
-    copyTfBtn.type = "button";
-    copyTfBtn.addEventListener("click", () => {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(ev.terraform_paved_path_hcl || "");
-      }
-    });
-    tfHead.appendChild(copyTfBtn);
-    tfCard.append(tfHead, el("pre", "code-block", ev.terraform_paved_path_hcl || ""));
-
-    const polCard = el("div", "surface-card");
-    const polHead = el("div", "toolbar-row");
-    polHead.appendChild(el("strong", "", "Dynamic Guardrail Policy Payload"));
-    const polJson = JSON.stringify(ev.dynamic_guardrail_policy_preview || {}, null, 2);
-    const copyPolBtn = el("button", "secondary-btn sm-btn", "Copy JSON");
-    copyPolBtn.type = "button";
-    copyPolBtn.addEventListener("click", () => {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(polJson);
-      }
-    });
-    polHead.appendChild(copyPolBtn);
-    polCard.append(polHead, el("pre", "code-block", polJson));
-
-    split.append(tfCard, polCard);
-    root.appendChild(split);
-
-    const deps = (state.operationsMetrics && state.operationsMetrics.deployments) || [];
-    root.appendChild(
-      buildDeploymentsTable(
-        deps,
-        "Active Production Fleet Deployments - Sorted Newest-First (Select any row to expand 10-component cost attribution)",
-        state.deployPagination,
-        "deploy-fleet"
       )
     );
+
+    // Nested Expander 2: Generated Terraform Module (HCL)
+    stack.appendChild(
+      makeDeployExpander(
+        "terraform",
+        "2. Generated Terraform Module (infra/terraform)",
+        "Paved-Path HCL",
+        (body) => {
+          const tfHead = el("div", "toolbar-row");
+          tfHead.appendChild(
+            el("span", "field-hint", "Standardized Terraform module bound to this agent instance")
+          );
+          const copyTfBtn = el("button", "secondary-btn sm-btn", "Copy HCL");
+          copyTfBtn.type = "button";
+          copyTfBtn.addEventListener("click", () => {
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(ev.terraform_paved_path_hcl || "");
+            }
+          });
+          tfHead.appendChild(copyTfBtn);
+          body.append(tfHead, el("pre", "code-block", ev.terraform_paved_path_hcl || ""));
+        }
+      )
+    );
+
+    // Nested Expander 3: Dynamic Guardrail Policy Payload (JSON)
+    const polJson = JSON.stringify(ev.dynamic_guardrail_policy_preview || {}, null, 2);
+    stack.appendChild(
+      makeDeployExpander(
+        "guardrail",
+        "3. Dynamic Guardrail Policy Payload",
+        `${tpl.sdp_pii_mode} | ${tpl.risk_tier}`,
+        (body) => {
+          const polHead = el("div", "toolbar-row");
+          polHead.appendChild(
+            el("span", "field-hint", "Compiled per-request Google Model Armor + Cloud SDP payload")
+          );
+          const copyPolBtn = el("button", "secondary-btn sm-btn", "Copy JSON");
+          copyPolBtn.type = "button";
+          copyPolBtn.addEventListener("click", () => {
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(polJson);
+            }
+          });
+          polHead.appendChild(copyPolBtn);
+          body.append(polHead, el("pre", "code-block", polJson));
+        }
+      )
+    );
+
+    // Nested Expander 4: 10-Component Cost & Consolidation Attribution
+    stack.appendChild(
+      makeDeployExpander(
+        "costs",
+        "4. 10-Component Cost & Consolidation Attribution",
+        `${formatUsd(cEst.monthly_run_rate_usd)}/mo`,
+        (body) => {
+          body.appendChild(
+            buildSortableComponentCostSubTable(
+              cEst.component_costs || [],
+              `10-Component Cost Attribution for ${tpl.agent_name}`,
+              `deploy-sub-cost-${tpl.template_id}`
+            )
+          );
+        }
+      )
+    );
+
+    panel.appendChild(stack);
+    td.appendChild(panel);
+    expTr.appendChild(td);
+    return expTr;
   }
 
-  function buildDeploymentsTable(deps, captionText, paginationState, idPrefix) {
-    const pag = paginationState || state.deployPagination;
-    const sortedDeps = [...deps].sort((a, b) =>
-      String(b.deployed_at || "").localeCompare(String(a.deployed_at || ""))
-    );
-    const totalPages = Math.max(1, Math.ceil(sortedDeps.length / pag.pageSize));
+  /* Govern Shared Fleet Deployments Audit & Cost Ledger Table */
+  function buildDeploymentsTable(deps, captionText, paginationState, tableKey) {
+    const pag = paginationState || state.governFleetPagination;
+    const cols = [
+      {
+        key: "deployment_id",
+        label: "Deployment ID",
+        type: "string",
+        filterType: "text",
+        getValue: (d) => d.deployment_id,
+      },
+      {
+        key: "deployed_at",
+        label: "Deployed At",
+        type: "date",
+        filterType: "text",
+        getValue: (d) => d.deployed_at || "",
+        getFilterText: (d) => (d.deployed_at ? d.deployed_at.slice(0, 10) : ""),
+      },
+      {
+        key: "agent_name",
+        label: "Agent ID",
+        type: "string",
+        filterType: "text",
+        getValue: (d) => d.agent_name,
+      },
+      {
+        key: "business_unit_label",
+        label: "Business Unit",
+        type: "string",
+        filterType: "select",
+        getValue: (d) => d.business_unit_label || buLabel(d.business_unit),
+      },
+      {
+        key: "risk_tier",
+        label: "Agency Tier",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["ag1", "ag1"],
+          ["ag2", "ag2"],
+          ["ag3", "ag3"],
+          ["ag4", "ag4"],
+        ],
+        getValue: (d) => String(d.risk_tier || "AG2").toLowerCase(),
+      },
+      {
+        key: "origin_label",
+        label: "Template Profile",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Google Cloud", "Google Cloud"],
+          ["Custom", "Custom"],
+          ["Imported Manifest", "Imported Manifest"],
+        ],
+        getValue: (d) => ORIGIN_LABELS[d.origin] || d.origin,
+      },
+      {
+        key: "final_eval_score",
+        label: "Score (Init -> Final)",
+        type: "number",
+        filterType: "text",
+        getValue: (d) => Number(d.final_eval_score ?? 0),
+        getFilterText: (d) => `${d.initial_eval_score} -> ${d.final_eval_score}`,
+      },
+      {
+        key: "monthly_run_rate_usd",
+        label: "Monthly Run-Rate",
+        type: "number",
+        filterType: "text",
+        getValue: (d) => Number(d.monthly_run_rate_usd ?? 0),
+        getFilterText: (d) => formatUsd(d.monthly_run_rate_usd),
+      },
+      {
+        key: "historical_cumulative_usd",
+        label: "Cumulative Spend",
+        type: "number",
+        filterType: "text",
+        getValue: (d) => Number(d.historical_cumulative_usd ?? 0),
+        getFilterText: (d) => formatUsd(d.historical_cumulative_usd),
+      },
+    ];
+
+    const processed = applyTableSortAndFilters(deps, cols, tableKey, "deployed_at", "desc");
+    const totalPages = Math.max(1, Math.ceil(processed.length / pag.pageSize));
     if (pag.page > totalPages) {
       pag.page = totalPages;
     }
     const startIdx = (pag.page - 1) * pag.pageSize;
-    const pagedDeps = sortedDeps.slice(startIdx, startIdx + pag.pageSize);
+    const pagedDeps = processed.slice(startIdx, startIdx + pag.pageSize);
 
     const wrap = el("div", "table-wrap deferred-below-fold");
+    const activeBanner = buildActiveFiltersBanner(tableKey, processed.length, deps.length, pag);
+    if (activeBanner) {
+      wrap.appendChild(activeBanner);
+    }
+
     const tbl = el("table", "data-table");
     tbl.appendChild(el("caption", "", captionText));
-    const thead = el("thead");
-    const hr = el("tr");
-    [
-      "Deployment ID",
-      "Deployed At",
-      "Agent ID",
-      "Business Unit",
-      "Agency Tier",
-      "Template Profile",
-      "Score (Init -> Final)",
-      "Monthly Run-Rate",
-      "Cumulative Spend",
-    ].forEach((h) => {
-      const th = el("th", "", h);
-      th.scope = "col";
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    tbl.appendChild(thead);
+    tbl.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: deps,
+        defaultSortCol: "deployed_at",
+        defaultSortDir: "desc",
+        paginationState: pag,
+      })
+    );
 
     const tbody = el("tbody");
     pagedDeps.forEach((d) => {
@@ -1847,37 +2767,13 @@
             `Approver: ${d.approver_principal} | Trace ID: ${d.trace_id} | Volume: ${d.estimated_monthly_turns_millions}M turns/mo`
           )
         );
-
-        const subWrap = el("div", "table-wrap");
-        const subTbl = el("table", "data-table");
-        subTbl.appendChild(
-          el("caption", "", `10-Component Cost Attribution for ${d.agent_name}`)
+        panel.appendChild(
+          buildSortableComponentCostSubTable(
+            d.component_costs || [],
+            `10-Component Cost Attribution for ${d.agent_name}`,
+            `${tableKey}-sub-${d.deployment_id}`
+          )
         );
-        const sth = el("thead");
-        const shr = el("tr");
-        ["Functional Component", "Selected Component", "Monthly Cost", "Cumulative Spend"].forEach(
-          (c) => {
-            const cell = el("th", "", c);
-            cell.scope = "col";
-            shr.appendChild(cell);
-          }
-        );
-        sth.appendChild(shr);
-        subTbl.appendChild(sth);
-
-        const stb = el("tbody");
-        (d.component_costs || []).forEach((c) => {
-          const r = el("tr");
-          r.appendChild(el("td", "", c.functional_name || c.capability_name));
-          r.appendChild(el("td", "", c.provider_display_name));
-          r.appendChild(el("td", "", formatUsd(c.monthly_cost_usd)));
-          r.appendChild(el("td", "", formatUsd(c.historical_cumulative_usd)));
-          stb.appendChild(r);
-        });
-        subTbl.appendChild(stb);
-        subWrap.appendChild(subTbl);
-        panel.appendChild(subWrap);
-
         expTd.appendChild(panel);
         expTr.appendChild(expTd);
         tbody.appendChild(expTr);
@@ -1887,15 +2783,16 @@
     wrap.appendChild(tbl);
     wrap.appendChild(
       buildPaginationControls({
-        totalItems: sortedDeps.length,
+        totalItems: processed.length,
         paginationState: pag,
-        navLabel: `${idPrefix || "deployments"} pages`,
-        idPrefix: idPrefix || "deployments",
+        navLabel: `${tableKey} pages`,
+        idPrefix: tableKey,
       })
     );
     return wrap;
   }
 
+  /* ------------------------------ 4. GOVERN ----------------------------- */
   function renderGovernStage(root) {
     const headRow = el("div", "toolbar-row");
     headRow.appendChild(
@@ -1959,7 +2856,7 @@
 
   function renderGovernPoliciesTab(panel) {
     if (!state.rubric) return;
-    const rub = cloneJson(state.rubric);
+    const rub = state.rubric;
 
     const form = el("form", "form-stack");
     const topCard = el("div", "surface-card toolbar-row");
@@ -1973,6 +2870,9 @@
     threshInp.max = "100";
     threshInp.step = "0.5";
     threshInp.value = String(rub.passing_score_threshold);
+    threshInp.addEventListener("change", () => {
+      rub.passing_score_threshold = Number(threshInp.value || 85);
+    });
     threshGrp.append(threshLbl, threshInp);
 
     const saveBtn = el("button", "primary-btn", "Save Governance Policies");
@@ -1980,7 +2880,86 @@
     topCard.append(threshGrp, saveBtn);
     form.appendChild(topCard);
 
+    const tableKey = "gov-policies";
+    const cols = [
+      {
+        key: "rule_id",
+        label: "Rule ID",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.rule_id,
+      },
+      {
+        key: "pillar",
+        label: "Pillar / Workstream",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Control", "Control"],
+          ["Intelligence", "Intelligence"],
+          ["Economics", "Economics"],
+          ["Experience", "Experience"],
+        ],
+        getValue: (r) => r.pillar,
+        getFilterText: (r) => `${r.pillar} - ${r.workstream}`,
+      },
+      {
+        key: "title",
+        label: "Policy Requirement",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.title,
+      },
+      {
+        key: "mandatory",
+        label: "Mandatory Gate",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Yes", "Mandatory"],
+          ["No", "Advisory"],
+        ],
+        getValue: (r) => (r.mandatory ? "Yes" : "No"),
+      },
+      {
+        key: "weight_points",
+        label: "Weight (Pts)",
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.weight_points || 0),
+      },
+      {
+        key: "remediation_provider",
+        label: "Default Fix Target",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["google_gcp", gcpShortName()],
+          ["cymbal_stack", customerShortName()],
+        ],
+        getValue: (r) => r.remediation_provider,
+      },
+      {
+        key: "enabled",
+        label: "Enabled",
+        type: "string",
+        filterType: "select",
+        options: [
+          ["Yes", "Enabled"],
+          ["No", "Disabled"],
+        ],
+        getValue: (r) => (r.enabled ? "Yes" : "No"),
+      },
+    ];
+
+    const processed = applyTableSortAndFilters(rub.rules, cols, tableKey, "rule_id", "asc");
+
     const wrap = el("div", "table-wrap");
+    const activeBanner = buildActiveFiltersBanner(tableKey, processed.length, rub.rules.length, null);
+    if (activeBanner) {
+      wrap.appendChild(activeBanner);
+    }
+
     const tbl = el("table", "data-table");
     tbl.appendChild(
       el(
@@ -1989,26 +2968,19 @@
         "Live Governance Rubric Rules (Updates immediately govern Evaluate and Deploy gates)"
       )
     );
-    const thead = el("thead");
-    const hr = el("tr");
-    [
-      "Rule ID",
-      "Pillar / Workstream",
-      "Policy Requirement",
-      "Mandatory Gate",
-      "Weight (Pts)",
-      "Default Fix Target",
-      "Enabled",
-    ].forEach((h) => {
-      const th = el("th", "", h);
-      th.scope = "col";
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    tbl.appendChild(thead);
+    tbl.appendChild(
+      buildInteractiveTableHead({
+        tableKey,
+        columns: cols,
+        allRows: rub.rules,
+        defaultSortCol: "rule_id",
+        defaultSortDir: "asc",
+        paginationState: null,
+      })
+    );
 
     const tbody = el("tbody");
-    rub.rules.forEach((rule, idx) => {
+    processed.forEach((rule) => {
       const tr = el("tr");
       tr.appendChild(el("td", "", rule.rule_id));
       tr.appendChild(el("td", "", `${rule.pillar} - ${rule.workstream}`));
@@ -2020,7 +2992,7 @@
       mandChk.checked = Boolean(rule.mandatory);
       mandChk.setAttribute("aria-label", `${rule.rule_id} mandatory gate`);
       mandChk.addEventListener("change", () => {
-        rub.rules[idx].mandatory = mandChk.checked;
+        rule.mandatory = mandChk.checked;
       });
       tdMand.appendChild(mandChk);
 
@@ -2032,7 +3004,7 @@
       wInp.value = String(rule.weight_points);
       wInp.setAttribute("aria-label", `${rule.rule_id} weight points`);
       wInp.addEventListener("change", () => {
-        rub.rules[idx].weight_points = Number(wInp.value || 10);
+        rule.weight_points = Number(wInp.value || 10);
       });
       tdW.appendChild(wInp);
 
@@ -2049,7 +3021,7 @@
         pSel.appendChild(o);
       });
       pSel.addEventListener("change", () => {
-        rub.rules[idx].remediation_provider = pSel.value;
+        rule.remediation_provider = pSel.value;
       });
       tdProv.appendChild(pSel);
 
@@ -2059,7 +3031,7 @@
       enChk.checked = Boolean(rule.enabled);
       enChk.setAttribute("aria-label", `${rule.rule_id} enabled`);
       enChk.addEventListener("change", () => {
-        rub.rules[idx].enabled = enChk.checked;
+        rule.enabled = enChk.checked;
       });
       tdEn.appendChild(enChk);
 
@@ -2078,6 +3050,7 @@
         state.rubric = res.rubric;
         state.templates = res.templates;
         await refreshEvaluation(false);
+        renderStageBody();
         showNotice(
           `Saved governance rubric (Passing threshold: >= ${state.rubric.passing_score_threshold}).`
         );
@@ -2123,7 +3096,74 @@
     });
     panel.appendChild(kpis);
 
+    const adoptKey = "gov-fleet-adoption";
+    const adoptRows = m.component_adoption || [];
+    const adoptCols = [
+      {
+        key: "functional_name",
+        label: "Functional Capability",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.functional_name,
+      },
+      {
+        key: "pillar",
+        label: "Governance Pillar",
+        type: "string",
+        filterType: "select",
+        getValue: (r) => r.pillar,
+      },
+      {
+        key: "workstream",
+        label: "Workstream",
+        type: "string",
+        filterType: "text",
+        getValue: (r) => r.workstream,
+      },
+      {
+        key: "cymbal_cnt",
+        label: `${customerShortName()} Deployments`,
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.counts.cymbal_stack || 0),
+        getFilterText: (r) => `${r.counts.cymbal_stack} ${r.provider_labels.cymbal_stack}`,
+      },
+      {
+        key: "gcp_cnt",
+        label: `${gcpShortName()} Deployments`,
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.counts.google_gcp || 0),
+        getFilterText: (r) => `${r.counts.google_gcp} ${r.provider_labels.google_gcp}`,
+      },
+      {
+        key: "google_gcp_pct",
+        label: `${gcpShortName()} Share`,
+        type: "number",
+        filterType: "text",
+        getValue: (r) => Number(r.google_gcp_pct || 0),
+      },
+    ];
+
+    const processedAdopt = applyTableSortAndFilters(
+      adoptRows,
+      adoptCols,
+      adoptKey,
+      "google_gcp_pct",
+      "desc"
+    );
+
     const wrap = el("div", "table-wrap");
+    const adoptBanner = buildActiveFiltersBanner(
+      adoptKey,
+      processedAdopt.length,
+      adoptRows.length,
+      null
+    );
+    if (adoptBanner) {
+      wrap.appendChild(adoptBanner);
+    }
+
     const tbl = el("table", "data-table");
     tbl.appendChild(
       el(
@@ -2132,25 +3172,19 @@
         `Component Adoption Across All 10 Functional Capabilities (${customerShortName()} vs. ${gcpShortName()})`
       )
     );
-    const thead = el("thead");
-    const hr = el("tr");
-    [
-      "Functional Capability",
-      "Governance Pillar",
-      "Workstream",
-      `${customerShortName()} Deployments`,
-      `${gcpShortName()} Deployments`,
-      `${gcpShortName()} Share`,
-    ].forEach((h) => {
-      const th = el("th", "", h);
-      th.scope = "col";
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    tbl.appendChild(thead);
+    tbl.appendChild(
+      buildInteractiveTableHead({
+        tableKey: adoptKey,
+        columns: adoptCols,
+        allRows: adoptRows,
+        defaultSortCol: "google_gcp_pct",
+        defaultSortDir: "desc",
+        paginationState: null,
+      })
+    );
 
     const tbody = el("tbody");
-    (m.component_adoption || []).forEach((row) => {
+    processedAdopt.forEach((row) => {
       const tr = el("tr");
       tr.appendChild(el("td", "", row.functional_name));
       tr.appendChild(el("td", "", row.pillar));
@@ -2187,65 +3221,6 @@
   function renderGovernFinopsTab(panel) {
     const ec = state.executiveCosts;
     if (!ec) return;
-
-    const filterCard = el("div", "surface-card toolbar-row");
-    const fLeft = el("div", "toolbar-left");
-
-    const buGrp = el("div", "field-group");
-    const buLbl = el("label", "", "Business Unit");
-    buLbl.setAttribute("for", "finops-bu-select");
-    const buSel = el("select");
-    buSel.id = "finops-bu-select";
-    [
-      ["all", "All Business Units"],
-      ["core_cable", buLabel("core_cable")],
-      ["media_studio", buLabel("media_studio")],
-      ["intl_sky", buLabel("intl_sky")],
-      ["enterprise_shared", buLabel("enterprise_shared")],
-    ].forEach(([val, txt]) => {
-      const o = el("option", "", txt);
-      o.value = val;
-      if (state.finopsFilters.business_unit === val) o.selected = true;
-      buSel.appendChild(o);
-    });
-    buGrp.append(buLbl, buSel);
-
-    const origGrp = el("div", "field-group");
-    const origLbl = el("label", "", "Template Profile");
-    origLbl.setAttribute("for", "finops-origin-select");
-    const origSel = el("select");
-    origSel.id = "finops-origin-select";
-    [
-      ["all", "All Template Profiles"],
-      ["google_gcp_standard", "Google Cloud"],
-      ["custom_hybrid", "Custom"],
-      ["imported_manifest", "Imported Manifest"],
-    ].forEach(([val, txt]) => {
-      const o = el("option", "", txt);
-      o.value = val;
-      if (state.finopsFilters.origin === val) o.selected = true;
-      origSel.appendChild(o);
-    });
-    origGrp.append(origLbl, origSel);
-
-    const reloadFinops = async () => {
-      state.finopsFilters.business_unit = buSel.value;
-      state.finopsFilters.origin = origSel.value;
-      state.governFinopsPagination.page = 1;
-      try {
-        const params = new URLSearchParams(state.finopsFilters);
-        state.executiveCosts = await apiGet(`/api/executive/costs?${params.toString()}`);
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      }
-    };
-    buSel.addEventListener("change", reloadFinops);
-    origSel.addEventListener("change", reloadFinops);
-
-    fLeft.append(buGrp, origGrp);
-    filterCard.appendChild(fLeft);
-    panel.appendChild(filterCard);
 
     const kpis = el("div", "kpi-grid-4");
     [
@@ -2292,8 +3267,84 @@
     });
     panel.appendChild(pillarGrid);
 
-    // 10-Component Historical Spend Table with Inline Row Expansion
+    // 10-Component Historical Spend Table with Per-Column Sort, Filter & Inline Row Expansion
+    const compKey = "gov-finops-comps";
+    const compRows = ec.component_cost_rollup || [];
+    const compCols = [
+      {
+        key: "functional_name",
+        label: "Functional Component",
+        type: "string",
+        filterType: "text",
+        getValue: (c) => c.functional_name,
+      },
+      {
+        key: "pillar",
+        label: "Pillar",
+        type: "string",
+        filterType: "select",
+        getValue: (c) => c.pillar,
+      },
+      {
+        key: "cymbal_spend",
+        label: `${customerShortName()} Spend`,
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.spend_by_provider_usd.cymbal_stack || 0),
+        getFilterText: (c) => formatUsd(c.spend_by_provider_usd.cymbal_stack),
+      },
+      {
+        key: "gcp_spend",
+        label: `${gcpShortName()} Spend`,
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.spend_by_provider_usd.google_gcp || 0),
+        getFilterText: (c) => formatUsd(c.spend_by_provider_usd.google_gcp),
+      },
+      {
+        key: "monthly_run_rate_usd",
+        label: "Monthly Run-Rate",
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.monthly_run_rate_usd || 0),
+        getFilterText: (c) => formatUsd(c.monthly_run_rate_usd),
+      },
+      {
+        key: "historical_cumulative_usd",
+        label: "Historical Total",
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.historical_cumulative_usd || 0),
+        getFilterText: (c) => formatUsd(c.historical_cumulative_usd),
+      },
+      {
+        key: "share_of_total_pct",
+        label: "Share",
+        type: "number",
+        filterType: "text",
+        getValue: (c) => Number(c.share_of_total_pct || 0),
+      },
+    ];
+
+    const processedComps = applyTableSortAndFilters(
+      compRows,
+      compCols,
+      compKey,
+      "historical_cumulative_usd",
+      "desc"
+    );
+
     const compWrap = el("div", "table-wrap");
+    const compBanner = buildActiveFiltersBanner(
+      compKey,
+      processedComps.length,
+      compRows.length,
+      null
+    );
+    if (compBanner) {
+      compWrap.appendChild(compBanner);
+    }
+
     const compTbl = el("table", "data-table");
     compTbl.appendChild(
       el(
@@ -2302,26 +3353,19 @@
         "Aggregate Historical Spend Across All 10 Functional Components (Select any row to expand top contributing agents)"
       )
     );
-    const ch = el("thead");
-    const chr = el("tr");
-    [
-      "Functional Component",
-      "Pillar",
-      `${customerShortName()} Spend`,
-      `${gcpShortName()} Spend`,
-      "Monthly Run-Rate",
-      "Historical Total",
-      "Share",
-    ].forEach((h) => {
-      const th = el("th", "", h);
-      th.scope = "col";
-      chr.appendChild(th);
-    });
-    ch.appendChild(chr);
-    compTbl.appendChild(ch);
+    compTbl.appendChild(
+      buildInteractiveTableHead({
+        tableKey: compKey,
+        columns: compCols,
+        allRows: compRows,
+        defaultSortCol: "historical_cumulative_usd",
+        defaultSortDir: "desc",
+        paginationState: null,
+      })
+    );
 
     const cbody = el("tbody");
-    (ec.component_cost_rollup || []).forEach((comp) => {
+    processedComps.forEach((comp) => {
       const isExp = state.expandedFinopsSlotId === comp.slot_id;
       const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
 
@@ -2360,29 +3404,78 @@
         expTd.colSpan = 7;
         const subPanel = el("div", "expanded-instance-panel");
         subPanel.appendChild(
-          el(
-            "p",
-            "field-hint",
-            `${comp.workstream} | Consolidates: ${comp.consolidates}`
-          )
+          el("p", "field-hint", `${comp.workstream} | Consolidates: ${comp.consolidates}`)
         );
+
+        const topSubKey = `finops-sub-${comp.slot_id}`;
+        const topSrc = comp.top_deployments || [];
+        const topCols = [
+          {
+            key: "agent_name",
+            label: "Agent ID",
+            type: "string",
+            filterType: "text",
+            getValue: (d) => d.agent_name,
+          },
+          {
+            key: "business_unit_label",
+            label: "Business Unit",
+            type: "string",
+            filterType: "select",
+            getValue: (d) => d.business_unit_label,
+          },
+          {
+            key: "provider_label",
+            label: "Selected Component",
+            type: "string",
+            filterType: "text",
+            getValue: (d) =>
+              (comp.provider_labels && comp.provider_labels[d.provider]) || d.provider,
+          },
+          {
+            key: "historical_cumulative_usd",
+            label: "Cumulative Spend",
+            type: "number",
+            filterType: "text",
+            getValue: (d) => Number(d.historical_cumulative_usd || 0),
+            getFilterText: (d) => formatUsd(d.historical_cumulative_usd),
+          },
+        ];
+        const processedTop = applyTableSortAndFilters(
+          topSrc,
+          topCols,
+          topSubKey,
+          "historical_cumulative_usd",
+          "desc"
+        );
+
         const subWrap = el("div", "table-wrap");
+        const subBanner = buildActiveFiltersBanner(
+          topSubKey,
+          processedTop.length,
+          topSrc.length,
+          null
+        );
+        if (subBanner) {
+          subWrap.appendChild(subBanner);
+        }
         const subTbl = el("table", "data-table");
         subTbl.appendChild(
           el("caption", "", `Top Contributing Agent Deployments for ${comp.functional_name}`)
         );
-        const sth = el("thead");
-        const shr = el("tr");
-        ["Agent ID", "Business Unit", "Selected Component", "Cumulative Spend"].forEach((lbl) => {
-          const cell = el("th", "", lbl);
-          cell.scope = "col";
-          shr.appendChild(cell);
-        });
-        sth.appendChild(shr);
-        subTbl.appendChild(sth);
+        subTbl.appendChild(
+          buildInteractiveTableHead({
+            tableKey: topSubKey,
+            columns: topCols,
+            allRows: topSrc,
+            defaultSortCol: "historical_cumulative_usd",
+            defaultSortDir: "desc",
+            paginationState: null,
+          })
+        );
 
         const stb = el("tbody");
-        (comp.top_deployments || []).forEach((d) => {
+        processedTop.forEach((d) => {
           const r = el("tr");
           r.appendChild(el("td", "", d.agent_name));
           r.appendChild(el("td", "", d.business_unit_label));
@@ -2666,20 +3759,82 @@
     proofCard.appendChild(pHead);
 
     if (state.proofResults.length > 0) {
+      const proofKey = "gov-proofs";
+      const proofCols = [
+        {
+          key: "proof_id",
+          label: "#",
+          type: "number",
+          filterType: "text",
+          getValue: (p) => Number(p.proof_id || 0),
+        },
+        {
+          key: "title",
+          label: "Capability Check",
+          type: "string",
+          filterType: "text",
+          getValue: (p) => p.title,
+        },
+        {
+          key: "passed",
+          label: "Status",
+          type: "string",
+          filterType: "select",
+          options: [
+            ["PASS", "PASS"],
+            ["FAIL", "FAIL"],
+          ],
+          getValue: (p) => (p.passed ? "PASS" : "FAIL"),
+        },
+        {
+          key: "latency_ms",
+          label: "Latency",
+          type: "number",
+          filterType: "text",
+          getValue: (p) => Number(p.latency_ms || 0),
+        },
+        {
+          key: "measured_evidence",
+          label: "Measured Evidence",
+          type: "string",
+          filterType: "text",
+          getValue: (p) => p.measured_evidence,
+        },
+      ];
+      const processedProofs = applyTableSortAndFilters(
+        state.proofResults,
+        proofCols,
+        proofKey,
+        "proof_id",
+        "asc"
+      );
+
       const pWrap = el("div", "table-wrap");
+      const pBanner = buildActiveFiltersBanner(
+        proofKey,
+        processedProofs.length,
+        state.proofResults.length,
+        null
+      );
+      if (pBanner) {
+        pWrap.appendChild(pBanner);
+      }
+
       const pTbl = el("table", "data-table");
       pTbl.appendChild(el("caption", "", "Measured Control Plane Verification Results"));
-      const ph = el("thead");
-      const phr = el("tr");
-      ["#", "Capability Check", "Status", "Latency", "Measured Evidence"].forEach((h) => {
-        const th = el("th", "", h);
-        th.scope = "col";
-        phr.appendChild(th);
-      });
-      ph.appendChild(phr);
-      pTbl.appendChild(ph);
+      pTbl.appendChild(
+        buildInteractiveTableHead({
+          tableKey: proofKey,
+          columns: proofCols,
+          allRows: state.proofResults,
+          defaultSortCol: "proof_id",
+          defaultSortDir: "asc",
+          paginationState: null,
+        })
+      );
+
       const pb = el("tbody");
-      state.proofResults.forEach((pr) => {
+      processedProofs.forEach((pr) => {
         const tr = el("tr");
         tr.appendChild(el("td", "", String(pr.proof_id)));
         tr.appendChild(el("td", "", pr.title));
@@ -2828,6 +3983,7 @@
         state.templates = res.templates;
         state.workingTemplate = res.template;
         state.currentEvaluation = res.evaluation;
+        clearTableFilters("build-agents", state.buildPagination);
         state.buildPagination.page = 1;
         state.expandedAgentId = slug;
         dlg.close();
@@ -2922,6 +4078,7 @@
         state.workingTemplate = saved.template;
         state.currentEvaluation = saved.evaluation;
         state.initialScoreBaseline = saved.evaluation.overall_score;
+        clearTableFilters("build-agents", state.buildPagination);
         state.buildPagination.page = 1;
         state.expandedAgentId = state.workingTemplate.template_id;
         dlg.close();
@@ -2938,7 +4095,12 @@
 
   function wireStaticControls() {
     document.querySelectorAll(".lifecycle-nav-btn").forEach((btn) => {
-      btn.addEventListener("click", () => setStage(btn.dataset.stage));
+      btn.addEventListener("click", () => {
+        state.expandedAgentId = null;
+        state.expandedEvalAgentId = null;
+        state.expandedDeployAgentId = null;
+        setStage(btn.dataset.stage);
+      });
     });
 
     window.addEventListener("popstate", () => {

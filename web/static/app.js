@@ -55,6 +55,9 @@
     pendingHitl: null,
     activeStage: "build",
     activeGovernTab: "policies",
+    selectedGovernFleetSub: "adoption",
+    selectedGovernFinopsSub: "attribution",
+    selectedGovernControlsSub: "killswitch",
     selectedSlotId: "identity_access",
     selectedEvalSlotId: null,
     selectedDeploySection: "approval",
@@ -63,6 +66,8 @@
     expandedDeployAgentId: null,
     expandedDeploymentId: null,
     expandedFinopsSlotId: null,
+    expandedGovernRuleId: null,
+    expandedAdoptSlotId: null,
     buildPagination: { page: 1, pageSize: 10 },
     evalPagination: { page: 1, pageSize: 10 },
     deployPagination: { page: 1, pageSize: 10 },
@@ -2421,7 +2426,7 @@
           });
           body.appendChild(kpis);
 
-          const deployForm = el("form", "form-grid-2");
+          const deployForm = el("form", "inline-action-form");
           const appGrp = el("div", "field-group");
           const appId = `deploy-approver-${tpl.template_id}`;
           const appLbl = el("label", "", "Approver Principal");
@@ -2429,6 +2434,7 @@
           const appInp = el("input");
           appInp.type = "text";
           appInp.id = appId;
+          appInp.name = "approver_principal";
           appInp.required = true;
           appInp.value = "platform-governance-lead";
           appGrp.append(appLbl, appInp);
@@ -2440,10 +2446,11 @@
           const tktInp = el("input");
           tktInp.type = "text";
           tktInp.id = tktId;
+          tktInp.name = "approval_ticket";
           tktInp.value = "CHG-2026-8841";
           tktGrp.append(tktLbl, tktInp);
 
-          const submitWrap = el("div", "toolbar-left");
+          const submitWrap = el("div", "form-actions-end");
           const deployBtn = el("button", "primary-btn", "Deploy Agent to Fleet");
           deployBtn.type = "submit";
 
@@ -2793,6 +2800,65 @@
   }
 
   /* ------------------------------ 4. GOVERN ----------------------------- */
+  function buildSegmentedPillRadios(groupLegend, radioName, currentValue, options, onChange) {
+    const fs = el("fieldset", "segmented-radio-group");
+    fs.appendChild(el("legend", "visually-hidden", groupLegend));
+    fs.appendChild(el("span", "control-inline-label", `${groupLegend}:`));
+    options.forEach(([val, labelTxt]) => {
+      const rid = `seg-${radioName}-${String(val).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const r = el("input", "segmented-radio-input");
+      r.type = "radio";
+      r.name = radioName;
+      r.id = rid;
+      r.value = String(val);
+      r.checked = String(currentValue) === String(val);
+      r.addEventListener("change", () => {
+        if (r.checked) {
+          onChange(val);
+        }
+      });
+      const lbl = el("label", "segmented-radio-label", labelTxt);
+      lbl.setAttribute("for", rid);
+      fs.append(r, lbl);
+    });
+    return fs;
+  }
+
+  function makeExclusiveSubExpanderList(groupName, stateKey, defs) {
+    const stack = el("div", "nested-expanders-stack");
+    const siblings = [];
+    defs.forEach(([subKey, titleText, pillText, buildBodyFn]) => {
+      const det = el("details", "component-expander");
+      det.setAttribute("name", groupName);
+      det.dataset.subKey = subKey;
+      if (state[stateKey] === subKey) {
+        det.open = true;
+      }
+      const sum = el("summary", "component-expander-summary");
+      sum.append(
+        el("span", "expander-title-group", titleText),
+        el("span", "expander-choice-pill", pillText)
+      );
+      const body = el("div", "component-expander-body");
+      buildBodyFn(body);
+      det.addEventListener("toggle", (ev) => {
+        if (ev.target !== det) return;
+        if (det.open) {
+          state[stateKey] = subKey;
+          siblings.forEach((other) => {
+            if (other !== det && other.open) {
+              other.open = false;
+            }
+          });
+        }
+      });
+      det.append(sum, body);
+      siblings.push(det);
+      stack.appendChild(det);
+    });
+    return stack;
+  }
+
   function renderGovernStage(root) {
     const headRow = el("div", "toolbar-row");
     headRow.appendChild(
@@ -2800,72 +2866,187 @@
     );
     root.appendChild(headRow);
 
-    const tabDefs = [
-      ["policies", "Policies & Rubric"],
-      ["fleet", "Fleet Operations"],
-      ["finops", "FinOps & Economics"],
-      ["controls", "Runtime Controls"],
+    const rub = state.rubric;
+    const m = state.operationsMetrics;
+    const ec = state.executiveCosts;
+    const curStatus = (state.agentState && state.agentState.status) || "ACTIVE";
+    const capUsd =
+      ((state.walletState && state.walletState.monthly_cap_nano_usd) || 15000000000) / 1e9;
+    const rules = (rub && rub.rules) || [];
+    const enabledRulesCnt = rules.filter((r) => r.enabled).length;
+    const mandatoryRulesCnt = rules.filter((r) => r.enabled && r.mandatory).length;
+
+    const domainDefs = [
+      {
+        id: "policies",
+        stepTitle: "1. Policies & Rubric",
+        marker: `>= ${rub ? rub.passing_score_threshold : 85} Gate`,
+        caption: `${enabledRulesCnt} active rules (${mandatoryRulesCnt} mandatory gates) governing Evaluate & Deploy`,
+        pill: `${enabledRulesCnt} Active Rules | Threshold >= ${rub ? rub.passing_score_threshold : 85}`,
+        populate: populateGovernPoliciesBody,
+      },
+      {
+        id: "fleet",
+        stepTitle: "2. Fleet Operations",
+        marker: `${m ? m.total_deployments : 0} Deployed`,
+        caption: `${m ? m.remediated_prior_to_deploy_pct : 0}% remediated pre-deploy | +${
+          m ? m.avg_score_uplift : 0
+        } pts avg uplift`,
+        pill: `${m ? m.total_deployments : 0} Fleet Deployments`,
+        populate: populateGovernFleetBody,
+      },
+      {
+        id: "finops",
+        stepTitle: "3. FinOps & Economics",
+        marker: `${ec ? formatUsd(ec.total_monthly_run_rate_usd) : "$0.00"}/mo`,
+        caption: `${
+          ec ? formatUsd(ec.projected_annual_consolidation_savings_usd) : "$0.00"
+        }/yr consolidation savings`,
+        pill: `${ec ? formatUsd(ec.total_historical_cumulative_usd) : "$0.00"} Cumulative`,
+        populate: populateGovernFinopsBody,
+      },
+      {
+        id: "controls",
+        stepTitle: "4. Runtime Controls",
+        marker: curStatus,
+        caption: `Kill switch, $${capUsd.toFixed(2)} atomic ceiling, inline PII & 8 live checks`,
+        pill: `Fleet ${curStatus} | Ceiling $${capUsd.toFixed(2)}`,
+        populate: populateGovernControlsBody,
+      },
     ];
 
-    const tabBar = el("div", "subtab-bar");
-    tabBar.setAttribute("role", "tablist");
-    tabBar.setAttribute("aria-label", "Governance Sections");
+    const domainStrip = el("ol", "four-tile-strip");
+    domainStrip.setAttribute("aria-label", "Governance Domains");
+    const tileBtnById = {};
+    const domainDetById = {};
 
-    tabDefs.forEach(([id, label], idx) => {
-      const btn = el("button", "subtab-btn", label);
+    const syncTileHighlight = (selectedId) => {
+      Object.entries(tileBtnById).forEach(([id, btn]) => {
+        const active = id === selectedId;
+        btn.classList.toggle("is-selected", active);
+        btn.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    };
+
+    domainDefs.forEach((def) => {
+      const li = el("li", "tile-list-item");
+      const btn = el("button", "component-tile");
       btn.type = "button";
-      btn.id = `gov-tab-${id}`;
-      btn.setAttribute("role", "tab");
-      const active = state.activeGovernTab === id;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-      btn.tabIndex = active ? 0 : -1;
+      btn.dataset.governDomain = def.id;
+      if (def.id === "controls" && curStatus !== "ACTIVE") {
+        btn.classList.add("tile-status-failed");
+      }
+      const isActive = state.activeGovernTab === def.id;
+      btn.classList.toggle("is-selected", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+
+      const top = el("span", "tile-top-header");
+      top.append(
+        el("span", "tile-functional-name", def.stepTitle),
+        el("span", "tile-eval-marker", def.marker)
+      );
+      btn.append(top, el("span", "tile-impl-caption", def.caption));
+
       btn.addEventListener("click", () => {
-        state.activeGovernTab = id;
-        renderStageBody();
+        state.activeGovernTab = def.id;
+        syncTileHighlight(def.id);
+        const targetDet = domainDetById[def.id];
+        if (targetDet) {
+          targetDet.open = true;
+        }
       });
-      btn.addEventListener("keydown", (e) => {
-        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-        e.preventDefault();
-        const delta = e.key === "ArrowRight" ? 1 : -1;
-        const nextIdx = (idx + delta + tabDefs.length) % tabDefs.length;
-        state.activeGovernTab = tabDefs[nextIdx][0];
-        renderStageBody();
-        const nextBtn = document.getElementById(`gov-tab-${state.activeGovernTab}`);
-        if (nextBtn) nextBtn.focus();
-      });
-      tabBar.appendChild(btn);
+
+      tileBtnById[def.id] = btn;
+      li.appendChild(btn);
+      domainStrip.appendChild(li);
     });
-    root.appendChild(tabBar);
+    root.appendChild(domainStrip);
 
-    const panel = el("div", "form-stack");
-    panel.setAttribute("role", "tabpanel");
-    panel.setAttribute("aria-labelledby", `gov-tab-${state.activeGovernTab}`);
+    const expandersCard = el("div", "surface-card nested-expanders-card");
+    const domainStack = el("div", "nested-expanders-stack");
 
-    if (state.activeGovernTab === "policies") {
-      renderGovernPoliciesTab(panel);
-    } else if (state.activeGovernTab === "fleet") {
-      renderGovernFleetTab(panel);
-    } else if (state.activeGovernTab === "finops") {
-      renderGovernFinopsTab(panel);
-    } else {
-      renderGovernControlsTab(panel);
-    }
-    root.appendChild(panel);
+    domainDefs.forEach((def) => {
+      const det = el("details", "component-expander");
+      det.setAttribute("name", "govern-domain-accordion");
+      det.dataset.governDomain = def.id;
+      if (state.activeGovernTab === def.id) {
+        det.open = true;
+      }
+
+      const sum = el("summary", "component-expander-summary");
+      const rightMeta = el("span", "expander-summary-right");
+      rightMeta.appendChild(el("span", "expander-choice-pill", def.pill));
+      if (def.id === "controls") {
+        rightMeta.appendChild(
+          el(
+            "span",
+            curStatus === "ACTIVE" ? "status-badge status-ok" : "status-badge status-err",
+            curStatus
+          )
+        );
+      }
+      sum.append(el("span", "expander-title-group", def.stepTitle), rightMeta);
+
+      const body = el("div", "component-expander-body");
+      def.populate(body);
+
+      det.addEventListener("toggle", (ev) => {
+        if (ev.target !== det) return;
+        if (det.open) {
+          state.activeGovernTab = def.id;
+          syncTileHighlight(def.id);
+          Object.entries(domainDetById).forEach(([otherId, otherDet]) => {
+            if (otherId !== def.id && otherDet.open) {
+              otherDet.open = false;
+            }
+          });
+        } else {
+          const stillOpen = Object.entries(domainDetById).find(([, d]) => d.open);
+          syncTileHighlight(stillOpen ? stillOpen[0] : null);
+        }
+      });
+
+      det.append(sum, body);
+      domainDetById[def.id] = det;
+      domainStack.appendChild(det);
+    });
+
+    expandersCard.appendChild(domainStack);
+    root.appendChild(expandersCard);
   }
 
-  function renderGovernPoliciesTab(panel) {
+  async function persistGovernanceRubric(threshInp) {
+    if (!state.rubric) return;
+    if (threshInp) {
+      state.rubric.passing_score_threshold = Number(threshInp.value || 85);
+    }
+    try {
+      const res = await apiPost("/api/ops/rubric", state.rubric);
+      state.rubric = res.rubric;
+      state.templates = res.templates;
+      await refreshEvaluation(false);
+      state.activeGovernTab = "policies";
+      renderStageBody();
+      showNotice(
+        `Saved governance rubric (Passing threshold: >= ${state.rubric.passing_score_threshold}).`
+      );
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  function populateGovernPoliciesBody(panel) {
     if (!state.rubric) return;
     const rub = state.rubric;
 
-    const form = el("form", "form-stack");
-    const topCard = el("div", "surface-card toolbar-row");
+    const threshForm = el("form", "surface-card inline-single-action-row");
     const threshGrp = el("div", "field-group");
     const threshLbl = el("label", "", "Passing Readiness Score Threshold (50 - 100)");
     threshLbl.setAttribute("for", "rubric-threshold-input");
     const threshInp = el("input");
     threshInp.type = "number";
     threshInp.id = "rubric-threshold-input";
+    threshInp.name = "passing_score_threshold";
     threshInp.min = "50";
     threshInp.max = "100";
     threshInp.step = "0.5";
@@ -2875,10 +3056,16 @@
     });
     threshGrp.append(threshLbl, threshInp);
 
+    const threshAct = el("div", "form-actions-end");
     const saveBtn = el("button", "primary-btn", "Save Governance Policies");
     saveBtn.type = "submit";
-    topCard.append(threshGrp, saveBtn);
-    form.appendChild(topCard);
+    threshAct.appendChild(saveBtn);
+    threshForm.append(threshGrp, threshAct);
+    threshForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await persistGovernanceRubric(threshInp);
+    });
+    panel.appendChild(threshForm);
 
     const tableKey = "gov-policies";
     const cols = [
@@ -2888,6 +3075,16 @@
         type: "string",
         filterType: "text",
         getValue: (r) => r.rule_id,
+      },
+      {
+        key: "capability",
+        label: "Functional Capability",
+        type: "string",
+        filterType: "select",
+        getValue: (r) => {
+          const sp = state.slotById[r.slot_id];
+          return sp ? sp.functional_name : r.slot_id;
+        },
       },
       {
         key: "pillar",
@@ -2912,14 +3109,14 @@
       },
       {
         key: "mandatory",
-        label: "Mandatory Gate",
+        label: "Gate Type",
         type: "string",
         filterType: "select",
         options: [
-          ["Yes", "Mandatory"],
-          ["No", "Advisory"],
+          ["Mandatory Gate", "Mandatory Gate"],
+          ["Advisory", "Advisory"],
         ],
-        getValue: (r) => (r.mandatory ? "Yes" : "No"),
+        getValue: (r) => (r.mandatory ? "Mandatory Gate" : "Advisory"),
       },
       {
         key: "weight_points",
@@ -2941,14 +3138,14 @@
       },
       {
         key: "enabled",
-        label: "Enabled",
+        label: "Status",
         type: "string",
         filterType: "select",
         options: [
-          ["Yes", "Enabled"],
-          ["No", "Disabled"],
+          ["Enabled", "Enabled"],
+          ["Disabled", "Disabled"],
         ],
-        getValue: (r) => (r.enabled ? "Yes" : "No"),
+        getValue: (r) => (r.enabled ? "Enabled" : "Disabled"),
       },
     ];
 
@@ -2965,7 +3162,7 @@
       el(
         "caption",
         "",
-        "Live Governance Rubric Rules (Updates immediately govern Evaluate and Deploy gates)"
+        "Select any rule row to expand its gate policy, scoring weight, default remediation target, and requirement text."
       )
     );
     tbl.appendChild(
@@ -2981,88 +3178,218 @@
 
     const tbody = el("tbody");
     processed.forEach((rule) => {
-      const tr = el("tr");
-      tr.appendChild(el("td", "", rule.rule_id));
-      tr.appendChild(el("td", "", `${rule.pillar} - ${rule.workstream}`));
-      tr.appendChild(el("td", "", rule.title));
+      const isExp = state.expandedGovernRuleId === rule.rule_id;
+      const spec = state.slotById[rule.slot_id];
+      const capName = spec ? spec.functional_name : rule.slot_id;
+      const tr = el(
+        "tr",
+        isExp ? "clickable-row is-active-agent-row is-expanded-parent" : "clickable-row"
+      );
 
-      const tdMand = el("td");
-      const mandChk = el("input");
-      mandChk.type = "checkbox";
-      mandChk.checked = Boolean(rule.mandatory);
-      mandChk.setAttribute("aria-label", `${rule.rule_id} mandatory gate`);
-      mandChk.addEventListener("change", () => {
-        rule.mandatory = mandChk.checked;
-      });
-      tdMand.appendChild(mandChk);
+      const toggleRule = () => {
+        state.activeGovernTab = "policies";
+        state.expandedGovernRuleId = isExp ? null : rule.rule_id;
+        renderStageBody();
+      };
 
-      const tdW = el("td");
-      const wInp = el("input");
-      wInp.type = "number";
-      wInp.min = "1";
-      wInp.max = "40";
-      wInp.value = String(rule.weight_points);
-      wInp.setAttribute("aria-label", `${rule.rule_id} weight points`);
-      wInp.addEventListener("change", () => {
-        rule.weight_points = Number(wInp.value || 10);
+      const tdId = el("td");
+      const selBtn = el("button", "row-select-btn");
+      selBtn.type = "button";
+      selBtn.setAttribute("aria-expanded", isExp ? "true" : "false");
+      selBtn.append(
+        el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
+        el("span", "", rule.rule_id)
+      );
+      selBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        toggleRule();
       });
-      tdW.appendChild(wInp);
+      tdId.appendChild(selBtn);
 
-      const tdProv = el("td");
-      const pSel = el("select");
-      pSel.setAttribute("aria-label", `${rule.rule_id} remediation target`);
-      [
-        ["google_gcp", gcpShortName()],
-        ["cymbal_stack", customerShortName()],
-      ].forEach(([val, txt]) => {
-        const o = el("option", "", txt);
-        o.value = val;
-        if (rule.remediation_provider === val) o.selected = true;
-        pSel.appendChild(o);
-      });
-      pSel.addEventListener("change", () => {
-        rule.remediation_provider = pSel.value;
-      });
-      tdProv.appendChild(pSel);
+      const tdGate = el("td");
+      tdGate.appendChild(
+        el(
+          "span",
+          rule.mandatory ? "status-badge status-err" : "status-badge status-warn",
+          rule.mandatory ? "Mandatory Gate" : "Advisory"
+        )
+      );
 
-      const tdEn = el("td");
-      const enChk = el("input");
-      enChk.type = "checkbox";
-      enChk.checked = Boolean(rule.enabled);
-      enChk.setAttribute("aria-label", `${rule.rule_id} enabled`);
-      enChk.addEventListener("change", () => {
-        rule.enabled = enChk.checked;
-      });
-      tdEn.appendChild(enChk);
+      const tdTarget = el(
+        "td",
+        "",
+        rule.remediation_provider === "google_gcp" ? gcpShortName() : customerShortName()
+      );
 
-      tr.append(tdMand, tdW, tdProv, tdEn);
+      const tdStatus = el("td");
+      tdStatus.appendChild(
+        el(
+          "span",
+          rule.enabled ? "status-badge status-ok" : "status-badge status-draft",
+          rule.enabled ? "Enabled" : "Disabled"
+        )
+      );
+
+      tr.append(
+        tdId,
+        el("td", "", capName),
+        el("td", "", `${rule.pillar} - ${rule.workstream}`),
+        el("td", "", rule.title),
+        tdGate,
+        el("td", "", `${rule.weight_points} pts`),
+        tdTarget,
+        tdStatus
+      );
+      tr.addEventListener("click", toggleRule);
       tbody.appendChild(tr);
+
+      if (isExp) {
+        const expTr = el("tr", "expanded-editor-row");
+        const expTd = el("td", "expanded-editor-cell");
+        expTd.colSpan = 8;
+        const editorPanel = el("div", "expanded-instance-panel");
+
+        const topBar = el("div", "instance-toolbar");
+        const leftMeta = el("div", "toolbar-left");
+        leftMeta.append(
+          el("span", "status-badge status-draft", `${rule.pillar} | ${capName}`),
+          el(
+            "span",
+            "field-hint",
+            spec ? `API Surface: ${spec.api_surface}` : rule.workstream
+          )
+        );
+
+        const rightPills = el("div", "toolbar-right");
+        rightPills.appendChild(
+          buildSegmentedPillRadios(
+            "Gate",
+            `rule-mand-${rule.rule_id}`,
+            rule.mandatory ? "true" : "false",
+            [
+              ["true", "Mandatory Gate"],
+              ["false", "Advisory"],
+            ],
+            (val) => {
+              rule.mandatory = val === "true";
+            }
+          )
+        );
+        rightPills.appendChild(
+          buildSegmentedPillRadios(
+            "Fix Target",
+            `rule-prov-${rule.rule_id}`,
+            rule.remediation_provider,
+            [
+              ["google_gcp", gcpShortName()],
+              ["cymbal_stack", customerShortName()],
+            ],
+            (val) => {
+              rule.remediation_provider = val;
+            }
+          )
+        );
+        rightPills.appendChild(
+          buildSegmentedPillRadios(
+            "Rule",
+            `rule-en-${rule.rule_id}`,
+            rule.enabled ? "true" : "false",
+            [
+              ["true", "Enabled"],
+              ["false", "Disabled"],
+            ],
+            (val) => {
+              rule.enabled = val === "true";
+            }
+          )
+        );
+        topBar.append(leftMeta, rightPills);
+        editorPanel.appendChild(topBar);
+
+        const gridTop = el("div", "form-grid-2");
+        const titleGrp = el("div", "field-group");
+        const titleId = `rule-title-${rule.rule_id}`;
+        const titleLbl = el("label", "", "Policy Requirement Title");
+        titleLbl.setAttribute("for", titleId);
+        const titleInp = el("input");
+        titleInp.type = "text";
+        titleInp.id = titleId;
+        titleInp.name = `${rule.rule_id}_title`;
+        titleInp.value = rule.title || "";
+        titleInp.addEventListener("input", () => {
+          rule.title = titleInp.value;
+        });
+        titleGrp.append(titleLbl, titleInp);
+
+        const wtGrp = el("div", "field-group");
+        const wtId = `rule-wt-${rule.rule_id}`;
+        const wtLbl = el("label", "", "Weight Points (1 - 40)");
+        wtLbl.setAttribute("for", wtId);
+        const wtInp = el("input");
+        wtInp.type = "number";
+        wtInp.id = wtId;
+        wtInp.name = `${rule.rule_id}_weight`;
+        wtInp.min = "1";
+        wtInp.max = "40";
+        wtInp.value = String(rule.weight_points);
+        wtInp.addEventListener("change", () => {
+          rule.weight_points = Number(wtInp.value || 10);
+        });
+        wtGrp.append(wtLbl, wtInp);
+        gridTop.append(titleGrp, wtGrp);
+        editorPanel.appendChild(gridTop);
+
+        const gridBot = el("div", "form-grid-2");
+        const descGrp = el("div", "field-group");
+        const descId = `rule-desc-${rule.rule_id}`;
+        const descLbl = el("label", "", "Policy Requirement Description");
+        descLbl.setAttribute("for", descId);
+        const descInp = el("input");
+        descInp.type = "text";
+        descInp.id = descId;
+        descInp.name = `${rule.rule_id}_description`;
+        descInp.value = rule.description || "";
+        descInp.addEventListener("input", () => {
+          rule.description = descInp.value;
+        });
+        descGrp.append(descLbl, descInp);
+
+        const remGrp = el("div", "field-group");
+        const remId = `rule-rem-${rule.rule_id}`;
+        const remLbl = el("label", "", "Recommended Remediation Guidance");
+        remLbl.setAttribute("for", remId);
+        const remInp = el("input");
+        remInp.type = "text";
+        remInp.id = remId;
+        remInp.name = `${rule.rule_id}_remediation`;
+        remInp.value = rule.remediation_summary || "";
+        remInp.addEventListener("input", () => {
+          rule.remediation_summary = remInp.value;
+        });
+        remGrp.append(remLbl, remInp);
+        gridBot.append(descGrp, remGrp);
+        editorPanel.appendChild(gridBot);
+
+        const actRow = el("div", "form-actions-end");
+        const rowSaveBtn = el("button", "primary-btn sm-btn", "Save Rule & Rubric");
+        rowSaveBtn.type = "button";
+        rowSaveBtn.addEventListener("click", async () => {
+          await persistGovernanceRubric(threshInp);
+        });
+        actRow.appendChild(rowSaveBtn);
+        editorPanel.appendChild(actRow);
+
+        expTd.appendChild(editorPanel);
+        expTr.appendChild(expTd);
+        tbody.appendChild(expTr);
+      }
     });
     tbl.appendChild(tbody);
     wrap.appendChild(tbl);
-    form.appendChild(wrap);
-
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      rub.passing_score_threshold = Number(threshInp.value || 85);
-      try {
-        const res = await apiPost("/api/ops/rubric", rub);
-        state.rubric = res.rubric;
-        state.templates = res.templates;
-        await refreshEvaluation(false);
-        renderStageBody();
-        showNotice(
-          `Saved governance rubric (Passing threshold: >= ${state.rubric.passing_score_threshold}).`
-        );
-      } catch (err) {
-        showError(err.message);
-      }
-    });
-
-    panel.appendChild(form);
+    panel.appendChild(wrap);
   }
 
-  function renderGovernFleetTab(panel) {
+  function populateGovernFleetBody(panel) {
     const m = state.operationsMetrics;
     if (!m) return;
 
@@ -3096,129 +3423,310 @@
     });
     panel.appendChild(kpis);
 
-    const adoptKey = "gov-fleet-adoption";
-    const adoptRows = m.component_adoption || [];
-    const adoptCols = [
-      {
-        key: "functional_name",
-        label: "Functional Capability",
-        type: "string",
-        filterType: "text",
-        getValue: (r) => r.functional_name,
-      },
-      {
-        key: "pillar",
-        label: "Governance Pillar",
-        type: "string",
-        filterType: "select",
-        getValue: (r) => r.pillar,
-      },
-      {
-        key: "workstream",
-        label: "Workstream",
-        type: "string",
-        filterType: "text",
-        getValue: (r) => r.workstream,
-      },
-      {
-        key: "cymbal_cnt",
-        label: `${customerShortName()} Deployments`,
-        type: "number",
-        filterType: "text",
-        getValue: (r) => Number(r.counts.cymbal_stack || 0),
-        getFilterText: (r) => `${r.counts.cymbal_stack} ${r.provider_labels.cymbal_stack}`,
-      },
-      {
-        key: "gcp_cnt",
-        label: `${gcpShortName()} Deployments`,
-        type: "number",
-        filterType: "text",
-        getValue: (r) => Number(r.counts.google_gcp || 0),
-        getFilterText: (r) => `${r.counts.google_gcp} ${r.provider_labels.google_gcp}`,
-      },
-      {
-        key: "google_gcp_pct",
-        label: `${gcpShortName()} Share`,
-        type: "number",
-        filterType: "text",
-        getValue: (r) => Number(r.google_gcp_pct || 0),
-      },
-    ];
-
-    const processedAdopt = applyTableSortAndFilters(
-      adoptRows,
-      adoptCols,
-      adoptKey,
-      "google_gcp_pct",
-      "desc"
-    );
-
-    const wrap = el("div", "table-wrap");
-    const adoptBanner = buildActiveFiltersBanner(
-      adoptKey,
-      processedAdopt.length,
-      adoptRows.length,
-      null
-    );
-    if (adoptBanner) {
-      wrap.appendChild(adoptBanner);
-    }
-
-    const tbl = el("table", "data-table");
-    tbl.appendChild(
-      el(
-        "caption",
-        "",
-        `Component Adoption Across All 10 Functional Capabilities (${customerShortName()} vs. ${gcpShortName()})`
-      )
-    );
-    tbl.appendChild(
-      buildInteractiveTableHead({
-        tableKey: adoptKey,
-        columns: adoptCols,
-        allRows: adoptRows,
-        defaultSortCol: "google_gcp_pct",
-        defaultSortDir: "desc",
-        paginationState: null,
-      })
-    );
-
-    const tbody = el("tbody");
-    processedAdopt.forEach((row) => {
-      const tr = el("tr");
-      tr.appendChild(el("td", "", row.functional_name));
-      tr.appendChild(el("td", "", row.pillar));
-      tr.appendChild(el("td", "", row.workstream));
-      tr.appendChild(
-        el("td", "", `${row.counts.cymbal_stack} (${row.provider_labels.cymbal_stack})`)
-      );
-      tr.appendChild(
-        el("td", "", `${row.counts.google_gcp} (${row.provider_labels.google_gcp})`)
-      );
-      const tdPct = el("td");
-      tdPct.appendChild(el("span", "", `${row.google_gcp_pct}%`));
-      const meter = el("progress", "meter-bar");
-      meter.max = 100;
-      meter.value = row.google_gcp_pct;
-      tdPct.appendChild(meter);
-      tr.appendChild(tdPct);
-      tbody.appendChild(tr);
-    });
-    tbl.appendChild(tbody);
-    wrap.appendChild(tbl);
-    panel.appendChild(wrap);
-
     panel.appendChild(
-      buildDeploymentsTable(
-        m.deployments || [],
-        "Fleet Deployment Audit Log - Sorted Newest-First (Select any row to expand component cost attribution)",
-        state.governFleetPagination,
-        "govern-fleet"
-      )
+      makeExclusiveSubExpanderList("govern-fleet-sub", "selectedGovernFleetSub", [
+        [
+          "adoption",
+          "2.1 10-Capability Component Adoption",
+          `${gcpShortName()} vs. ${customerShortName()}`,
+          (subBody) => {
+            const adoptKey = "gov-fleet-adoption";
+            const adoptRows = m.component_adoption || [];
+            const allDeps = m.deployments || [];
+            const adoptCols = [
+              {
+                key: "functional_name",
+                label: "Functional Capability",
+                type: "string",
+                filterType: "text",
+                getValue: (r) => r.functional_name,
+              },
+              {
+                key: "pillar",
+                label: "Governance Pillar",
+                type: "string",
+                filterType: "select",
+                getValue: (r) => r.pillar,
+              },
+              {
+                key: "workstream",
+                label: "Workstream",
+                type: "string",
+                filterType: "text",
+                getValue: (r) => r.workstream,
+              },
+              {
+                key: "cymbal_cnt",
+                label: `${customerShortName()} Deployments`,
+                type: "number",
+                filterType: "text",
+                getValue: (r) => Number(r.counts.cymbal_stack || 0),
+                getFilterText: (r) => `${r.counts.cymbal_stack} ${r.provider_labels.cymbal_stack}`,
+              },
+              {
+                key: "gcp_cnt",
+                label: `${gcpShortName()} Deployments`,
+                type: "number",
+                filterType: "text",
+                getValue: (r) => Number(r.counts.google_gcp || 0),
+                getFilterText: (r) => `${r.counts.google_gcp} ${r.provider_labels.google_gcp}`,
+              },
+              {
+                key: "google_gcp_pct",
+                label: `${gcpShortName()} Share`,
+                type: "number",
+                filterType: "text",
+                getValue: (r) => Number(r.google_gcp_pct || 0),
+              },
+            ];
+
+            const processedAdopt = applyTableSortAndFilters(
+              adoptRows,
+              adoptCols,
+              adoptKey,
+              "google_gcp_pct",
+              "desc"
+            );
+
+            const wrap = el("div", "table-wrap");
+            const adoptBanner = buildActiveFiltersBanner(
+              adoptKey,
+              processedAdopt.length,
+              adoptRows.length,
+              null
+            );
+            if (adoptBanner) {
+              wrap.appendChild(adoptBanner);
+            }
+
+            const tbl = el("table", "data-table");
+            tbl.appendChild(
+              el(
+                "caption",
+                "",
+                `Select any functional capability row to inspect deployed agent component choices (${customerShortName()} vs. ${gcpShortName()}).`
+              )
+            );
+            tbl.appendChild(
+              buildInteractiveTableHead({
+                tableKey: adoptKey,
+                columns: adoptCols,
+                allRows: adoptRows,
+                defaultSortCol: "google_gcp_pct",
+                defaultSortDir: "desc",
+                paginationState: null,
+              })
+            );
+
+            const tbody = el("tbody");
+            processedAdopt.forEach((row) => {
+              const isExp = state.expandedAdoptSlotId === row.slot_id;
+              const tr = el(
+                "tr",
+                isExp ? "clickable-row is-active-agent-row is-expanded-parent" : "clickable-row"
+              );
+
+              const toggleAdopt = () => {
+                state.activeGovernTab = "fleet";
+                state.selectedGovernFleetSub = "adoption";
+                state.expandedAdoptSlotId = isExp ? null : row.slot_id;
+                renderStageBody();
+              };
+
+              const tdCap = el("td");
+              const capBtn = el("button", "row-select-btn");
+              capBtn.type = "button";
+              capBtn.setAttribute("aria-expanded", isExp ? "true" : "false");
+              capBtn.append(
+                el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
+                el("span", "", row.functional_name)
+              );
+              capBtn.addEventListener("click", (ev) => {
+                ev.stopPropagation();
+                toggleAdopt();
+              });
+              tdCap.appendChild(capBtn);
+
+              tr.appendChild(tdCap);
+              tr.appendChild(el("td", "", row.pillar));
+              tr.appendChild(el("td", "", row.workstream));
+              tr.appendChild(
+                el("td", "", `${row.counts.cymbal_stack} (${row.provider_labels.cymbal_stack})`)
+              );
+              tr.appendChild(
+                el("td", "", `${row.counts.google_gcp} (${row.provider_labels.google_gcp})`)
+              );
+              const tdPct = el("td");
+              tdPct.appendChild(el("span", "", `${row.google_gcp_pct}%`));
+              const meter = el("progress", "meter-bar");
+              meter.max = 100;
+              meter.value = row.google_gcp_pct;
+              tdPct.appendChild(meter);
+              tr.appendChild(tdPct);
+              tr.addEventListener("click", toggleAdopt);
+              tbody.appendChild(tr);
+
+              if (isExp) {
+                const expTr = el("tr", "expanded-editor-row");
+                const expTd = el("td", "expanded-editor-cell");
+                expTd.colSpan = 6;
+                const subPanel = el("div", "expanded-instance-panel");
+
+                const subKey = `gov-adopt-sub-${row.slot_id}`;
+                const subSrc = allDeps.map((d) => {
+                  const cEntry = (d.component_costs || []).find((c) => c.slot_id === row.slot_id);
+                  const prov =
+                    (d.component_choices && d.component_choices[row.slot_id]) ||
+                    (cEntry && cEntry.provider) ||
+                    "google_gcp";
+                  return {
+                    agent_name: d.agent_name,
+                    deployed_at: d.deployed_at || "",
+                    business_unit_label: d.business_unit_label,
+                    provider: prov,
+                    component_label:
+                      (cEntry && cEntry.provider_label) ||
+                      (row.provider_labels && row.provider_labels[prov]) ||
+                      prov,
+                    monthly_cost_usd: cEntry ? Number(cEntry.monthly_cost_usd || 0) : 0,
+                  };
+                });
+
+                const subCols = [
+                  {
+                    key: "agent_name",
+                    label: "Agent ID",
+                    type: "string",
+                    filterType: "text",
+                    getValue: (x) => x.agent_name,
+                  },
+                  {
+                    key: "deployed_at",
+                    label: "Deployed At",
+                    type: "date",
+                    filterType: "text",
+                    getValue: (x) => x.deployed_at,
+                    getFilterText: (x) => (x.deployed_at ? x.deployed_at.slice(0, 10) : ""),
+                  },
+                  {
+                    key: "business_unit_label",
+                    label: "Business Unit",
+                    type: "string",
+                    filterType: "select",
+                    getValue: (x) => x.business_unit_label,
+                  },
+                  {
+                    key: "component_label",
+                    label: "Selected Component",
+                    type: "string",
+                    filterType: "select",
+                    getValue: (x) => x.component_label,
+                  },
+                  {
+                    key: "provider",
+                    label: "Provider Category",
+                    type: "string",
+                    filterType: "select",
+                    options: [
+                      ["google_gcp", gcpShortName()],
+                      ["cymbal_stack", customerShortName()],
+                    ],
+                    getValue: (x) => x.provider,
+                  },
+                  {
+                    key: "monthly_cost_usd",
+                    label: "Component Run-Rate",
+                    type: "number",
+                    filterType: "text",
+                    getValue: (x) => x.monthly_cost_usd,
+                    getFilterText: (x) => formatUsd(x.monthly_cost_usd),
+                  },
+                ];
+
+                const processedSub = applyTableSortAndFilters(
+                  subSrc,
+                  subCols,
+                  subKey,
+                  "deployed_at",
+                  "desc"
+                );
+                const subWrap = el("div", "table-wrap");
+                const subBan = buildActiveFiltersBanner(
+                  subKey,
+                  processedSub.length,
+                  subSrc.length,
+                  null
+                );
+                if (subBan) subWrap.appendChild(subBan);
+
+                const subTbl = el("table", "data-table");
+                subTbl.appendChild(
+                  el("caption", "", `Deployed Agent Fleet Choices for ${row.functional_name}`)
+                );
+                subTbl.appendChild(
+                  buildInteractiveTableHead({
+                    tableKey: subKey,
+                    columns: subCols,
+                    allRows: subSrc,
+                    defaultSortCol: "deployed_at",
+                    defaultSortDir: "desc",
+                    paginationState: null,
+                  })
+                );
+                const stb = el("tbody");
+                processedSub.forEach((x) => {
+                  const r = el("tr");
+                  r.appendChild(el("td", "", x.agent_name));
+                  r.appendChild(el("td", "", x.deployed_at ? x.deployed_at.slice(0, 10) : "--"));
+                  r.appendChild(el("td", "", x.business_unit_label));
+                  r.appendChild(el("td", "", x.component_label));
+                  const tdCat = el("td");
+                  tdCat.appendChild(
+                    el(
+                      "span",
+                      x.provider === "google_gcp"
+                        ? "status-badge status-ok"
+                        : "status-badge status-draft",
+                      x.provider === "google_gcp" ? gcpShortName() : customerShortName()
+                    )
+                  );
+                  r.appendChild(tdCat);
+                  r.appendChild(el("td", "", formatUsd(x.monthly_cost_usd)));
+                  stb.appendChild(r);
+                });
+                subTbl.appendChild(stb);
+                subWrap.appendChild(subTbl);
+                subPanel.appendChild(subWrap);
+                expTd.appendChild(subPanel);
+                expTr.appendChild(expTd);
+                tbody.appendChild(expTr);
+              }
+            });
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+            subBody.appendChild(wrap);
+          },
+        ],
+        [
+          "auditlog",
+          "2.2 Fleet Deployment Audit Log",
+          `${m.total_deployments} Historical Deployments`,
+          (subBody) => {
+            subBody.appendChild(
+              buildDeploymentsTable(
+                m.deployments || [],
+                "Fleet Deployment Audit Log - Sorted Newest-First (Select any row to expand component cost attribution)",
+                state.governFleetPagination,
+                "govern-fleet"
+              )
+            );
+          },
+        ],
+      ])
     );
   }
 
-  function renderGovernFinopsTab(panel) {
+  function populateGovernFinopsBody(panel) {
     const ec = state.executiveCosts;
     if (!ec) return;
 
@@ -3251,640 +3759,728 @@
     });
     panel.appendChild(kpis);
 
-    const pillarGrid = el("div", "kpi-grid-4");
-    (ec.pillar_cost_rollup || []).forEach((p) => {
-      const c = el("div", "surface-card");
-      c.append(
-        el("p", "kpi-label", `${p.pillar} Pillar Spend`),
-        el("p", "kpi-value", formatUsd(p.historical_cumulative_usd)),
-        el(
-          "p",
-          "kpi-sub",
-          `${formatUsd(p.monthly_run_rate_usd)}/mo (${p.share_of_total_pct}% share)`
-        )
-      );
-      pillarGrid.appendChild(c);
-    });
-    panel.appendChild(pillarGrid);
-
-    // 10-Component Historical Spend Table with Per-Column Sort, Filter & Inline Row Expansion
-    const compKey = "gov-finops-comps";
-    const compRows = ec.component_cost_rollup || [];
-    const compCols = [
-      {
-        key: "functional_name",
-        label: "Functional Component",
-        type: "string",
-        filterType: "text",
-        getValue: (c) => c.functional_name,
-      },
-      {
-        key: "pillar",
-        label: "Pillar",
-        type: "string",
-        filterType: "select",
-        getValue: (c) => c.pillar,
-      },
-      {
-        key: "cymbal_spend",
-        label: `${customerShortName()} Spend`,
-        type: "number",
-        filterType: "text",
-        getValue: (c) => Number(c.spend_by_provider_usd.cymbal_stack || 0),
-        getFilterText: (c) => formatUsd(c.spend_by_provider_usd.cymbal_stack),
-      },
-      {
-        key: "gcp_spend",
-        label: `${gcpShortName()} Spend`,
-        type: "number",
-        filterType: "text",
-        getValue: (c) => Number(c.spend_by_provider_usd.google_gcp || 0),
-        getFilterText: (c) => formatUsd(c.spend_by_provider_usd.google_gcp),
-      },
-      {
-        key: "monthly_run_rate_usd",
-        label: "Monthly Run-Rate",
-        type: "number",
-        filterType: "text",
-        getValue: (c) => Number(c.monthly_run_rate_usd || 0),
-        getFilterText: (c) => formatUsd(c.monthly_run_rate_usd),
-      },
-      {
-        key: "historical_cumulative_usd",
-        label: "Historical Total",
-        type: "number",
-        filterType: "text",
-        getValue: (c) => Number(c.historical_cumulative_usd || 0),
-        getFilterText: (c) => formatUsd(c.historical_cumulative_usd),
-      },
-      {
-        key: "share_of_total_pct",
-        label: "Share",
-        type: "number",
-        filterType: "text",
-        getValue: (c) => Number(c.share_of_total_pct || 0),
-      },
-    ];
-
-    const processedComps = applyTableSortAndFilters(
-      compRows,
-      compCols,
-      compKey,
-      "historical_cumulative_usd",
-      "desc"
-    );
-
-    const compWrap = el("div", "table-wrap");
-    const compBanner = buildActiveFiltersBanner(
-      compKey,
-      processedComps.length,
-      compRows.length,
-      null
-    );
-    if (compBanner) {
-      compWrap.appendChild(compBanner);
-    }
-
-    const compTbl = el("table", "data-table");
-    compTbl.appendChild(
-      el(
-        "caption",
-        "",
-        "Aggregate Historical Spend Across All 10 Functional Components (Select any row to expand top contributing agents)"
-      )
-    );
-    compTbl.appendChild(
-      buildInteractiveTableHead({
-        tableKey: compKey,
-        columns: compCols,
-        allRows: compRows,
-        defaultSortCol: "historical_cumulative_usd",
-        defaultSortDir: "desc",
-        paginationState: null,
-      })
-    );
-
-    const cbody = el("tbody");
-    processedComps.forEach((comp) => {
-      const isExp = state.expandedFinopsSlotId === comp.slot_id;
-      const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
-
-      const toggleComp = () => {
-        state.expandedFinopsSlotId = isExp ? null : comp.slot_id;
-        renderStageBody();
-      };
-
-      const tdName = el("td");
-      const btn = el("button", "row-select-btn");
-      btn.type = "button";
-      btn.setAttribute("aria-expanded", isExp ? "true" : "false");
-      btn.append(
-        el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
-        el("span", "", comp.functional_name)
-      );
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleComp();
-      });
-      tdName.appendChild(btn);
-
-      tr.appendChild(tdName);
-      tr.appendChild(el("td", "", comp.pillar));
-      tr.appendChild(el("td", "", formatUsd(comp.spend_by_provider_usd.cymbal_stack)));
-      tr.appendChild(el("td", "", formatUsd(comp.spend_by_provider_usd.google_gcp)));
-      tr.appendChild(el("td", "", formatUsd(comp.monthly_run_rate_usd)));
-      tr.appendChild(el("td", "", formatUsd(comp.historical_cumulative_usd)));
-      tr.appendChild(el("td", "", `${comp.share_of_total_pct}%`));
-      tr.addEventListener("click", toggleComp);
-      cbody.appendChild(tr);
-
-      if (isExp) {
-        const expTr = el("tr", "expanded-editor-row");
-        const expTd = el("td", "expanded-editor-cell");
-        expTd.colSpan = 7;
-        const subPanel = el("div", "expanded-instance-panel");
-        subPanel.appendChild(
-          el("p", "field-hint", `${comp.workstream} | Consolidates: ${comp.consolidates}`)
-        );
-
-        const topSubKey = `finops-sub-${comp.slot_id}`;
-        const topSrc = comp.top_deployments || [];
-        const topCols = [
-          {
-            key: "agent_name",
-            label: "Agent ID",
-            type: "string",
-            filterType: "text",
-            getValue: (d) => d.agent_name,
-          },
-          {
-            key: "business_unit_label",
-            label: "Business Unit",
-            type: "string",
-            filterType: "select",
-            getValue: (d) => d.business_unit_label,
-          },
-          {
-            key: "provider_label",
-            label: "Selected Component",
-            type: "string",
-            filterType: "text",
-            getValue: (d) =>
-              (comp.provider_labels && comp.provider_labels[d.provider]) || d.provider,
-          },
-          {
-            key: "historical_cumulative_usd",
-            label: "Cumulative Spend",
-            type: "number",
-            filterType: "text",
-            getValue: (d) => Number(d.historical_cumulative_usd || 0),
-            getFilterText: (d) => formatUsd(d.historical_cumulative_usd),
-          },
-        ];
-        const processedTop = applyTableSortAndFilters(
-          topSrc,
-          topCols,
-          topSubKey,
-          "historical_cumulative_usd",
-          "desc"
-        );
-
-        const subWrap = el("div", "table-wrap");
-        const subBanner = buildActiveFiltersBanner(
-          topSubKey,
-          processedTop.length,
-          topSrc.length,
-          null
-        );
-        if (subBanner) {
-          subWrap.appendChild(subBanner);
-        }
-        const subTbl = el("table", "data-table");
-        subTbl.appendChild(
-          el("caption", "", `Top Contributing Agent Deployments for ${comp.functional_name}`)
-        );
-        subTbl.appendChild(
-          buildInteractiveTableHead({
-            tableKey: topSubKey,
-            columns: topCols,
-            allRows: topSrc,
-            defaultSortCol: "historical_cumulative_usd",
-            defaultSortDir: "desc",
-            paginationState: null,
-          })
-        );
-
-        const stb = el("tbody");
-        processedTop.forEach((d) => {
-          const r = el("tr");
-          r.appendChild(el("td", "", d.agent_name));
-          r.appendChild(el("td", "", d.business_unit_label));
-          r.appendChild(
-            el(
-              "td",
-              "",
-              (comp.provider_labels && comp.provider_labels[d.provider]) || d.provider
-            )
-          );
-          r.appendChild(el("td", "", formatUsd(d.historical_cumulative_usd)));
-          stb.appendChild(r);
-        });
-        subTbl.appendChild(stb);
-        subWrap.appendChild(subTbl);
-        subPanel.appendChild(subWrap);
-        expTd.appendChild(subPanel);
-        expTr.appendChild(expTd);
-        cbody.appendChild(expTr);
-      }
-    });
-    compTbl.appendChild(cbody);
-    compWrap.appendChild(compTbl);
-    panel.appendChild(compWrap);
-
     panel.appendChild(
-      buildDeploymentsTable(
-        ec.deployments || [],
-        "Per-Agent Deployment Cost Ledger - Sorted Newest-First (Select any row to expand 10-component cost attribution)",
-        state.governFinopsPagination,
-        "govern-finops"
-      )
+      makeExclusiveSubExpanderList("govern-finops-sub", "selectedGovernFinopsSub", [
+        [
+          "attribution",
+          "3.1 Pillar & 10-Component Spend Attribution",
+          "4 Pillars | 10 Capabilities",
+          (subBody) => {
+            const pillarGrid = el("div", "kpi-grid-4");
+            (ec.pillar_cost_rollup || []).forEach((p) => {
+              const c = el("div", "surface-card");
+              c.append(
+                el("p", "kpi-label", `${p.pillar} Pillar Spend`),
+                el("p", "kpi-value", formatUsd(p.historical_cumulative_usd)),
+                el(
+                  "p",
+                  "kpi-sub",
+                  `${formatUsd(p.monthly_run_rate_usd)}/mo (${p.share_of_total_pct}% share)`
+                )
+              );
+              pillarGrid.appendChild(c);
+            });
+            subBody.appendChild(pillarGrid);
+
+            const compKey = "gov-finops-comps";
+            const compRows = ec.component_cost_rollup || [];
+            const compCols = [
+              {
+                key: "functional_name",
+                label: "Functional Component",
+                type: "string",
+                filterType: "text",
+                getValue: (c) => c.functional_name,
+              },
+              {
+                key: "pillar",
+                label: "Pillar",
+                type: "string",
+                filterType: "select",
+                getValue: (c) => c.pillar,
+              },
+              {
+                key: "cymbal_spend",
+                label: `${customerShortName()} Spend`,
+                type: "number",
+                filterType: "text",
+                getValue: (c) => Number(c.spend_by_provider_usd.cymbal_stack || 0),
+                getFilterText: (c) => formatUsd(c.spend_by_provider_usd.cymbal_stack),
+              },
+              {
+                key: "gcp_spend",
+                label: `${gcpShortName()} Spend`,
+                type: "number",
+                filterType: "text",
+                getValue: (c) => Number(c.spend_by_provider_usd.google_gcp || 0),
+                getFilterText: (c) => formatUsd(c.spend_by_provider_usd.google_gcp),
+              },
+              {
+                key: "monthly_run_rate_usd",
+                label: "Monthly Run-Rate",
+                type: "number",
+                filterType: "text",
+                getValue: (c) => Number(c.monthly_run_rate_usd || 0),
+                getFilterText: (c) => formatUsd(c.monthly_run_rate_usd),
+              },
+              {
+                key: "historical_cumulative_usd",
+                label: "Historical Total",
+                type: "number",
+                filterType: "text",
+                getValue: (c) => Number(c.historical_cumulative_usd || 0),
+                getFilterText: (c) => formatUsd(c.historical_cumulative_usd),
+              },
+              {
+                key: "share_of_total_pct",
+                label: "Share",
+                type: "number",
+                filterType: "text",
+                getValue: (c) => Number(c.share_of_total_pct || 0),
+              },
+            ];
+
+            const processedComps = applyTableSortAndFilters(
+              compRows,
+              compCols,
+              compKey,
+              "historical_cumulative_usd",
+              "desc"
+            );
+
+            const compWrap = el("div", "table-wrap");
+            const compBanner = buildActiveFiltersBanner(
+              compKey,
+              processedComps.length,
+              compRows.length,
+              null
+            );
+            if (compBanner) {
+              compWrap.appendChild(compBanner);
+            }
+
+            const compTbl = el("table", "data-table");
+            compTbl.appendChild(
+              el(
+                "caption",
+                "",
+                "Aggregate Historical Spend Across All 10 Functional Components (Select any row to expand top contributing agents)"
+              )
+            );
+            compTbl.appendChild(
+              buildInteractiveTableHead({
+                tableKey: compKey,
+                columns: compCols,
+                allRows: compRows,
+                defaultSortCol: "historical_cumulative_usd",
+                defaultSortDir: "desc",
+                paginationState: null,
+              })
+            );
+
+            const cbody = el("tbody");
+            processedComps.forEach((comp) => {
+              const isExp = state.expandedFinopsSlotId === comp.slot_id;
+              const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
+
+              const toggleComp = () => {
+                state.activeGovernTab = "finops";
+                state.selectedGovernFinopsSub = "attribution";
+                state.expandedFinopsSlotId = isExp ? null : comp.slot_id;
+                renderStageBody();
+              };
+
+              const tdName = el("td");
+              const btn = el("button", "row-select-btn");
+              btn.type = "button";
+              btn.setAttribute("aria-expanded", isExp ? "true" : "false");
+              btn.append(
+                el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
+                el("span", "", comp.functional_name)
+              );
+              btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                toggleComp();
+              });
+              tdName.appendChild(btn);
+
+              tr.appendChild(tdName);
+              tr.appendChild(el("td", "", comp.pillar));
+              tr.appendChild(el("td", "", formatUsd(comp.spend_by_provider_usd.cymbal_stack)));
+              tr.appendChild(el("td", "", formatUsd(comp.spend_by_provider_usd.google_gcp)));
+              tr.appendChild(el("td", "", formatUsd(comp.monthly_run_rate_usd)));
+              tr.appendChild(el("td", "", formatUsd(comp.historical_cumulative_usd)));
+              tr.appendChild(el("td", "", `${comp.share_of_total_pct}%`));
+              tr.addEventListener("click", toggleComp);
+              cbody.appendChild(tr);
+
+              if (isExp) {
+                const expTr = el("tr", "expanded-editor-row");
+                const expTd = el("td", "expanded-editor-cell");
+                expTd.colSpan = 7;
+                const subPanel = el("div", "expanded-instance-panel");
+                subPanel.appendChild(
+                  el("p", "field-hint", `${comp.workstream} | Consolidates: ${comp.consolidates}`)
+                );
+
+                const topSubKey = `finops-sub-${comp.slot_id}`;
+                const topSrc = comp.top_deployments || [];
+                const topCols = [
+                  {
+                    key: "agent_name",
+                    label: "Agent ID",
+                    type: "string",
+                    filterType: "text",
+                    getValue: (d) => d.agent_name,
+                  },
+                  {
+                    key: "business_unit_label",
+                    label: "Business Unit",
+                    type: "string",
+                    filterType: "select",
+                    getValue: (d) => d.business_unit_label,
+                  },
+                  {
+                    key: "provider_label",
+                    label: "Selected Component",
+                    type: "string",
+                    filterType: "text",
+                    getValue: (d) =>
+                      (comp.provider_labels && comp.provider_labels[d.provider]) || d.provider,
+                  },
+                  {
+                    key: "historical_cumulative_usd",
+                    label: "Cumulative Spend",
+                    type: "number",
+                    filterType: "text",
+                    getValue: (d) => Number(d.historical_cumulative_usd || 0),
+                    getFilterText: (d) => formatUsd(d.historical_cumulative_usd),
+                  },
+                ];
+                const processedTop = applyTableSortAndFilters(
+                  topSrc,
+                  topCols,
+                  topSubKey,
+                  "historical_cumulative_usd",
+                  "desc"
+                );
+
+                const subWrap = el("div", "table-wrap");
+                const subBanner = buildActiveFiltersBanner(
+                  topSubKey,
+                  processedTop.length,
+                  topSrc.length,
+                  null
+                );
+                if (subBanner) {
+                  subWrap.appendChild(subBanner);
+                }
+                const subTbl = el("table", "data-table");
+                subTbl.appendChild(
+                  el("caption", "", `Top Contributing Agent Deployments for ${comp.functional_name}`)
+                );
+                subTbl.appendChild(
+                  buildInteractiveTableHead({
+                    tableKey: topSubKey,
+                    columns: topCols,
+                    allRows: topSrc,
+                    defaultSortCol: "historical_cumulative_usd",
+                    defaultSortDir: "desc",
+                    paginationState: null,
+                  })
+                );
+
+                const stb = el("tbody");
+                processedTop.forEach((d) => {
+                  const r = el("tr");
+                  r.appendChild(el("td", "", d.agent_name));
+                  r.appendChild(el("td", "", d.business_unit_label));
+                  r.appendChild(
+                    el(
+                      "td",
+                      "",
+                      (comp.provider_labels && comp.provider_labels[d.provider]) || d.provider
+                    )
+                  );
+                  r.appendChild(el("td", "", formatUsd(d.historical_cumulative_usd)));
+                  stb.appendChild(r);
+                });
+                subTbl.appendChild(stb);
+                subWrap.appendChild(subTbl);
+                subPanel.appendChild(subWrap);
+                expTd.appendChild(subPanel);
+                expTr.appendChild(expTd);
+                cbody.appendChild(expTr);
+              }
+            });
+            compTbl.appendChild(cbody);
+            compWrap.appendChild(compTbl);
+            subBody.appendChild(compWrap);
+          },
+        ],
+        [
+          "ledger",
+          "3.2 Per-Agent Deployment Cost Ledger",
+          `${ec.deployment_count} Deployed Agents`,
+          (subBody) => {
+            subBody.appendChild(
+              buildDeploymentsTable(
+                ec.deployments || [],
+                "Per-Agent Deployment Cost Ledger - Sorted Newest-First (Select any row to expand 10-component cost attribution)",
+                state.governFinopsPagination,
+                "govern-finops"
+              )
+            );
+          },
+        ],
+        [
+          "simulator",
+          "3.3 Guardrail Scale Economics Simulator (1M - 50M Daily Turns)",
+          "Model Armor Tier-0",
+          (subBody) => {
+            const tcoForm = el("form", "inline-single-action-row");
+            const turnsGrp = el("div", "field-group");
+            const turnsLbl = el("label", "", "Daily Fleet Turns");
+            turnsLbl.setAttribute("for", "tco-daily-turns-select");
+            const turnsSel = el("select");
+            turnsSel.id = "tco-daily-turns-select";
+            turnsSel.name = "daily_turns";
+            [
+              [1000000, "1,000,000 turns/day"],
+              [5000000, "5,000,000 turns/day"],
+              [10000000, "10,000,000 turns/day"],
+              [25000000, "25,000,000 turns/day"],
+              [50000000, "50,000,000 turns/day"],
+            ].forEach(([val, txt]) => {
+              const o = el("option", "", txt);
+              o.value = String(val);
+              if (state.tcoReport && state.tcoReport.daily_turns === val) o.selected = true;
+              turnsSel.appendChild(o);
+            });
+            turnsGrp.append(turnsLbl, turnsSel);
+
+            const tcoAct = el("div", "form-actions-end");
+            const calcBtn = el("button", "primary-btn", "Recalculate Scale Model");
+            calcBtn.type = "submit";
+            tcoAct.appendChild(calcBtn);
+            tcoForm.append(turnsGrp, tcoAct);
+            tcoForm.addEventListener("submit", async (e) => {
+              e.preventDefault();
+              calcBtn.disabled = true;
+              try {
+                state.tcoReport = await apiPost("/api/steward/tco", {
+                  daily_turns: Number(turnsSel.value),
+                  tokens_per_turn: 1000,
+                });
+                state.activeGovernTab = "finops";
+                state.selectedGovernFinopsSub = "simulator";
+                renderStageBody();
+              } catch (err) {
+                showError(err.message);
+              } finally {
+                calcBtn.disabled = false;
+              }
+            });
+            subBody.appendChild(tcoForm);
+
+            if (state.tcoReport) {
+              const t = state.tcoReport;
+              const tGrid = el("div", "kpi-grid-4");
+              [
+                [
+                  "Google Model Armor Tier-0 Annual",
+                  formatUsd(t.model_armor_only_annual_usd),
+                  "$0.10 / 1M tokens",
+                ],
+                [
+                  "20% Ensemble Annual",
+                  formatUsd(t.ensemble_20pct_annual_usd),
+                  "Tier-0 + 20% secondary voter",
+                ],
+                [
+                  "Legacy 3-Model Voter Annual",
+                  formatUsd(t.three_llm_voter_annual_usd),
+                  "100% 3-LLM ensemble",
+                ],
+                [
+                  "Annual Savings (Model Armor)",
+                  formatUsd(t.annual_savings_model_armor_vs_voter_usd),
+                  `${t.savings_pct_model_armor_vs_voter}% reduction`,
+                ],
+              ].forEach(([l, v, s], idx) => {
+                const c = el("div", idx === 3 ? "surface-card hero-metric-card" : "surface-card");
+                c.append(el("p", "kpi-label", l), el("p", "kpi-value", v), el("p", "kpi-sub", s));
+                tGrid.appendChild(c);
+              });
+              subBody.appendChild(tGrid);
+            }
+          },
+        ],
+      ])
     );
-
-    const tcoCard = el("div", "surface-card form-stack deferred-below-fold");
-    tcoCard.appendChild(
-      el("h3", "section-heading", "Guardrail Scale Economics Simulator (1M - 50M Daily Turns)")
-    );
-    const tcoRow = el("div", "toolbar-row");
-    const turnsGrp = el("div", "field-group");
-    const turnsLbl = el("label", "", "Daily Fleet Turns");
-    turnsLbl.setAttribute("for", "tco-daily-turns-select");
-    const turnsSel = el("select");
-    turnsSel.id = "tco-daily-turns-select";
-    [
-      [1000000, "1,000,000 turns/day"],
-      [5000000, "5,000,000 turns/day"],
-      [10000000, "10,000,000 turns/day"],
-      [25000000, "25,000,000 turns/day"],
-      [50000000, "50,000,000 turns/day"],
-    ].forEach(([val, txt]) => {
-      const o = el("option", "", txt);
-      o.value = String(val);
-      if (state.tcoReport && state.tcoReport.daily_turns === val) o.selected = true;
-      turnsSel.appendChild(o);
-    });
-    turnsGrp.append(turnsLbl, turnsSel);
-
-    const calcBtn = el("button", "secondary-btn", "Recalculate Scale Model");
-    calcBtn.type = "button";
-    calcBtn.addEventListener("click", async () => {
-      try {
-        state.tcoReport = await apiPost("/api/steward/tco", {
-          daily_turns: Number(turnsSel.value),
-          tokens_per_turn: 1000,
-        });
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      }
-    });
-    tcoRow.append(turnsGrp, calcBtn);
-    tcoCard.appendChild(tcoRow);
-
-    if (state.tcoReport) {
-      const t = state.tcoReport;
-      const tGrid = el("div", "kpi-grid-4");
-      [
-        [
-          "Model Armor Tier-0 Annual",
-          formatUsd(t.model_armor_only_annual_usd),
-          "$0.10 / 1M tokens",
-        ],
-        [
-          "20% Ensemble Annual",
-          formatUsd(t.ensemble_20pct_annual_usd),
-          "Tier-0 + 20% secondary voter",
-        ],
-        [
-          "Legacy 3-Model Voter Annual",
-          formatUsd(t.three_llm_voter_annual_usd),
-          "100% 3-LLM ensemble",
-        ],
-        [
-          "Annual Savings (Model Armor)",
-          formatUsd(t.annual_savings_model_armor_vs_voter_usd),
-          `${t.savings_pct_model_armor_vs_voter}% reduction`,
-        ],
-      ].forEach(([l, v, s]) => {
-        const c = el("div", "surface-card");
-        c.append(el("p", "kpi-label", l), el("p", "kpi-value", v), el("p", "kpi-sub", s));
-        tGrid.appendChild(c);
-      });
-      tcoCard.appendChild(tGrid);
-    }
-    panel.appendChild(tcoCard);
   }
 
-  function renderGovernControlsTab(panel) {
-    const split = el("div", "split-2-col");
-
-    const killCard = el("div", "surface-card form-stack");
-    killCard.appendChild(
-      el("h3", "section-heading", "Global Containment & Atomic Budget Controls")
-    );
+  function populateGovernControlsBody(panel) {
     const curStatus = (state.agentState && state.agentState.status) || "ACTIVE";
-    killCard.appendChild(
-      el(
-        "span",
-        curStatus === "ACTIVE" ? "status-badge status-ok" : "status-badge status-err",
-        `Fleet Runtime State: ${curStatus}`
-      )
-    );
-
-    const killBtns = el("div", "toolbar-left");
-    ["ACTIVE", "PAUSED", "DISABLED"].forEach((st) => {
-      const b = el(
-        "button",
-        st === curStatus ? "primary-btn sm-btn" : "secondary-btn sm-btn",
-        st
-      );
-      b.type = "button";
-      b.addEventListener("click", async () => {
-        try {
-          const res = await apiPost("/api/steward/kill-switch", { status: st });
-          state.agentState = res.agent_state;
-          renderStageBody();
-        } catch (err) {
-          showError(err.message);
-        }
-      });
-      killBtns.appendChild(b);
-    });
-    killCard.appendChild(killBtns);
-
     const spentUsd = ((state.walletState && state.walletState.spent_nano_usd) || 0) / 1e9;
     const capUsd =
       ((state.walletState && state.walletState.monthly_cap_nano_usd) || 15000000000) / 1e9;
-    const capGrp = el("div", "field-group");
-    const capLbl = el(
-      "label",
-      "",
-      `Atomic Budget Ceiling USD (Current Spend: $${spentUsd.toFixed(6)})`
-    );
-    capLbl.setAttribute("for", "wallet-cap-usd-input");
-    const capInp = el("input");
-    capInp.type = "number";
-    capInp.id = "wallet-cap-usd-input";
-    capInp.step = "0.01";
-    capInp.min = "0";
-    capInp.value = String(capUsd);
-    capGrp.append(capLbl, capInp);
+    const passedProofsCnt = state.proofResults.filter((p) => p.passed).length;
 
-    const capBtns = el("div", "toolbar-left");
-    const updCapBtn = el("button", "secondary-btn sm-btn", "Update Ceiling");
-    updCapBtn.type = "button";
-    updCapBtn.addEventListener("click", async () => {
-      try {
-        const nano = Math.round(Number(capInp.value || 0) * 1e9);
-        const r = await apiPost("/api/steward/wallet-cap", {
-          monthly_cap_nano_usd: nano,
-          reset_spend: false,
-        });
-        state.walletState = r.wallet_state;
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      }
-    });
+    panel.appendChild(
+      makeExclusiveSubExpanderList("govern-controls-sub", "selectedGovernControlsSub", [
+        [
+          "killswitch",
+          "4.1 Global Containment, Atomic Budget & ADR-011 OBO",
+          `State: ${curStatus} | Ceiling: $${capUsd.toFixed(2)}`,
+          (subBody) => {
+            const topBar = el("div", "instance-toolbar");
+            const leftStatus = el("div", "toolbar-left");
+            leftStatus.appendChild(
+              el(
+                "span",
+                curStatus === "ACTIVE" ? "status-badge status-ok" : "status-badge status-err",
+                `Fleet Runtime State: ${curStatus}`
+              )
+            );
+            leftStatus.appendChild(
+              el("span", "field-hint", "Enforced pre-inference across all ADK 2.0 runtime endpoints")
+            );
 
-    const oboBtn = el("button", "secondary-btn sm-btn", "Verify OBO Token Pair (ADR-011)");
-    oboBtn.type = "button";
-    oboBtn.addEventListener("click", async () => {
-      try {
-        state.lastOboResult = await apiPost("/api/steward/obo-verify", {});
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      }
-    });
-    capBtns.append(updCapBtn, oboBtn);
-    killCard.append(capGrp, capBtns);
+            const killRadios = buildSegmentedPillRadios(
+              "Kill Switch",
+              "global-kill-switch-state",
+              curStatus,
+              [
+                ["ACTIVE", "ACTIVE"],
+                ["PAUSED", "PAUSED"],
+                ["DISABLED", "DISABLED"],
+              ],
+              async (nextSt) => {
+                try {
+                  const res = await apiPost("/api/steward/kill-switch", { status: nextSt });
+                  state.agentState = res.agent_state;
+                  state.activeGovernTab = "controls";
+                  state.selectedGovernControlsSub = "killswitch";
+                  renderStageBody();
+                } catch (err) {
+                  showError(err.message);
+                }
+              }
+            );
+            topBar.append(leftStatus, killRadios);
+            subBody.appendChild(topBar);
 
-    if (state.lastOboResult) {
-      killCard.appendChild(
-        el("pre", "code-block", JSON.stringify(state.lastOboResult.adr011_valid_pair, null, 2))
-      );
-    }
+            const capForm = el("form", "inline-single-action-row");
+            const capGrp = el("div", "field-group");
+            const capLbl = el(
+              "label",
+              "",
+              `Atomic Budget Ceiling USD (Current Spend: $${spentUsd.toFixed(6)})`
+            );
+            capLbl.setAttribute("for", "wallet-cap-usd-input");
+            const capInp = el("input");
+            capInp.type = "number";
+            capInp.id = "wallet-cap-usd-input";
+            capInp.name = "monthly_cap_usd";
+            capInp.step = "0.01";
+            capInp.min = "0";
+            capInp.value = String(capUsd);
+            capGrp.append(capLbl, capInp);
 
-    const guardCard = el("div", "surface-card form-stack");
-    guardCard.appendChild(
-      el("h3", "section-heading", "Dynamic Guardrail & Inline PII Policy Tester")
-    );
-    const gTxtGrp = el("div", "field-group");
-    const gLbl = el("label", "", "Inspection Input Payload");
-    gLbl.setAttribute("for", "guardrail-test-input");
-    const gTxt = el("textarea");
-    gTxt.id = "guardrail-test-input";
-    gTxt.rows = 3;
-    gTxt.value = "Subscriber log check: SSN 123-45-6789 on gateway MAC aa:bb:cc:dd:ee:ff";
-    gTxtGrp.append(gLbl, gTxt);
+            const capBtns = el("div", "form-actions-end");
+            const oboBtn = el("button", "secondary-btn", "Verify OBO Token Pair (ADR-011)");
+            oboBtn.type = "button";
+            oboBtn.addEventListener("click", async () => {
+              try {
+                state.lastOboResult = await apiPost("/api/steward/obo-verify", {});
+                state.activeGovernTab = "controls";
+                state.selectedGovernControlsSub = "killswitch";
+                renderStageBody();
+              } catch (err) {
+                showError(err.message);
+              }
+            });
 
-    const gModeGrp = el("div", "field-group");
-    const gModeLbl = el("label", "", "PII Enforcement Mode");
-    gModeLbl.setAttribute("for", "guardrail-sdp-select");
-    const gModeSel = el("select");
-    gModeSel.id = "guardrail-sdp-select";
-    [
-      ["DEIDENTIFY_INLINE", "DEIDENTIFY_INLINE (Mask PII & Continue)"],
-      ["BLOCK_ON_MATCH", "BLOCK_ON_MATCH (Strict Regional Block)"],
-    ].forEach(([val, txt]) => {
-      const o = el("option", "", txt);
-      o.value = val;
-      gModeSel.appendChild(o);
-    });
-    gModeGrp.append(gModeLbl, gModeSel);
+            const updCapBtn = el("button", "primary-btn", "Update Ceiling");
+            updCapBtn.type = "submit";
+            capBtns.append(oboBtn, updCapBtn);
+            capForm.append(capGrp, capBtns);
 
-    const gRunBtn = el("button", "primary-btn sm-btn", "Inspect Payload");
-    gRunBtn.type = "button";
-    gRunBtn.addEventListener("click", async () => {
-      try {
-        state.lastGuardrailVerdict = await apiPost("/api/steward/guardrail-test", {
-          sample_text: gTxt.value,
-          dynamic_policy: {
-            business_unit: gModeSel.value === "BLOCK_ON_MATCH" ? "intl_sky" : "core_cable",
-            risk_tier: "AG3",
-            sdp_pii_mode: gModeSel.value,
-            ensemble_role: "tier0_prefilter",
+            capForm.addEventListener("submit", async (e) => {
+              e.preventDefault();
+              updCapBtn.disabled = true;
+              try {
+                const nano = Math.round(Number(capInp.value || 0) * 1e9);
+                const r = await apiPost("/api/steward/wallet-cap", {
+                  monthly_cap_nano_usd: nano,
+                  reset_spend: false,
+                });
+                state.walletState = r.wallet_state;
+                state.activeGovernTab = "controls";
+                state.selectedGovernControlsSub = "killswitch";
+                renderStageBody();
+              } catch (err) {
+                showError(err.message);
+              } finally {
+                updCapBtn.disabled = false;
+              }
+            });
+            subBody.appendChild(capForm);
+
+            if (state.lastOboResult) {
+              subBody.appendChild(
+                el(
+                  "pre",
+                  "code-block",
+                  JSON.stringify(state.lastOboResult.adr011_valid_pair, null, 2)
+                )
+              );
+            }
           },
-        });
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      }
-    });
-    guardCard.append(gTxtGrp, gModeGrp, gRunBtn);
+        ],
+        [
+          "guardrail",
+          "4.2 Dynamic Guardrail & Inline PII Policy Tester",
+          "Google Model Armor + Cloud SDP",
+          (subBody) => {
+            const guardForm = el("form", "form-stack");
+            const gTxtGrp = el("div", "field-group");
+            const gLbl = el("label", "", "Inspection Input Payload");
+            gLbl.setAttribute("for", "guardrail-test-input");
+            const gTxt = el("textarea");
+            gTxt.id = "guardrail-test-input";
+            gTxt.name = "sample_text";
+            gTxt.rows = 3;
+            gTxt.value = "Subscriber log check: SSN 123-45-6789 on gateway MAC aa:bb:cc:dd:ee:ff";
+            gTxtGrp.append(gLbl, gTxt);
 
-    if (state.lastGuardrailVerdict) {
-      const gv = state.lastGuardrailVerdict;
-      guardCard.appendChild(
-        el(
-          "span",
-          gv.allowed ? "status-badge status-ok" : "status-badge status-err",
-          `${gv.action_taken} (${gv.latency_ms}ms)`
-        )
-      );
-      guardCard.appendChild(el("pre", "code-block", gv.sanitized_text));
-    }
+            const modeRow = el("div", "inline-single-action-row");
+            const gModeGrp = el("div", "field-group");
+            const gModeLbl = el("label", "", "PII Enforcement Mode");
+            gModeLbl.setAttribute("for", "guardrail-sdp-select");
+            const gModeSel = el("select");
+            gModeSel.id = "guardrail-sdp-select";
+            gModeSel.name = "sdp_pii_mode";
+            [
+              ["DEIDENTIFY_INLINE", "DEIDENTIFY_INLINE (Mask PII & Continue)"],
+              ["BLOCK_ON_MATCH", "BLOCK_ON_MATCH (Strict Regional Block)"],
+            ].forEach(([val, txt]) => {
+              const o = el("option", "", txt);
+              o.value = val;
+              gModeSel.appendChild(o);
+            });
+            gModeGrp.append(gModeLbl, gModeSel);
 
-    split.append(killCard, guardCard);
-    panel.appendChild(split);
+            const gAct = el("div", "form-actions-end");
+            const gRunBtn = el("button", "primary-btn", "Inspect Payload");
+            gRunBtn.type = "submit";
+            gAct.appendChild(gRunBtn);
+            modeRow.append(gModeGrp, gAct);
+            guardForm.append(gTxtGrp, modeRow);
 
-    const proofCard = el("div", "surface-card form-stack");
-    const pHead = el("div", "toolbar-row");
-    pHead.appendChild(el("h3", "section-heading", "Live Control Plane Verification Checks (8)"));
-    const runAllBtn = el("button", "secondary-btn sm-btn", "Run All 8 Verification Checks");
-    runAllBtn.type = "button";
-    runAllBtn.addEventListener("click", async () => {
-      runAllBtn.disabled = true;
-      try {
-        const res = await apiPost("/api/steward/proofs-all", {});
-        state.proofResults = res.proofs || [];
-        renderStageBody();
-      } catch (err) {
-        showError(err.message);
-      } finally {
-        runAllBtn.disabled = false;
-      }
-    });
-    pHead.appendChild(runAllBtn);
-    proofCard.appendChild(pHead);
+            guardForm.addEventListener("submit", async (e) => {
+              e.preventDefault();
+              gRunBtn.disabled = true;
+              try {
+                state.lastGuardrailVerdict = await apiPost("/api/steward/guardrail-test", {
+                  sample_text: gTxt.value,
+                  dynamic_policy: {
+                    business_unit: gModeSel.value === "BLOCK_ON_MATCH" ? "intl_sky" : "core_cable",
+                    risk_tier: "AG3",
+                    sdp_pii_mode: gModeSel.value,
+                    ensemble_role: "tier0_prefilter",
+                  },
+                });
+                state.activeGovernTab = "controls";
+                state.selectedGovernControlsSub = "guardrail";
+                renderStageBody();
+              } catch (err) {
+                showError(err.message);
+              } finally {
+                gRunBtn.disabled = false;
+              }
+            });
+            subBody.appendChild(guardForm);
 
-    if (state.proofResults.length > 0) {
-      const proofKey = "gov-proofs";
-      const proofCols = [
-        {
-          key: "proof_id",
-          label: "#",
-          type: "number",
-          filterType: "text",
-          getValue: (p) => Number(p.proof_id || 0),
-        },
-        {
-          key: "title",
-          label: "Capability Check",
-          type: "string",
-          filterType: "text",
-          getValue: (p) => p.title,
-        },
-        {
-          key: "passed",
-          label: "Status",
-          type: "string",
-          filterType: "select",
-          options: [
-            ["PASS", "PASS"],
-            ["FAIL", "FAIL"],
-          ],
-          getValue: (p) => (p.passed ? "PASS" : "FAIL"),
-        },
-        {
-          key: "latency_ms",
-          label: "Latency",
-          type: "number",
-          filterType: "text",
-          getValue: (p) => Number(p.latency_ms || 0),
-        },
-        {
-          key: "measured_evidence",
-          label: "Measured Evidence",
-          type: "string",
-          filterType: "text",
-          getValue: (p) => p.measured_evidence,
-        },
-      ];
-      const processedProofs = applyTableSortAndFilters(
-        state.proofResults,
-        proofCols,
-        proofKey,
-        "proof_id",
-        "asc"
-      );
+            if (state.lastGuardrailVerdict) {
+              const gv = state.lastGuardrailVerdict;
+              subBody.appendChild(
+                el(
+                  "span",
+                  gv.allowed ? "status-badge status-ok" : "status-badge status-err",
+                  `${gv.action_taken} (${gv.latency_ms}ms)`
+                )
+              );
+              subBody.appendChild(el("pre", "code-block", gv.sanitized_text));
+            }
+          },
+        ],
+        [
+          "proofs",
+          "4.3 Live Control Plane Verification Checks (8)",
+          state.proofResults.length > 0
+            ? `${passedProofsCnt}/${state.proofResults.length} Passed`
+            : "8 Runtime Checks",
+          (subBody) => {
+            const pHead = el("div", "toolbar-row");
+            pHead.appendChild(
+              el(
+                "span",
+                "field-hint",
+                "Execute live assertions across SPIFFE, UAP CEL, Atomic Wallet, Model Armor SDP, gVisor, Memory Bank, and Eval gates."
+              )
+            );
+            const runAllBtn = el("button", "primary-btn sm-btn", "Run All 8 Verification Checks");
+            runAllBtn.type = "button";
+            runAllBtn.addEventListener("click", async () => {
+              runAllBtn.disabled = true;
+              try {
+                const res = await apiPost("/api/steward/proofs-all", {});
+                state.proofResults = res.proofs || [];
+                state.activeGovernTab = "controls";
+                state.selectedGovernControlsSub = "proofs";
+                renderStageBody();
+              } catch (err) {
+                showError(err.message);
+              } finally {
+                runAllBtn.disabled = false;
+              }
+            });
+            pHead.appendChild(runAllBtn);
+            subBody.appendChild(pHead);
 
-      const pWrap = el("div", "table-wrap");
-      const pBanner = buildActiveFiltersBanner(
-        proofKey,
-        processedProofs.length,
-        state.proofResults.length,
-        null
-      );
-      if (pBanner) {
-        pWrap.appendChild(pBanner);
-      }
+            if (state.proofResults.length > 0) {
+              const proofKey = "gov-proofs";
+              const proofCols = [
+                {
+                  key: "proof_id",
+                  label: "#",
+                  type: "number",
+                  filterType: "text",
+                  getValue: (p) => Number(p.proof_id || 0),
+                },
+                {
+                  key: "title",
+                  label: "Capability Check",
+                  type: "string",
+                  filterType: "text",
+                  getValue: (p) => p.title,
+                },
+                {
+                  key: "passed",
+                  label: "Status",
+                  type: "string",
+                  filterType: "select",
+                  options: [
+                    ["PASS", "PASS"],
+                    ["FAIL", "FAIL"],
+                  ],
+                  getValue: (p) => (p.passed ? "PASS" : "FAIL"),
+                },
+                {
+                  key: "latency_ms",
+                  label: "Latency",
+                  type: "number",
+                  filterType: "text",
+                  getValue: (p) => Number(p.latency_ms || 0),
+                },
+                {
+                  key: "measured_evidence",
+                  label: "Measured Evidence",
+                  type: "string",
+                  filterType: "text",
+                  getValue: (p) => p.measured_evidence,
+                },
+              ];
+              const processedProofs = applyTableSortAndFilters(
+                state.proofResults,
+                proofCols,
+                proofKey,
+                "proof_id",
+                "asc"
+              );
 
-      const pTbl = el("table", "data-table");
-      pTbl.appendChild(el("caption", "", "Measured Control Plane Verification Results"));
-      pTbl.appendChild(
-        buildInteractiveTableHead({
-          tableKey: proofKey,
-          columns: proofCols,
-          allRows: state.proofResults,
-          defaultSortCol: "proof_id",
-          defaultSortDir: "asc",
-          paginationState: null,
-        })
-      );
+              const pWrap = el("div", "table-wrap");
+              const pBanner = buildActiveFiltersBanner(
+                proofKey,
+                processedProofs.length,
+                state.proofResults.length,
+                null
+              );
+              if (pBanner) {
+                pWrap.appendChild(pBanner);
+              }
 
-      const pb = el("tbody");
-      processedProofs.forEach((pr) => {
-        const tr = el("tr");
-        tr.appendChild(el("td", "", String(pr.proof_id)));
-        tr.appendChild(el("td", "", pr.title));
-        const tdS = el("td");
-        tdS.appendChild(
-          el(
-            "span",
-            pr.passed ? "status-badge status-ok" : "status-badge status-err",
-            pr.passed ? "PASS" : "FAIL"
-          )
-        );
-        tr.appendChild(tdS);
-        tr.appendChild(el("td", "", `${pr.latency_ms}ms`));
-        tr.appendChild(el("td", "", pr.measured_evidence));
-        pb.appendChild(tr);
-      });
-      pTbl.appendChild(pb);
-      pWrap.appendChild(pTbl);
-      proofCard.appendChild(pWrap);
-    }
-    panel.appendChild(proofCard);
+              const pTbl = el("table", "data-table");
+              pTbl.appendChild(el("caption", "", "Measured Control Plane Verification Results"));
+              pTbl.appendChild(
+                buildInteractiveTableHead({
+                  tableKey: proofKey,
+                  columns: proofCols,
+                  allRows: state.proofResults,
+                  defaultSortCol: "proof_id",
+                  defaultSortDir: "asc",
+                  paginationState: null,
+                })
+              );
 
-    if (state.platformServices && state.platformServices.services) {
-      const pipeCard = el("div", "surface-card form-stack deferred-below-fold");
-      pipeCard.appendChild(
-        el("h3", "section-heading", "Control Plane Service Topology (9 Runtime Services)")
-      );
-      pipeCard.appendChild(
-        el("p", "field-hint", state.platformServices.last_event || "Control plane ready.")
-      );
-      const pList = el("ol", "pipeline-grid");
-      state.platformServices.services.forEach((svc) => {
-        const li = el("li", "pipeline-item");
-        const top = el("div", "pipeline-item-top");
-        top.appendChild(el("strong", "", `${svc.step}. ${svc.name}`));
-        const ok =
-          svc.status === "READY" || svc.status === "VERIFIED" || svc.status === "ACTIVE";
-        top.appendChild(
-          el(
-            "span",
-            ok ? "status-badge status-ok" : "status-badge status-warn",
-            svc.badge_label || svc.status
-          )
-        );
-        li.append(top, el("span", "field-hint", svc.subtitle));
-        pList.appendChild(li);
-      });
-      pipeCard.appendChild(pList);
-      panel.appendChild(pipeCard);
-    }
+              const pb = el("tbody");
+              processedProofs.forEach((pr) => {
+                const tr = el("tr");
+                tr.appendChild(el("td", "", String(pr.proof_id)));
+                tr.appendChild(el("td", "", pr.title));
+                const tdS = el("td");
+                tdS.appendChild(
+                  el(
+                    "span",
+                    pr.passed ? "status-badge status-ok" : "status-badge status-err",
+                    pr.passed ? "PASS" : "FAIL"
+                  )
+                );
+                tr.appendChild(tdS);
+                tr.appendChild(el("td", "", `${pr.latency_ms}ms`));
+                tr.appendChild(el("td", "", pr.measured_evidence));
+                pb.appendChild(tr);
+              });
+              pTbl.appendChild(pb);
+              pWrap.appendChild(pTbl);
+              subBody.appendChild(pWrap);
+            }
+          },
+        ],
+        [
+          "topology",
+          "4.4 Control Plane Service Topology (9 Runtime Services)",
+          "9 Active Services",
+          (subBody) => {
+            if (state.platformServices && state.platformServices.services) {
+              subBody.appendChild(
+                el("p", "field-hint", state.platformServices.last_event || "Control plane ready.")
+              );
+              const pList = el("ol", "pipeline-grid");
+              state.platformServices.services.forEach((svc) => {
+                const li = el("li", "pipeline-item");
+                const top = el("div", "pipeline-item-top");
+                top.appendChild(el("strong", "", `${svc.step}. ${svc.name}`));
+                const ok =
+                  svc.status === "READY" || svc.status === "VERIFIED" || svc.status === "ACTIVE";
+                top.appendChild(
+                  el(
+                    "span",
+                    ok ? "status-badge status-ok" : "status-badge status-warn",
+                    svc.badge_label || svc.status
+                  )
+                );
+                li.append(top, el("span", "field-hint", svc.subtitle));
+                pList.appendChild(li);
+              });
+              subBody.appendChild(pList);
+            }
+          },
+        ],
+      ])
+    );
   }
 
   /* Center Modals for + New Agent & Import Manifest */

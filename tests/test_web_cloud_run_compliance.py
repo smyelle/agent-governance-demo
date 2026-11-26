@@ -347,13 +347,22 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     assert ".component-expander" in css_text
     assert ".segmented-radio-input" in css_text
     assert ".table-filter-row" in css_text
+    assert ".inline-action-form" in css_text
+    assert ".inline-single-action-row" in css_text
+    assert ".four-tile-strip" in css_text
+    assert ".subtab-bar" not in css_text
     js_text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert "Select functional capability" not in js_text
     assert "buildActiveAgentContextBar" not in js_text
+    assert "subtab-bar" not in js_text
     assert "buildNestedComponentExpanders" in js_text
     assert "buildNestedEvaluateExpanders" in js_text
     assert "buildExpandedDeployRow" in js_text
     assert "buildInteractiveTableHead" in js_text
+    assert "populateGovernPoliciesBody" in js_text
+    assert "populateGovernFleetBody" in js_text
+    assert "populateGovernFinopsBody" in js_text
+    assert "populateGovernControlsBody" in js_text
     assert 'providers.every((p) => p === "google_gcp")' not in js_text
     assert boot["tenant"]["terminology"]["sidebar_brand"] == "Cymbal Agent Governance Platform"
 

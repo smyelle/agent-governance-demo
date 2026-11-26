@@ -511,3 +511,23 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     assert re_eval.status_code == 200
     assert re_eval.json()["evaluation"]["passing_threshold"] == 99.5
     assert re_eval.json()["evaluation"]["gate_passed"] is False
+
+
+def test_headless_chrome_golden_walkthrough_and_pixel_alignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.smoke_test_web_ui import (
+        _ephemeral_local_server,
+        find_local_chrome_binary,
+        run_headless_browser_golden_walkthrough,
+    )
+
+    if not find_local_chrome_binary():
+        pytest.skip("Google Chrome / Chromium not installed on this runner.")
+
+    monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "cdp_golden_state"))
+    with _ephemeral_local_server(offline=True) as ephem_url:
+        checks = run_headless_browser_golden_walkthrough(ephem_url)
+    assert len(checks) == 10
+    failed = [c for c in checks if not c["passed"]]
+    assert not failed, f"Golden walkthrough browser checks failed: {failed}"

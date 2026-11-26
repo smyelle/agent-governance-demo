@@ -53,6 +53,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -311,10 +315,10 @@ body {
   padding: 0;
   display: grid;
   grid-template-columns: repeat(10, minmax(0, 1fr));
-  gap: 0.5rem;
+  gap: 0.42rem;
 }
 
-@media (max-width: 1179px) {
+@media (max-width: 1320px) {
   .ten-tile-strip {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
@@ -344,6 +348,11 @@ body {
   text-align: start;
   cursor: pointer;
   box-shadow: var(--shadow-card);
+}
+
+.ten-tile-strip .component-tile {
+  padding: 0.56rem 0.5rem;
+  gap: 0.34rem;
 }
 
 .component-tile:hover {
@@ -379,12 +388,24 @@ body {
   gap: 0.25rem;
 }
 
+.ten-tile-strip .tile-top-header {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0.16rem;
+}
+
 .tile-functional-name {
   font-size: 0.8rem;
   font-weight: 700;
   line-height: 1.22;
   color: var(--text-primary);
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.ten-tile-strip .tile-functional-name {
+  font-size: 0.73rem;
+  line-height: 1.2;
 }
 
 .tile-eval-marker {
@@ -394,16 +415,26 @@ body {
   flex: 0 0 auto;
 }
 
+.ten-tile-strip .tile-eval-marker {
+  font-size: 0.64rem;
+}
+
 .tile-impl-caption {
   font-size: 0.72rem;
   font-weight: 500;
   line-height: 1.28;
   color: var(--text-muted);
+  overflow-wrap: break-word;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   line-clamp: 3;
   overflow: clip;
+}
+
+.ten-tile-strip .tile-impl-caption {
+  font-size: 0.68rem;
+  line-height: 1.24;
 }
 
 /* Stage Body & Data Tables */
@@ -583,11 +614,16 @@ th[aria-sort="descending"] .sort-indicator {
 
 .expander-summary-right {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: safe center;
   justify-content: flex-end;
   gap: 0.45rem;
-  max-inline-size: 62%;
+  flex: 0 0 auto;
+  max-inline-size: 58%;
+}
+
+.expander-summary-right .expander-choice-pill {
+  max-inline-size: 260px;
 }
 
 .finding-callout {

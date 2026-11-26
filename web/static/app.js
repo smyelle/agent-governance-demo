@@ -567,12 +567,12 @@
       }
 
       const topHeader = el("span", "tile-top-header");
-      topHeader.appendChild(el("span", "tile-functional-name", spec.functional_name));
       if (evalObj) {
         const st = slotStatuses[sid] || "PASSED";
         const sym = st === "FAILED" ? "[!]" : st === "ADVISORY" ? "[~]" : "[OK]";
         topHeader.appendChild(el("span", "tile-eval-marker", sym));
       }
+      topHeader.appendChild(el("span", "tile-functional-name", spec.functional_name));
       const subSpan = el("span", "tile-impl-caption", implLabel);
       btn.append(topHeader, subSpan);
 
@@ -4072,7 +4072,6 @@
                   daily_turns: Number(turnsSel.value),
                   tokens_per_turn: 1000,
                 });
-                state.activeGovernTab = "finops";
                 state.selectedGovernFinopsSub = "simulator";
                 renderStageBody();
               } catch (err) {
@@ -4089,23 +4088,23 @@
               [
                 [
                   "Google Model Armor Tier-0 Annual",
-                  formatUsd(t.model_armor_only_annual_usd),
+                  formatUsd(t.google_model_armor_annual_usd),
                   "$0.10 / 1M tokens",
                 ],
                 [
-                  "20% Ensemble Annual",
-                  formatUsd(t.ensemble_20pct_annual_usd),
+                  "Tier-0 + 20% Ensemble Hybrid",
+                  formatUsd(t.ensemble_tier0_hybrid_annual_usd),
                   "Tier-0 + 20% secondary voter",
                 ],
                 [
-                  "Legacy 3-Model Voter Annual",
-                  formatUsd(t.three_llm_voter_annual_usd),
-                  "100% 3-LLM ensemble",
+                  "Legacy Guardrail List Baseline",
+                  formatUsd(t.azure_content_safety_annual_usd),
+                  "$1.00 / 1K text records benchmark",
                 ],
                 [
                   "Annual Savings (Model Armor)",
-                  formatUsd(t.annual_savings_model_armor_vs_voter_usd),
-                  `${t.savings_pct_model_armor_vs_voter}% reduction`,
+                  formatUsd(t.annual_savings_vs_azure_usd),
+                  `${t.pct_reduction_vs_azure}% reduction vs. baseline`,
                 ],
               ].forEach(([l, v, s], idx) => {
                 const c = el("div", idx === 3 ? "surface-card hero-metric-card" : "surface-card");

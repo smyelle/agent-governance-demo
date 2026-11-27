@@ -24,19 +24,38 @@ mode.
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 from collections import deque
+import concurrent.futures.thread  # Ensure _python_exit registers before atexit hook
 import datetime
 import os
+import queue
 import threading
 import time
 from typing import Any
 import uuid
+import weakref
 
 from google.cloud import trace_v2
 from google.protobuf import wrappers_pb2
 import httpx
 
 from cymbal_agent.governance.gcp_auth import get_gcp_credentials
+
+
+_ACTIVE_BRIDGES_LOCK = threading.Lock()
+_ACTIVE_BRIDGES: weakref.WeakSet[UnifiedTraceBridge] = weakref.WeakSet()
+
+
+def _shutdown_all_otlp_bridges() -> None:
+    with _ACTIVE_BRIDGES_LOCK:
+        bridges = list(_ACTIVE_BRIDGES)
+    for bridge in bridges:
+        bridge.close(timeout=0.5, cancel_inflight=True)
+
+
+atexit.register(_shutdown_all_otlp_bridges)
 
 
 def _truncatable(text: str, limit: int = 256) -> trace_v2.TruncatableString:
@@ -131,17 +150,37 @@ class UnifiedTraceBridge:
         self._otlp_envelopes: deque[dict[str, Any]] = deque(maxlen=50)
         self._trace_index: dict[str, dict[str, Any]] = {}
         self._client: trace_v2.TraceServiceClient | None = None
+        self._otlp_queue: queue.Queue[tuple[str, dict[str, Any], dict[str, str]]] = queue.Queue(
+            maxsize=256
+        )
+        self._otlp_worker: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._otlp_loop: asyncio.AbstractEventLoop | None = None
+        self._otlp_wakeup: asyncio.Event | None = None
+        self._otlp_task: asyncio.Task[None] | None = None
 
     def __getstate__(self) -> dict[str, Any]:
         state = dict(self.__dict__)
         state["_lock"] = None
         state["_client"] = None
+        state["_otlp_queue"] = None
+        state["_otlp_worker"] = None
+        state["_stop_event"] = None
+        state["_otlp_loop"] = None
+        state["_otlp_wakeup"] = None
+        state["_otlp_task"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._lock = threading.Lock()
         self._client = None
+        self._otlp_queue = queue.Queue(maxsize=256)
+        self._otlp_worker = None
+        self._stop_event = threading.Event()
+        self._otlp_loop = None
+        self._otlp_wakeup = None
+        self._otlp_task = None
 
     def _get_trace_client(self) -> trace_v2.TraceServiceClient:
         if self._client is None:
@@ -169,13 +208,18 @@ class UnifiedTraceBridge:
         start_epoch = max(0.0, end_epoch - (max(duration_ms, 0.5) / 1000.0))
         attrs = dict(attributes or {})
         attrs.setdefault("gen_ai.system", "gcp.vertex.agent")
+        attrs.setdefault("gen_ai.operation.name", stage)
+        attrs.setdefault("gen_ai.request.model", os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
+        attrs.setdefault("conduit.project_id", self.project_id)
+        attrs.setdefault("conduit.app_id", cmdb_app_id)
         attrs.setdefault("cymbal.session_id", session_id)
         attrs.setdefault("cymbal.architecture_mode", architecture_mode)
         attrs.setdefault("cymbal.cmdb_app_id", cmdb_app_id)
         if architecture_mode == "enterprise_hybrid":
             attrs["http.header.X-Trace-Session-Id"] = session_id
             attrs["http.header.X-Service-App-Id"] = cmdb_app_id
-            attrs["otel.exporter.target"] = "langfuse_and_cop_otlp"
+            attrs["http.header.X-Project-Id"] = self.project_id
+            attrs["otel.exporter.target"] = "conduit_langfuse_otlp"
 
         str_attrs = {k: str(v) for k, v in attrs.items()}
         otlp_envelope = build_otlp_resource_span_envelope(
@@ -244,6 +288,122 @@ class UnifiedTraceBridge:
             )
         return span_entry
 
+    def _wake_otlp_worker(self) -> None:
+        with self._lock:
+            loop = self._otlp_loop
+            wakeup = self._otlp_wakeup
+        if loop is not None and wakeup is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(wakeup.set)
+            except RuntimeError:
+                pass
+
+    def close(self, timeout: float = 0.5, *, cancel_inflight: bool = True) -> None:
+        self._stop_event.set()
+        self._wake_otlp_worker()
+        with self._lock:
+            worker = self._otlp_worker
+        if (
+            worker is None
+            or not worker.is_alive()
+            or threading.current_thread() is worker
+        ):
+            with _ACTIVE_BRIDGES_LOCK:
+                _ACTIVE_BRIDGES.discard(self)
+            return
+        grace = (
+            min(max(0.05, timeout), 0.25) if cancel_inflight else max(0.05, timeout)
+        )
+        worker.join(timeout=grace)
+        if worker.is_alive() and cancel_inflight:
+            with self._lock:
+                loop = self._otlp_loop
+                task = self._otlp_task
+            if loop is not None and task is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(task.cancel)
+                except RuntimeError:
+                    pass
+            worker.join(timeout=max(0.1, timeout - grace))
+        if not worker.is_alive():
+            with _ACTIVE_BRIDGES_LOCK:
+                _ACTIVE_BRIDGES.discard(self)
+
+    def _ensure_otlp_worker(self) -> None:
+        with self._lock:
+            if self._stop_event.is_set() or (
+                self._otlp_worker is not None and self._otlp_worker.is_alive()
+            ):
+                return
+
+            with _ACTIVE_BRIDGES_LOCK:
+                _ACTIVE_BRIDGES.add(self)
+
+            def _worker() -> None:
+                async def _drain() -> None:
+                    loop = asyncio.get_running_loop()
+                    wakeup = asyncio.Event()
+                    task = asyncio.current_task()
+                    with self._lock:
+                        self._otlp_loop = loop
+                        self._otlp_wakeup = wakeup
+                        self._otlp_task = task
+                    try:
+                        async with httpx.AsyncClient(timeout=2.5) as client:
+                            try:
+                                while True:
+                                    try:
+                                        item = self._otlp_queue.get_nowait()
+                                    except queue.Empty:
+                                        if self._stop_event.is_set():
+                                            break
+                                        wakeup.clear()
+                                        if (
+                                            self._stop_event.is_set()
+                                            or not self._otlp_queue.empty()
+                                        ):
+                                            continue
+                                        try:
+                                            await asyncio.wait_for(
+                                                wakeup.wait(), timeout=0.25
+                                            )
+                                        except asyncio.TimeoutError:
+                                            pass
+                                        continue
+
+                                    try:
+                                        if not isinstance(item, tuple) or len(item) != 3:
+                                            self._stop_event.set()
+                                            break
+                                        endpoint, payload, headers = item
+                                        await client.post(
+                                            endpoint, json=payload, headers=headers
+                                        )
+                                    except asyncio.CancelledError:
+                                        raise
+                                    except Exception:
+                                        pass
+                                    finally:
+                                        self._otlp_queue.task_done()
+                            except asyncio.CancelledError:
+                                pass
+                    finally:
+                        with self._lock:
+                            self._otlp_loop = None
+                            self._otlp_wakeup = None
+                            self._otlp_task = None
+
+                try:
+                    asyncio.run(_drain())
+                except asyncio.CancelledError:
+                    pass
+
+            t = threading.Thread(
+                target=_worker, name="cymbal-otlp-async-exporter", daemon=True
+            )
+            t.start()
+            self._otlp_worker = t
+
     def _export_to_otlp_collector(
         self,
         *,
@@ -251,19 +411,34 @@ class UnifiedTraceBridge:
         session_id: str,
         cmdb_app_id: str,
     ) -> None:
+        if self._stop_event.is_set():
+            return
+        headers = {
+            "Content-Type": "application/json",
+            "X-Trace-Session-Id": session_id,
+            "X-Service-App-Id": cmdb_app_id,
+            "X-Project-Id": self.project_id,
+        }
+        self._ensure_otlp_worker()
         try:
-            httpx.post(
-                self.otlp_endpoint,
-                json=otlp_envelope,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Trace-Session-Id": session_id,
-                    "X-Service-App-Id": cmdb_app_id,
-                },
-                timeout=2.5,
-            )
-        except Exception:
+            self._otlp_queue.put_nowait((self.otlp_endpoint, otlp_envelope, headers))
+        except queue.Full:
             pass
+        else:
+            self._wake_otlp_worker()
+
+    def flush_otlp_queue(self, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + max(0.05, timeout)
+        with self._otlp_queue.all_tasks_done:
+            while self._otlp_queue.unfinished_tasks > 0:
+                if self._stop_event.is_set():
+                    worker = self._otlp_worker
+                    if worker is None or not worker.is_alive():
+                        break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._otlp_queue.all_tasks_done.wait(timeout=min(remaining, 0.1))
 
     def _export_to_cloud_trace(
         self,

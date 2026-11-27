@@ -14,9 +14,9 @@
 
 name: projects/${PROJECT_NUMBER}/locations/${REGION}/authzExtensions/cymbal-ma-content-authz
 description: "Semantic Governance Plane (CONTENT_AUTHZ) binding Agent Gateway L7 payloads to fail-closed Model Armor GPP"
-loadBalancingScheme: INTERNAL_MANAGED
+wireFormat: EXT_PROC_GRPC
 authority: modelarmor.${REGION}.rep.googleapis.com
-service: modelarmor.${REGION}.rep.googleapis.com:443
+service: modelarmor.${REGION}.rep.googleapis.com
 timeout: "5s"
 failOpen: false
 forwardHeaders:

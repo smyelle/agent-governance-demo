@@ -88,3 +88,14 @@ variable "register_blueprint" {
   type        = bool
   default     = true
 }
+
+variable "psci_cidr_range" {
+  description = "Private /26 CIDR range allocated for the PSC-Interface subnetwork."
+  type        = string
+  default     = "10.10.2.0/26"
+
+  validation {
+    condition     = can(cidrnetmask(var.psci_cidr_range))
+    error_message = "psci_cidr_range must be a valid IPv4 CIDR block (e.g., 10.10.2.0/26)."
+  }
+}

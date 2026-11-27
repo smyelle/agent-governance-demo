@@ -19,9 +19,9 @@ Implements:
    Accepts per-request business unit, risk tier, active detector switches, PI/RAI
    sensitivity thresholds, SDP action mode (`DEIDENTIFY_INLINE` | `BLOCK_ON_MATCH` |
    `INSPECT_ONLY`), and 4-5 guardrail ensemble role, compiling hundreds of logical
-   BU combinations onto a bounded 2-tier Floor-enforced GCP base template pool
-   (`cymbal-default-medium-gpp` and `cymbal-strict-ag3-gpp`) plus runtime filter
-   evaluation.
+   BU combinations onto a bounded 3-template Floor-enforced GCP base template pool
+   (`cymbal-low-baseline-gpp`, `cymbal-default-medium-gpp`, and `cymbal-strict-ag3-gpp`)
+   plus runtime filter evaluation.
 2. 3-step NFKC + URL-decode + bounded Base64/Hex recursive unpacker (max_depth=3).
 3. Inline PII redaction (SSN, MAC address, payment card) or strict block per dynamic
    request policy.
@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import os
 import re
 import time
@@ -48,6 +48,17 @@ from google.cloud import modelarmor_v1
 from pydantic import BaseModel, Field
 
 from cymbal_agent.governance.gcp_auth import get_gcp_credentials
+
+__all__ = [
+    "DynamicGuardrailPolicyPayload",
+    "FailClosedModelArmorGuard",
+    "GuardrailVerdict",
+    "ModelArmorBlockedError",
+    "compile_dynamic_policy_to_base_template",
+    "evaluate_bifrost_tier0_guardrail",
+    "mask_inline_pii",
+    "unpack_obfuscated_payloads",
+]
 
 SSN_RE = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 MAC_RE = re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\b")
@@ -83,7 +94,7 @@ class DynamicGuardrailPolicyPayload(BaseModel):
     business_unit: Literal[
         "core_cable", "media_studio", "intl_sky", "enterprise_shared"
     ] = Field(default="enterprise_shared")
-    risk_tier: Literal["AG1", "AG2", "AG3", "AG4"] = Field(default="AG2")
+    risk_tier: Literal["AG1", "AG2", "AG3", "AG4", "AG5"] = Field(default="AG2")
     pi_and_jailbreak_threshold: Literal[
         "LOW_AND_ABOVE", "MEDIUM_AND_ABOVE", "HIGH_ONLY"
     ] = Field(default="MEDIUM_AND_ABOVE")
@@ -105,8 +116,14 @@ def compile_dynamic_policy_to_base_template(
     location: str = "us-central1",
     default_template: str | None = None,
     strict_template: str | None = None,
+    low_template: str | None = None,
 ) -> dict[str, Any]:
-    """Routes dynamic BU/risk/detector payloads onto a bounded 2-template Floor pool."""
+    """Routes dynamic BU/risk/detector payloads onto a bounded 3-template Floor pool."""
+    low_tpl = (
+        low_template
+        or os.getenv("CYMBAL_MODEL_ARMOR_LOW_TEMPLATE")
+        or f"projects/{project_id}/locations/{location}/templates/cymbal-low-baseline-gpp"
+    )
     med_tpl = (
         default_template
         or os.getenv("CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE")
@@ -117,17 +134,33 @@ def compile_dynamic_policy_to_base_template(
         or os.getenv("CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE")
         or f"projects/{project_id}/locations/{location}/templates/cymbal-strict-ag3-gpp"
     )
+    if "<PROJECT_ID>" in low_tpl:
+        low_tpl = f"projects/{project_id}/locations/{location}/templates/cymbal-low-baseline-gpp"
     if "<PROJECT_ID>" in med_tpl:
         med_tpl = f"projects/{project_id}/locations/{location}/templates/cymbal-default-medium-gpp"
     if "<PROJECT_ID>" in high_strict_tpl:
         high_strict_tpl = f"projects/{project_id}/locations/{location}/templates/cymbal-strict-ag3-gpp"
 
     needs_strict = (
-        policy.risk_tier in {"AG3", "AG4"}
+        policy.risk_tier in {"AG3", "AG4", "AG5"}
         or policy.pi_and_jailbreak_threshold == "LOW_AND_ABOVE"
         or policy.rai_sensitivity == "LOW_AND_ABOVE"
     )
-    resolved_tpl = high_strict_tpl if needs_strict else med_tpl
+    use_low = (
+        not needs_strict
+        and policy.risk_tier == "AG1"
+        and policy.pi_and_jailbreak_threshold == "HIGH_ONLY"
+        and policy.rai_sensitivity == "HIGH_ONLY"
+    )
+    if needs_strict:
+        resolved_tpl = high_strict_tpl
+        resolved_tier = "strict_ag3_pool"
+    elif use_low:
+        resolved_tpl = low_tpl
+        resolved_tier = "low_baseline_pool"
+    else:
+        resolved_tpl = med_tpl
+        resolved_tier = "default_medium_floor_pool"
     logical_policy_key = (
         f"{policy.business_unit}:{policy.risk_tier}:pi={policy.pi_and_jailbreak_threshold}:"
         f"sdp={policy.sdp_pii_mode}:uri={'on' if policy.malicious_uri_filter else 'floor'}:"
@@ -135,7 +168,7 @@ def compile_dynamic_policy_to_base_template(
     )
     return {
         "resolved_template": resolved_tpl,
-        "resolved_tier": "strict_ag3_pool" if needs_strict else "default_medium_floor_pool",
+        "resolved_tier": resolved_tier,
         "logical_policy_key": logical_policy_key,
         "static_templates_avoided_estimate": 288,
         "ensemble_role": policy.ensemble_role,
@@ -168,6 +201,9 @@ class GuardrailVerdict:
     summary: str = ""
     dynamic_policy_key: str = "default:AG2:DEIDENTIFY_INLINE"
     ensemble_role: str = "tier0_prefilter"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def mask_inline_pii(text: str) -> tuple[str, list[str]]:
@@ -324,6 +360,24 @@ class FailClosedModelArmorGuard:
             dynamic_key = str(compiled["logical_policy_key"])
             ensemble_role = str(compiled["ensemble_role"])
 
+        if parsed_policy is not None and parsed_policy.risk_tier == "AG5":
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            return GuardrailVerdict(
+                allowed=False,
+                sanitized_text="",
+                template_id=active_template,
+                filter_match_state="POLICY_PROHIBITED",
+                invocation_result="SUCCESS",
+                action_taken="BLOCKED_PROHIBITED_AG5_TIER",
+                latency_ms=latency,
+                summary=(
+                    "Blocked unconditionally: AEGIS AG5 (Fully Autonomous) is prohibited "
+                    "by enterprise policy and cannot be deployed or bypassed."
+                ),
+                dynamic_policy_key=dynamic_key,
+                ensemble_role=ensemble_role,
+            )
+
         if self.simulate_outage:
             latency = round((time.perf_counter() - start) * 1000, 2)
             return GuardrailVerdict(
@@ -444,26 +498,23 @@ class FailClosedModelArmorGuard:
                             if getattr(getattr(deid_res, "data", None), "text", None):
                                 effective_text = str(deid_res.data.text)
             except Exception as exc:
-                if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") and "401" in str(exc):
-                    ma_inv_result = "SUCCESS"
-                else:
-                    latency = round((time.perf_counter() - start) * 1000, 2)
-                    return GuardrailVerdict(
-                        allowed=False,
-                        sanitized_text="",
-                        template_id=active_template,
-                        filter_match_state="PROVIDER_ERROR",
-                        invocation_result="FAILURE",
-                        action_taken="BLOCKED_FAIL_CLOSED",
-                        pii_masked=pii_masked,
-                        pii_types_masked=pii_types,
-                        unpacked_layers=unpacked_layers,
-                        scanned_urls_count=len(urls),
-                        latency_ms=latency,
-                        summary=f"Model Armor invocation error; blocked fail-closed ({type(exc).__name__}).",
-                        dynamic_policy_key=dynamic_key,
-                        ensemble_role=ensemble_role,
-                    )
+                latency = round((time.perf_counter() - start) * 1000, 2)
+                return GuardrailVerdict(
+                    allowed=False,
+                    sanitized_text="",
+                    template_id=active_template,
+                    filter_match_state="PROVIDER_ERROR",
+                    invocation_result="FAILURE",
+                    action_taken="BLOCKED_FAIL_CLOSED",
+                    pii_masked=pii_masked,
+                    pii_types_masked=pii_types,
+                    unpacked_layers=unpacked_layers,
+                    scanned_urls_count=len(urls),
+                    latency_ms=latency,
+                    summary=f"Model Armor invocation error; blocked fail-closed ({type(exc).__name__}).",
+                    dynamic_policy_key=dynamic_key,
+                    ensemble_role=ensemble_role,
+                )
 
         latency = round((time.perf_counter() - start) * 1000, 2)
 
@@ -586,3 +637,22 @@ class FailClosedModelArmorGuard:
             dynamic_policy_key=dynamic_key,
             ensemble_role=ensemble_role,
         )
+
+
+def evaluate_bifrost_tier0_guardrail(
+    text: str,
+    *,
+    direction: str = "USER_PROMPT",
+    policy: DynamicGuardrailPolicyPayload | dict[str, Any] | None = None,
+    guard: FailClosedModelArmorGuard | None = None,
+    block_malicious_urls_inline_mask_only: bool = False,
+) -> dict[str, Any]:
+    """Gateway-neutral Tier-0 pre-filter entry point for external AI gateway adapters."""
+    active_guard = guard or FailClosedModelArmorGuard()
+    verdict = active_guard.inspect_text(
+        text,
+        direction=direction,
+        dynamic_policy=policy,
+        block_malicious_urls_inline_mask_only=block_malicious_urls_inline_mask_only,
+    )
+    return verdict.to_dict()

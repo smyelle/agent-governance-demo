@@ -22,10 +22,10 @@ import json
 import os
 from pathlib import Path
 import sys
-import warnings
 
+import agentplatform
+from agentplatform import types as ap_types
 from dotenv import load_dotenv
-import vertexai
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -75,10 +75,14 @@ def main() -> int:
         return 0
 
     creds, _ = get_gcp_credentials(project_id)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        client = vertexai.Client(project=project_id, location=location, credentials=creds)
-    job = client.prompt_optimizer.optimize(config=spec)  # pragma: no cover
+    client = agentplatform.Client(project=project_id, location=location, credentials=creds)
+    job = client.prompts.launch_optimization_job(  # pragma: no cover
+        method=ap_types.PromptOptimizerMethod.VAPO,
+        config=ap_types.PromptOptimizerConfig(
+            config_path=str(spec["eval_dataset_gcs_uri"]),
+            optimizer_job_display_name="cymbal-governance-vapo-optimizer",
+        ),
+    )
     print(json.dumps({"mode": "submitted", "job": str(job)}, indent=2))  # pragma: no cover
     return 0
 

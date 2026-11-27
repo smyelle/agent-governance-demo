@@ -18,34 +18,42 @@ Implements every ADK 2.0 (`google-adk >= 2.14.0`) engineering invariant:
 - Graph runtime via `Workflow`, `FunctionNode`, `JoinNode`, and `START`.
 - Parallel 3-way MCP audit fan-out `(manifest_security_agent, tier1_supergraph_agent,
   langfuse_trace_audit_agent)` immediately followed by `JoinNode(name="correlate_governance_evidence")`.
-- Analytical `BuiltInCodeExecutor()` gVisor sandbox node computing quantitative
-  governance readiness scores and trace anomaly z-scores without external MicroVMs.
+- Analytical `BuiltInCodeExecutor()` (Gemini model-side Python sandbox) or optional
+  `AgentEngineSandboxCodeExecutor` (`CYMBAL_SANDBOX_RESOURCE_NAME`) computing
+  quantitative governance readiness scores and trace anomaly z-scores.
 - `governance_remediation_synthesizer` (`Agent(..., mode="single_turn", output_schema=GovernanceRemediationAssessment)`)
   dynamically reading `config/prompts/active_version.json` and emitting Dynamic
   Model Armor policies plus Terraform Paved-Path HCL bundles.
 - Durable resumable HITL gate yielding `RequestInput` (`App(..., resumability_config=ResumabilityConfig(is_resumable=True))`)
-  with unique `interrupt_id=f"ag3_deploy_{attempt}"`.
+  with unique `interrupt_id=f"ag3_deploy_{attempt}"`, plus `build_workflow_runner()` supporting
+  `VertexAiSessionService` when `GOOGLE_CLOUD_AGENT_ENGINE_ID` is configured.
 - Governed A2A v1.0 delegation to `remediation-a2a-agent` and JWT-scoped Vertex
   AI Memory Bank recall/persistence.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+import inspect
 import json
 import math
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 
+from fastapi import HTTPException
 from google.adk import Agent, Context, Event, Workflow
 from google.adk.apps.app import App, ResumabilityConfig
-from google.adk.code_executors import BuiltInCodeExecutor
+from google.adk.code_executors import AgentEngineSandboxCodeExecutor, BuiltInCodeExecutor
 from google.adk.events.request_input import RequestInput
 from google.adk.models import Gemini
+from google.adk.runners import InMemoryRunner, Runner
+from google.adk.sessions import VertexAiSessionService
 from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 from google.adk.workflow import FunctionNode, JoinNode, START
+from google.genai import types
 import httpx
 
 from cymbal_agent.governance.gcp_auth import install_local_gcloud_auth_bridge
@@ -91,8 +99,45 @@ def _build_gemini_llm(model_id: str | None = None) -> Gemini:
     """Builds a Gemini 3.x LLM bound to Vertex AI global endpoint."""
     return Gemini(
         model=model_id or DEFAULT_GEMINI_MODEL,
-        client_kwargs={"location": os.getenv("CYMBAL_GEMINI_LOCATION", "global")},
+        client_kwargs={
+            "location": os.getenv("CYMBAL_GEMINI_LOCATION", "global"),
+            "http_options": types.HttpOptions(timeout=25000),
+        },
     )
+
+
+def _fast_generate_config(max_output_tokens: int = 1280) -> types.GenerateContentConfig:
+    """Low-latency Gemini config (thinking_budget=0) to keep multi-step workflows <20s."""
+    return types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=max_output_tokens,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    )
+
+
+def build_workflow_runner(
+    adk_app: App,
+    *,
+    live_cloud: bool = True,
+    project_id: str | None = None,
+    location: str | None = None,
+) -> Runner:
+    """Constructs durable VertexAiSessionService Runner when live Agent Engine ID is set."""
+    agent_engine_id = (
+        os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+        or os.getenv("CYMBAL_REASONING_ENGINE_ID")
+        or ""
+    ).strip()
+    if live_cloud and agent_engine_id:
+        proj = project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
+        loc = location or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        session_svc = VertexAiSessionService(
+            project=proj,
+            location=loc,
+            agent_engine_id=agent_engine_id,
+        )
+        return Runner(app=adk_app, session_service=session_svc)
+    return InMemoryRunner(app=adk_app)
 
 
 def _resolve_active_prompts_dir() -> Path:
@@ -133,7 +178,22 @@ def load_active_synthesizer_instruction(readonly_ctx: Any = None) -> str:
         target = PROMPTS_DIR / prompt_file
     if not target.is_file():
         target = PROMPTS_DIR / "synthesizer_v2_optimized.txt"
-    return target.read_text(encoding="utf-8")
+    text = target.read_text(encoding="utf-8")
+
+    # ADK skips automatic `{var?}` interpolation when `instruction` is a callable,
+    # so hydrate workflow state placeholders explicitly from `readonly_ctx.state`.
+    if readonly_ctx is not None:
+        state = getattr(readonly_ctx, "state", {}) or {}
+        for key in (
+            "candidate_id",
+            "memory_context",
+            "correlated_signals",
+            "sandbox_anomaly_summary",
+        ):
+            val = state.get(key, "")
+            val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val or "")
+            text = text.replace(f"{{{key}?}}", val_str).replace(f"{{{key}}}", val_str)
+    return text
 
 
 def build_remote_mcp_toolset(
@@ -227,7 +287,7 @@ def compute_governance_readiness_score(
     tier1: Tier1IntakeSupergraphSignal,
     traces: ProductionTraceEvalSignal,
 ) -> float:
-    """Computes weighted 0..100 SCAPE / Enterprise Governance Readiness Score."""
+    """Computes weighted 0..100 Enterprise Governance Readiness Score."""
     tier1_ratio = tier1.checklist_items_passed / max(1, tier1.checklist_items_total)
     security_pts = 0.0
     if not manifest.static_secrets_found:
@@ -247,16 +307,42 @@ def build_cymbal_workflow(
     *,
     memory_bank: ScopedMemoryBankClient | None = None,
     use_live_llm: bool = True,
-    use_remote_mcp: bool = False,
+    use_remote_mcp: bool | None = None,
     mcp_fault_injector: Any = None,
     a2a_client_override: Any = None,
+    progress_callback: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Workflow:
     """Builds the typed ADK 2.0 Agent Governance Analysis, Remediation & Deployment graph."""
     mem_client = memory_bank or ScopedMemoryBankClient()
+    resolved_remote_mcp = (
+        os.getenv("CYMBAL_USE_REMOTE_MCP", "false").lower() in {"1", "true", "yes"}
+        if use_remote_mcp is None
+        else bool(use_remote_mcp)
+    )
+    workflow_start = time.perf_counter()
+
+    async def _emit_stage(step: int, total: int, label: str, detail: str) -> None:
+        if progress_callback is None:
+            return
+        payload = {
+            "type": "step",
+            "step": step,
+            "total_steps": total,
+            "status": label,
+            "detail": detail,
+            "elapsed_ms": round((time.perf_counter() - workflow_start) * 1000, 1),
+        }
+        try:
+            res = progress_callback(payload)
+            if inspect.isawaitable(res):
+                await res
+        except Exception:
+            pass
 
     async def intake_and_memory_node(
         ctx: Context, node_input: str = ""
     ) -> AsyncGenerator[Event, None]:
+        await _emit_stage(1, 7, "Intake & Memory Bank", "Resolving candidate & recalling JWT-scoped governance memory.")
         raw_prompt = str(node_input or ctx.state.get("operator_prompt") or "")
         sanitized_prompt, pii_types = mask_inline_pii(raw_prompt)
         cand_id, agent_name, app_id = _infer_candidate_target(sanitized_prompt, ctx.state)
@@ -416,10 +502,11 @@ def build_cymbal_workflow(
                 ),
             )
 
-    if use_live_llm and use_remote_mcp:
+    if use_live_llm and resolved_remote_mcp:
         manifest_node: Any = Agent(
             name="manifest_security_audit_agent",
             model=_build_gemini_llm(),
+            generate_content_config=_fast_generate_config(),
             mode="single_turn",
             instruction=(
                 "Call `inspect_candidate_agent_manifest` for `{candidate_id?}` and return "
@@ -432,6 +519,7 @@ def build_cymbal_workflow(
         tier1_node: Any = Agent(
             name="tier1_supergraph_audit_agent",
             model=_build_gemini_llm(),
+            generate_content_config=_fast_generate_config(),
             mode="single_turn",
             instruction=(
                 "Call `verify_tier1_intake_and_supergraph` for `{candidate_id?}` (`{app_id?}`) "
@@ -444,6 +532,7 @@ def build_cymbal_workflow(
         traces_node: Any = Agent(
             name="langfuse_trace_audit_agent",
             model=_build_gemini_llm(),
+            generate_content_config=_fast_generate_config(),
             mode="single_turn",
             instruction=(
                 "Call `fetch_production_otel_traces` for `{candidate_id?}` and return "
@@ -469,6 +558,7 @@ def build_cymbal_workflow(
     async def normalize_joined_signals(
         ctx: Context, node_input: Any = None
     ) -> CorrelatedGovernanceBundle:
+        await _emit_stage(2, 7, "Parallel MCP Audit Join", "Correlating Manifest, Tier-1 Supergraph, and OTLP Trace signals.")
         joined = node_input if isinstance(node_input, dict) else {}
         manifest = ManifestSecuritySignal.model_validate(
             joined.get("manifest_security_audit_agent") or ctx.state.get("manifest_signal")
@@ -496,27 +586,51 @@ def build_cymbal_workflow(
         )
         ctx.state["correlated_signals"] = bundle.model_dump_json()
         ctx.state["correlated_bundle_dict"] = bundle.model_dump()
+        ctx.state["sandbox_code_prompt"] = bundle.sandbox_code_prompt
         return bundle
 
     normalize_signals_node = FunctionNode(
         func=normalize_joined_signals, name="prepare_correlated_bundle"
     )
 
-    # Built-in gVisor code execution sandbox step (proves E2B MicroVMs are unnecessary)
+    # Built-in Gemini code execution sandbox by default; switches to AgentEngineSandboxCodeExecutor
+    # when CYMBAL_SANDBOX_RESOURCE_NAME is explicitly provisioned.
+    sandbox_resource = os.getenv("CYMBAL_SANDBOX_RESOURCE_NAME", "").strip()
+    sandbox_executor: Any = (
+        AgentEngineSandboxCodeExecutor(
+            sandbox_resource_name=sandbox_resource,
+            agent_engine_resource_name=(
+                os.getenv("CYMBAL_REASONING_ENGINE_NAME") or None
+            ),
+        )
+        if sandbox_resource
+        else BuiltInCodeExecutor()
+    )
+    sandbox_runtime_label = (
+        "agent_engine_sandbox_code_executor"
+        if sandbox_resource
+        else "gvisor_builtin_code_executor"
+    )
+
     gvisor_code_agent = Agent(
         name="gvisor_code_sandbox_agent",
         model=_build_gemini_llm(),
+        generate_content_config=types.GenerateContentConfig(
+            temperature=0.0,
+            max_output_tokens=256,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
         mode="single_turn",
-        code_executor=BuiltInCodeExecutor(),
+        code_executor=sandbox_executor,
         instruction=(
-            "Write and execute Python code to compute the candidate agent's weighted "
-            "0-100 governance readiness score, trace latency z-score, and blast-radius "
-            "risk index from `{correlated_signals?}`. Output a concise numeric summary."
+            "Execute Python to compute readiness and z-score from `{sandbox_code_prompt?}` "
+            "and print one concise numeric summary line."
         ),
         output_key="gvisor_raw_calculation",
     )
 
     async def finalize_sandbox_readiness(ctx: Context) -> SandboxReadinessOutput:
+        await _emit_stage(3, 7, "Sandbox Readiness Math", "Computing readiness score and trace anomaly z-score.")
         bundle = CorrelatedGovernanceBundle.model_validate(ctx.state["correlated_bundle_dict"])
         samples = [float(x) for x in bundle.production_traces.trace_latency_samples_ms]
         z_score, mult = compute_deterministic_anomaly_stats(samples)
@@ -533,7 +647,7 @@ def build_cymbal_workflow(
             raw_sandbox[:400]
             if raw_sandbox
             else (
-                f"gVisor sandbox readiness math: readiness_score={readiness}/100, "
+                f"Sandbox readiness math ({sandbox_runtime_label}): readiness_score={readiness}/100, "
                 f"trace_z_score={z_score} sigma ({mult}x p99 jump), high_risk_breach={breach}."
             )
         )
@@ -542,7 +656,7 @@ def build_cymbal_workflow(
             z_score=z_score,
             p99_delta_multiplier=mult,
             blast_radius_breach=breach,
-            sandbox_runtime="gvisor_builtin_code_executor",
+            sandbox_runtime=sandbox_runtime_label,
             calculation_summary=summary,
         )
         ctx.state["sandbox_anomaly_summary"] = out.model_dump_json()
@@ -556,6 +670,7 @@ def build_cymbal_workflow(
         synthesizer_node: Any = Agent(
             name="governance_remediation_synthesizer",
             model=_build_gemini_llm(),
+            generate_content_config=_fast_generate_config(),
             mode="single_turn",
             instruction=load_active_synthesizer_instruction,
             output_schema=GovernanceRemediationAssessment,
@@ -564,6 +679,7 @@ def build_cymbal_workflow(
     else:
 
         async def deterministic_synthesizer(ctx: Context) -> GovernanceRemediationAssessment:
+            await _emit_stage(4, 7, "Governance Synthesizer", "Synthesizing remediation plan, dynamic guardrail spec, and Terraform HCL.")
             bundle = CorrelatedGovernanceBundle.model_validate(ctx.state["correlated_bundle_dict"])
             active_prompt = load_active_synthesizer_instruction(ctx)
             is_v2 = (
@@ -571,8 +687,14 @@ def build_cymbal_workflow(
                 or "Change-Freeze Verification Gate" in active_prompt
             )
 
-            risk: Any = "AG3" if bundle.tier1_supergraph.risk_tier == "AG3" else "AG1"
-            route: Any = "deploy_ag3_gate" if risk == "AG3" else "advisory_ag1"
+            raw_tier = str(bundle.tier1_supergraph.risk_tier or "AG2").upper()
+            risk: Any = raw_tier if raw_tier in {"AG1", "AG2", "AG3", "AG4", "AG5"} else "AG3"
+            if risk == "AG5":
+                route: Any = "prohibited_ag5_block"
+            elif risk in {"AG3", "AG4"}:
+                route = "deploy_ag3_gate"
+            else:
+                route = "advisory_ag1"
             freeze_hit = bundle.tier1_supergraph.policy_freeze_active
 
             dyn_policy = DynamicGuardrailPolicyPayload(
@@ -646,6 +768,7 @@ def build_cymbal_workflow(
     async def route_assessment_fn(
         ctx: Context, node_input: Any = None
     ) -> AsyncGenerator[Event, None]:
+        await _emit_stage(5, 7, "Policy & Agency Tier Router", "Evaluating AG1-AG5 agency tier and freeze/quarantine route.")
         raw = ctx.state.get("incident_assessment") or node_input
         assessment = GovernanceRemediationAssessment.model_validate(raw)
         if not assessment.terraform_paved_path_hcl:
@@ -656,11 +779,14 @@ def build_cymbal_workflow(
                 target_mode=str(ctx.state.get("architecture_mode") or "enterprise_hybrid"),
             )
         ctx.state["incident_assessment"] = assessment.model_dump()
-        route_key = (
-            "deploy_ag3_gate"
-            if assessment.risk_level == "AG3" or assessment.recommended_route == "deploy_ag3_gate"
-            else "advisory_ag1"
-        )
+        if assessment.risk_level == "AG5" or assessment.recommended_route == "prohibited_ag5_block":
+            route_key = "prohibited_ag5_block"
+        elif assessment.recommended_route == "freeze_quarantine":
+            route_key = "freeze_quarantine"
+        elif assessment.risk_level in {"AG3", "AG4"} or assessment.recommended_route == "deploy_ag3_gate":
+            route_key = "deploy_ag3_gate"
+        else:
+            route_key = "advisory_ag1"
         yield Event(
             message=(
                 f"[Governance Synthesizer] Assessed {assessment.candidate_id} ({assessment.agent_name}) "
@@ -729,11 +855,27 @@ def build_cymbal_workflow(
     )
 
     async def a2a_paved_path_deployment_delegate(ctx: Context) -> DeploymentRemediationOutcome:
+        await _emit_stage(6, 7, "A2A Paved-Path Deployment", "Delegating approved deployment with explicit VP exception ticket (if required).")
         assessment = GovernanceRemediationAssessment.model_validate(ctx.state["incident_assessment"])
         decision = GovernanceReviewerDecision.model_validate(ctx.state["ag3_approval_decision"])
         bundle = CorrelatedGovernanceBundle.model_validate(ctx.state["correlated_bundle_dict"])
         approval_id = str(ctx.state.get("active_ag3_interrupt_id") or "ag3_deploy_1")
         arch_mode = str(ctx.state.get("architecture_mode") or "enterprise_hybrid")
+
+        if assessment.risk_level == "AG5":
+            outcome = DeploymentRemediationOutcome(
+                status="PROHIBITED_AG5_BLOCKED",
+                candidate_id=assessment.candidate_id,
+                agent_name=assessment.agent_name,
+                task_id="block-prohibited-ag5",
+                golden_blueprint_id=None,
+                post_deploy_readiness_score=None,
+                compliance_verified=False,
+                terraform_paved_path_hcl=assessment.terraform_paved_path_hcl,
+                summary="Unconditionally blocked: AEGIS AG5 (Fully Autonomous) is prohibited and cannot be deployed.",
+            )
+            ctx.state["remediation_outcome"] = outcome.model_dump()
+            return outcome
 
         rpc_body = {
             "jsonrpc": "2.0",
@@ -758,12 +900,7 @@ def build_cymbal_workflow(
                             "approval_id": approval_id,
                             "approver_principal": decision.approver_principal,
                             "policy_freeze_active": bundle.tier1_supergraph.policy_freeze_active,
-                            "vp_exception_ticket": decision.vp_exception_ticket
-                            or (
-                                "VP-GOV-204"
-                                if bundle.tier1_supergraph.policy_freeze_active
-                                else None
-                            ),
+                            "vp_exception_ticket": decision.vp_exception_ticket,
                             "target_mode": arch_mode,
                         },
                         "rollback_request": {
@@ -774,20 +911,23 @@ def build_cymbal_workflow(
                             "approval_id": approval_id,
                             "approver_principal": decision.approver_principal,
                             "change_freeze_active": bundle.tier1_supergraph.policy_freeze_active,
-                            "vp_exception_ticket": decision.vp_exception_ticket
-                            or (
-                                "VP-GOV-204"
-                                if bundle.tier1_supergraph.policy_freeze_active
-                                else None
-                            ),
+                            "vp_exception_ticket": decision.vp_exception_ticket,
                         },
                     },
                 }
             },
         }
 
+        freeze_denied_detail: str | None = None
         if a2a_client_override is not None:
-            resp_json = await a2a_client_override(rpc_body, approval_id)
+            try:
+                resp_json = await a2a_client_override(rpc_body, approval_id)
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    freeze_denied_detail = str(exc.detail)
+                    resp_json = None
+                else:
+                    raise
         else:
             from services.remediation_a2a_agent.app import JsonRpcA2ARequest, handle_a2a_rpc
 
@@ -795,6 +935,7 @@ def build_cymbal_workflow(
                 os.getenv("CYMBAL_A2A_URL") or os.getenv("SCAPE_A2A_URL") or ""
             ).rstrip("/")
             resp_json = None
+            remote_rejected_403 = False
             if a2a_base and "run.app" in a2a_base and "remediation-a2a-agent.run.app" not in a2a_base:
                 try:
                     headers = {
@@ -812,15 +953,45 @@ def build_cymbal_workflow(
                         resp = await client.post(f"{a2a_base}/a2a", json=rpc_body, headers=headers)
                         if resp.status_code == 200:
                             resp_json = resp.json()
+                        elif resp.status_code == 403:
+                            remote_rejected_403 = True
+                            try:
+                                freeze_denied_detail = str(resp.json().get("detail") or resp.text)
+                            except Exception:
+                                freeze_denied_detail = resp.text or "403 Policy Freeze Gate"
                 except Exception:
                     resp_json = None
 
-            if resp_json is None:
-                resp_json = await handle_a2a_rpc(
-                    JsonRpcA2ARequest.model_validate(rpc_body),
-                    x_cymbal_ag3_approval_id=approval_id,
-                    x_cymbal_caller_identity="spiffe://agent-identity/agent-governance-demo",
-                )
+            if resp_json is None and not remote_rejected_403:
+                try:
+                    resp_json = await handle_a2a_rpc(
+                        JsonRpcA2ARequest.model_validate(rpc_body),
+                        x_cymbal_ag3_approval_id=approval_id,
+                        x_cymbal_caller_identity="spiffe://agent-identity/agent-governance-demo",
+                    )
+                except HTTPException as exc:
+                    if exc.status_code == 403:
+                        freeze_denied_detail = str(exc.detail)
+                    else:
+                        raise
+
+        if freeze_denied_detail is not None:
+            outcome = DeploymentRemediationOutcome(
+                status="HELD_FOR_GOVERNANCE_EXCEPTION",
+                candidate_id=assessment.candidate_id,
+                agent_name=assessment.agent_name,
+                task_id="hold-vp-governance-freeze",
+                golden_blueprint_id=None,
+                post_deploy_readiness_score=None,
+                compliance_verified=False,
+                terraform_paved_path_hcl=assessment.terraform_paved_path_hcl,
+                summary=(
+                    f"Blocked by fail-closed Governance Freeze / A2A gate without verified VP exception ticket: "
+                    f"{freeze_denied_detail}"
+                ),
+            )
+            ctx.state["remediation_outcome"] = outcome.model_dump()
+            return outcome
 
         result = resp_json.get("result", {})
         artifacts = result.get("artifacts", [])
@@ -864,8 +1035,36 @@ def build_cymbal_workflow(
     )
 
     async def record_compliance_hold(ctx: Context) -> DeploymentRemediationOutcome:
+        await _emit_stage(6, 7, "Compliance Hold / Quarantine", "Recording fail-closed hold or prohibited AG5 block.")
         assessment = GovernanceRemediationAssessment.model_validate(ctx.state["incident_assessment"])
-        decision = GovernanceReviewerDecision.model_validate(ctx.state["ag3_approval_decision"])
+        if assessment.risk_level == "AG5" or assessment.recommended_route == "prohibited_ag5_block":
+            outcome = DeploymentRemediationOutcome(
+                status="PROHIBITED_AG5_BLOCKED",
+                candidate_id=assessment.candidate_id,
+                agent_name=assessment.agent_name,
+                task_id="block-prohibited-ag5",
+                golden_blueprint_id=None,
+                post_deploy_readiness_score=None,
+                compliance_verified=False,
+                terraform_paved_path_hcl=assessment.terraform_paved_path_hcl,
+                summary=(
+                    "Blocked unconditionally: AEGIS AG5 (Fully Autonomous) is prohibited "
+                    "and cannot be deployed or bypassed via exception overrides."
+                ),
+            )
+            ctx.state["remediation_outcome"] = outcome.model_dump()
+            return outcome
+
+        raw_dec = ctx.state.get("ag3_approval_decision")
+        decision = (
+            GovernanceReviewerDecision.model_validate(raw_dec)
+            if raw_dec
+            else GovernanceReviewerDecision(
+                approved=False,
+                approver_principal="policy-freeze-quarantine-gate",
+                reason="Quarantined automatically by active Policy Freeze gate without VP exception ticket.",
+            )
+        )
         outcome = DeploymentRemediationOutcome(
             status="HELD_FOR_GOVERNANCE_EXCEPTION",
             candidate_id=assessment.candidate_id,
@@ -911,6 +1110,7 @@ def build_cymbal_workflow(
     async def persist_governance_memory(
         ctx: Context, node_input: Any = None
     ) -> AsyncGenerator[Event, None]:
+        await _emit_stage(7, 7, "Persist Governance Memory", "Writing JWT-scoped longitudinal governance record.")
         assessment = GovernanceRemediationAssessment.model_validate(ctx.state["incident_assessment"])
         outcome_raw = ctx.state.get("remediation_outcome") or node_input
         outcome = DeploymentRemediationOutcome.model_validate(outcome_raw)
@@ -966,6 +1166,8 @@ def build_cymbal_workflow(
             {
                 "advisory_ag1": publish_summary_node,
                 "deploy_ag3_gate": approval_gate_node,
+                "freeze_quarantine": manual_hold_node,
+                "prohibited_ag5_block": manual_hold_node,
             },
         )
     else:
@@ -981,6 +1183,8 @@ def build_cymbal_workflow(
             {
                 "advisory_ag1": publish_summary_node,
                 "deploy_ag3_gate": approval_gate_node,
+                "freeze_quarantine": manual_hold_node,
+                "prohibited_ag5_block": manual_hold_node,
             },
         )
 
@@ -989,7 +1193,7 @@ def build_cymbal_workflow(
         description=(
             "Enterprise Agent Governance Analysis, Remediation & Paved-Path Deployment "
             "Workbench built on ADK 2.0 Workflow graph, parallel Tier-1/Security/Langfuse "
-            "MCP audits, gVisor readiness scoring, resumable AG3 HITL, and A2A v1.0 deployment."
+            "MCP audits, sandbox readiness scoring, resumable AG3 HITL, and A2A v1.0 deployment."
         ),
         edges=[
             pre_synth_chain,
@@ -1008,7 +1212,7 @@ def build_cymbal_workflow(
 
 
 governance_plugin = CymbalGovernancePlugin()
-root_agent = build_cymbal_workflow(use_live_llm=True, use_remote_mcp=False)
+root_agent = build_cymbal_workflow(use_live_llm=True, use_remote_mcp=None)
 app = App(
     name="cymbal_ops_release_app",
     root_agent=root_agent,

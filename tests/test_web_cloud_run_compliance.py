@@ -22,12 +22,19 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
+import cymbal_agent.tenant as tenant_mod
+from cymbal_agent.governance.workbench_state import (
+    AgentDeploymentTemplate,
+    SlotSelectionConfig,
+    calculate_template_component_costs,
+)
 from web.api import STATIC_DIR, create_bff_app
 
 
 @pytest.fixture()
 def bff_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "runtime_state"))
     monkeypatch.delenv("K_SERVICE", raising=False)
     monkeypatch.delenv("K_REVISION", raising=False)
@@ -35,7 +42,9 @@ def bff_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app, base_url="http://127.0.0.1:8080")
 
 
-def test_local_http_bootstrap_and_security_headers(bff_client: TestClient) -> None:
+def test_local_http_bootstrap_and_security_headers(
+    bff_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     health = bff_client.get("/healthz")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
@@ -75,12 +84,53 @@ def test_local_http_bootstrap_and_security_headers(bff_client: TestClient) -> No
     services = payload["platform_services"]["services"]
     assert len(services) == 9
     assert [s["step"] for s in services] == list(range(1, 10))
+    svc_map = {s["id"]: s for s in services}
+    armor_svc = svc_map["model_armor"]
+    assert "3-tier" in armor_svc["summary"]
+    assert "LOW" in armor_svc["summary"] and "DEFAULT_MEDIUM" in armor_svc["summary"] and "STRICT_AG3" in armor_svc["summary"]
+    assert "Cloud SDP" in armor_svc["summary"]
+    assert "cymbal-low-baseline-gpp" in armor_svc["metrics"]["base_pool"]
+    assert "cymbal-default-medium-gpp" in armor_svc["metrics"]["base_pool"]
+    assert "cymbal-strict-ag3-gpp" in armor_svc["metrics"]["base_pool"]
+
+    runtime_default = svc_map["agent_runtime"]
+    assert "BuiltInCodeExecutor" in runtime_default["summary"]
+    assert "AgentEngineSandboxCodeExecutor" in runtime_default["summary"]
+    assert "BuiltInCodeExecutor" in runtime_default["metrics"]["sandbox"]
+    assert runtime_default["metrics"]["sandbox_mode"] == "builtin_gvisor"
+
+    csrf_headers = {"X-CSRF-Token": payload["csrf_token"]}
+    proof5 = bff_client.post("/api/steward/proofs/5", headers=csrf_headers)
+    assert proof5.status_code == 200
+    proof5_svcs = {s["id"]: s for s in proof5.json()["platform_services"]["services"]}
+    assert proof5_svcs["agent_runtime"]["summary"] == runtime_default["summary"]
+    assert proof5_svcs["agent_runtime"]["badge_label"] == "Proof #5 PASS"
+
+    proof7 = bff_client.post("/api/steward/proofs/7", headers=csrf_headers)
+    assert proof7.status_code == 200
+    proof7_svcs = {s["id"]: s for s in proof7.json()["platform_services"]["services"]}
+    assert proof7_svcs["model_armor"]["summary"] == armor_svc["summary"]
+    assert proof7_svcs["model_armor"]["badge_label"] == "Proof #7 PASS"
+
+    monkeypatch.setenv(
+        "CYMBAL_SANDBOX_RESOURCE_NAME",
+        "projects/demo-proj/locations/us-central1/reasoningEngines/sbx-engine-1/sandboxEnvironments/sbx-1",
+    )
+    boot_sbx = bff_client.get("/api/bootstrap").json()
+    runtime_sbx = next(
+        s for s in boot_sbx["platform_services"]["services"] if s["id"] == "agent_runtime"
+    )
+    assert "AgentEngineSandboxCodeExecutor active" in runtime_sbx["summary"]
+    assert "AgentEngineSandboxCodeExecutor" in runtime_sbx["metrics"]["sandbox"]
+    assert "sbx-1" in runtime_sbx["metrics"]["sandbox"]
+    assert runtime_sbx["metrics"]["sandbox_mode"] == "agent_engine_sandbox"
 
 
 def test_cloud_run_https_proxy_headers_and_host_cookie(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "cr_state"))
     monkeypatch.setenv("K_SERVICE", "cymbal-ops-release-web")
     monkeypatch.setenv("K_REVISION", "cymbal-ops-release-web-00001-rev")
@@ -119,6 +169,7 @@ def test_stateless_signed_csrf_and_session_revocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "csrf_state"))
     app_instance_1 = create_bff_app(offline_mode=True)
     app_instance_2 = create_bff_app(offline_mode=True)
@@ -205,6 +256,7 @@ def test_end_to_end_triage_hitl_resume_and_runtime_state(
 ) -> None:
     state_dir = tmp_path / "nonroot_state"
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(state_dir))
     app = create_bff_app(offline_mode=True)
     client = TestClient(app, base_url="http://127.0.0.1:8080")
@@ -296,6 +348,7 @@ def test_production_cymbal_lifecycle_console_and_zero_meta_terms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "lifecycle_state"))
     app = create_bff_app(offline_mode=True)
     client = TestClient(app, base_url="http://127.0.0.1:8080")
@@ -525,9 +578,201 @@ def test_headless_chrome_golden_walkthrough_and_pixel_alignment(
     if not find_local_chrome_binary():
         pytest.skip("Google Chrome / Chromium not installed on this runner.")
 
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
     monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "cdp_golden_state"))
     with _ephemeral_local_server(offline=True) as ephem_url:
         checks = run_headless_browser_golden_walkthrough(ephem_url)
     assert len(checks) == 10
     failed = [c for c in checks if not c["passed"]]
     assert not failed, f"Golden walkthrough browser checks failed: {failed}"
+
+
+def test_local_tenant_override_and_env_fallback_dynamic_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CYMBAL_TENANT_PROFILE", raising=False)
+    monkeypatch.delenv("CYMBAL_TENANT_OVERRIDE_YAML", raising=False)
+    monkeypatch.setenv("CYMBAL_BFF_OFFLINE", "true")
+
+    # 1. Verify structural properties if developer local override exists on disk (vendor-neutral checks)
+    real_local = tenant_mod.LOCAL_OVERRIDE_PATH
+    if real_local.is_file():
+        active_prof = tenant_mod.load_tenant_profile()
+        assert active_prof.profile_key != "cymbal_core"
+        assert len(active_prof.terminology.slot_cymbal_names) == 10
+        assert len(active_prof.terminology.slot_tco_overrides) == 10
+        assert tenant_mod.load_tenant_profile(profile_override="cymbal_core").profile_key == "cymbal_core"
+
+    # 2. Synthetic vendor-neutral local override file + dynamic /api/bootstrap reflection
+    synthetic_local = tmp_path / "tenant_profile.local.yaml"
+    synthetic_local.write_text(
+        """active_profile: acme_enterprise
+profiles:
+  acme_enterprise:
+    organization_display_name: AcmeCorp Enterprise
+    agent_title: AcmeCorp AI Platform Console
+    steward_console_title: AcmeCorp Governance Steward
+    terminology:
+      platform_name: AcmeCorp AI Platform
+      platform_title: AcmeCorp AI Platform
+      sidebar_brand: AcmeCorp AI Platform
+      brand_wordmark: AcmeCorp
+      brand_subtitle: Enterprise Agent Platform
+      gateway_name: Acme Gateway
+      intake_name: Acme Intake
+      cmdb_name: Acme CMDB
+      runtime_name: Acme Runtime
+      risk_framework: ACME-RISK
+      agency_tier_label: ACME Agency Tier
+      registry_name: Acme Registry
+      observability_name: Acme OTLP
+      runbook_name: Acme Runbook
+      wallet_name: Acme Wallet
+      guardrail_policy_name: Acme Guardrails
+      slot_cymbal_names:
+        identity_access: Acme Entra + Sidecar
+        agent_registry: Acme Catalog Hub
+        ai_gateway: Acme Gateway Proxy
+        safety_guardrails: Acme Content Safety
+        foundation_model: Acme Multi-Cloud LLM
+        runtime_sandbox: Acme Container Runner
+        memory_knowledge: Acme State Store
+        observability_tracing: Acme Trace Collector
+        cost_kill_controls: Acme Spend Controller
+        eval_optimization: Acme Eval Runner
+      slot_tco_overrides:
+        ai_gateway:
+          cymbal_stack:
+            infra_monthly_usd: 150.0
+            maintenance_monthly_usd: 250.0
+            per_1m_turns_usd: 65.0
+            onboarding_usd: 300.0
+            consolidates: Acme Gateway Proxy
+    governance_defaults:
+      agent_id: agent-governance-demo
+      intake_record_id: acme-intake-100
+      cmdb_app_id: svc-acme-100
+      wallet_id: wallet-cymbal-ops
+      monthly_cap_nano_usd: 15000000000
+      hybrid_gateway_placeholder_url: https://gateway.acme.example/v1
+      hybrid_otlp_placeholder_url: https://otlp.acme.example/v1/traces
+    theme:
+      accent_primary: "#1D4ED8"
+      accent_secondary: "#1E40AF"
+      badge_text: AcmeCorp AI Platform
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tenant_mod, "LOCAL_OVERRIDE_PATH", synthetic_local)
+    monkeypatch.setenv("CYMBAL_RUNTIME_STATE_DIR", str(tmp_path / "acme_state"))
+
+    app = create_bff_app(offline_mode=True)
+    client = TestClient(app, base_url="http://127.0.0.1:8080")
+    boot = client.get("/api/bootstrap").json()
+    assert boot["tenant"]["profile_key"] == "acme_enterprise"
+    assert boot["tenant"]["terminology"]["brand_wordmark"] == "AcmeCorp"
+    assert boot["tenant"]["terminology"]["agency_tier_label"] == "ACME Agency Tier"
+    slot_map = {s["slot_id"]: s for s in boot["slot_catalog"]}
+    assert slot_map["ai_gateway"]["cymbal_name"] == "Acme Gateway Proxy"
+    assert boot["tenant"]["terminology"]["slot_tco_overrides"]["ai_gateway"]["cymbal_stack"]["maintenance_monthly_usd"] == 250.0
+
+    tpl = AgentDeploymentTemplate(
+        template_id="acme-cost-check",
+        name="acme-cost-check",
+        estimated_monthly_turns_millions=2.0,
+        components={
+            "ai_gateway": SlotSelectionConfig(
+                slot_id="ai_gateway", provider="cymbal_stack", enabled=True
+            )
+        },
+    )
+    costs = calculate_template_component_costs(tpl)
+    gw_cost = next(c for c in costs["component_costs"] if c["slot_id"] == "ai_gateway")
+    assert gw_cost["infra_monthly_usd"] == 150.0
+    assert gw_cost["maintenance_monthly_usd"] == 250.0
+    assert gw_cost["monthly_cost_usd"] == round(400.0 + 65.0 * 2.0, 2)
+
+    # 3. Missing LOCAL_OVERRIDE_PATH falls back to CYMBAL_TENANT_OVERRIDE_YAML
+    monkeypatch.setattr(tenant_mod, "LOCAL_OVERRIDE_PATH", tmp_path / "missing.local.yaml")
+    monkeypatch.setenv(
+        "CYMBAL_TENANT_OVERRIDE_YAML",
+        "active_profile: env_fallback\n"
+        "profiles:\n"
+        "  env_fallback:\n"
+        "    organization_display_name: EnvFallback Org\n"
+        "    agent_title: EnvFallback Console\n"
+        "    steward_console_title: EnvFallback Steward\n"
+        "    terminology:\n"
+        "      brand_wordmark: EnvFallback\n"
+        "      gateway_name: Env Gateway\n"
+        "      intake_name: Env Intake\n"
+        "      cmdb_name: Env CMDB\n"
+        "      runtime_name: Env Runtime\n"
+        "      risk_framework: ENV-RISK\n"
+        "      registry_name: Env Registry\n"
+        "      observability_name: Env OTLP\n"
+        "      runbook_name: Env Runbook\n"
+        "      wallet_name: Env Wallet\n"
+        "      guardrail_policy_name: Env Guardrails\n"
+        "    governance_defaults:\n"
+        "      agent_id: agent-governance-demo\n"
+        "      intake_record_id: env-intake-01\n"
+        "      cmdb_app_id: svc-env-01\n"
+        "      wallet_id: wallet-cymbal-ops\n"
+        "      monthly_cap_nano_usd: 15000000000\n"
+        "      hybrid_gateway_placeholder_url: https://gw.env.example/v1\n"
+        "      hybrid_otlp_placeholder_url: https://otlp.env.example/v1/traces\n"
+        "    theme:\n"
+        "      badge_text: EnvFallback Console\n",
+    )
+    env_prof = tenant_mod.load_tenant_profile()
+    assert env_prof.profile_key == "env_fallback"
+    assert env_prof.terminology.brand_wordmark == "EnvFallback"
+
+
+def test_env_starter_templates_json_fallback_and_demo_launcher_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cymbal_agent.governance.workbench_state import (
+        list_local_starter_templates,
+        load_local_starter_template,
+    )
+    from scripts.demo_reset_and_warmup import run_reset_and_warmup
+
+    starter_payload = {
+        "acme_baseline.local.yaml": (
+            "template_id: acme-baseline\n"
+            "name: Acme Enterprise Baseline\n"
+            "template_mode: custom\n"
+            "agent_name: acme-baseline-agent\n"
+            "app_id: svc-acme-01\n"
+            "intake_id: acme-2026-01\n"
+            "risk_tier: AG2\n"
+            "components:\n"
+            "  identity_access:\n"
+            "    provider: cymbal_stack\n"
+            "    enabled: true\n"
+        )
+    }
+    monkeypatch.setenv("CYMBAL_STARTER_TEMPLATES_JSON", json.dumps(starter_payload))
+    monkeypatch.setenv("CYMBAL_TENANT_PROFILE", "cymbal_core")
+    monkeypatch.setattr(
+        "cymbal_agent.governance.workbench_state.STARTERS_DIR",
+        tmp_path / "missing_starters",
+    )
+
+    starters = list_local_starter_templates()
+    assert len(starters) == 1
+    assert starters[0]["starter_id"] == "acme_baseline"
+    assert starters[0]["name"] == "Acme Enterprise Baseline"
+
+    loaded = load_local_starter_template("acme_baseline")
+    assert loaded.agent_name == "acme-baseline-agent"
+    assert loaded.components["identity_access"].provider == "cymbal_stack"
+
+    state_dir = tmp_path / "demo_clean_state"
+    report = run_reset_and_warmup(state_dir=state_dir, offline=True)
+    assert report["mode"] == "offline"
+    assert report["local_state"]["seeded_templates"] >= 25
+    assert report["gemini"]["status"] == "SKIPPED_OFFLINE"
+    assert (state_dir / "workbench" / "platform_state_v4.json").is_file()

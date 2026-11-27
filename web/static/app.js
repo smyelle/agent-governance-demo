@@ -35,10 +35,20 @@
 
   const state = {
     csrfToken: "",
+    offlineMode: false,
+    liveCloudAvailable: false,
+    architectureMode: "enterprise_hybrid",
     tenant: null,
+    candidates: [],
     slotCatalog: [],
     slotById: {},
     templates: [],
+    starterTemplates: [],
+    aiglPhaseSpecs: [],
+    caasRiskDomains: [],
+    caas49Factors: [],
+    phase5ReviewerRoles: [],
+    recertificationRecords: [],
     workingTemplate: null,
     initialScoreBaseline: 96.4,
     currentEvaluation: null,
@@ -68,6 +78,7 @@
     expandedFinopsSlotId: null,
     expandedGovernRuleId: null,
     expandedAdoptSlotId: null,
+    expandedRecertAgentId: null,
     buildPagination: { page: 1, pageSize: 10 },
     evalPagination: { page: 1, pageSize: 10 },
     deployPagination: { page: 1, pageSize: 10 },
@@ -91,6 +102,10 @@
   function formatUsd(val) {
     const num = Number(val || 0);
     return "$" + num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function formatElapsedSeconds(ms) {
+    return `${(Number(ms || 0) / 1000).toFixed(1)}s`;
   }
 
   function announcePolite(msg) {
@@ -149,6 +164,32 @@
     return body;
   }
 
+  function formatApiErrorDetail(body, status) {
+    const fallback = `Request failed (${status})`;
+    if (!body || body.detail === undefined || body.detail === null) {
+      return fallback;
+    }
+    if (typeof body.detail === "string") {
+      return body.detail || fallback;
+    }
+    if (Array.isArray(body.detail)) {
+      const parts = body.detail.map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const loc = Array.isArray(item.loc) ? item.loc.slice(1).join(".") : "";
+          const msg = item.msg || JSON.stringify(item);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(item);
+      });
+      return parts.filter(Boolean).join("; ") || fallback;
+    }
+    if (typeof body.detail === "object") {
+      return body.detail.message || JSON.stringify(body.detail);
+    }
+    return String(body.detail);
+  }
+
   async function apiPost(path, payload) {
     const resp = await fetch(path, {
       method: "POST",
@@ -165,27 +206,160 @@
       state.platformServices = body.platform_services;
     }
     if (!resp.ok) {
-      throw new Error(body.detail || `Request failed (${resp.status})`);
+      throw new Error(formatApiErrorDetail(body, resp.status));
     }
     return body;
   }
 
-  function customerShortName() {
+  async function apiPostStream(path, payload, onStep) {
+    const resp = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/x-ndjson, application/json",
+        "X-CSRF-Token": state.csrfToken,
+      },
+      body: JSON.stringify({ ...(payload || {}), stream: true }),
+    });
+    const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      if (errBody && errBody.platform_services) {
+        state.platformServices = errBody.platform_services;
+      }
+      throw new Error(formatApiErrorDetail(errBody, resp.status));
+    }
+    if (!contentType.includes("application/x-ndjson") || !resp.body || !resp.body.getReader) {
+      const body = await resp.json().catch(() => ({}));
+      if (body && body.platform_services) {
+        state.platformServices = body.platform_services;
+      }
+      return body;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let finalPayload = null;
+
+    const handleLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const evt = JSON.parse(trimmed);
+      if (evt.type === "step") {
+        if (typeof onStep === "function") {
+          onStep(evt);
+        }
+      } else if (evt.type === "result") {
+        finalPayload = evt.payload || evt;
+        if (finalPayload && finalPayload.platform_services) {
+          state.platformServices = finalPayload.platform_services;
+        }
+      } else if (evt.type === "error") {
+        throw new Error(evt.detail || evt.message || "Streaming execution failed");
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        handleLine(line);
+      }
+    }
+    const tail = buffer + decoder.decode();
+    if (tail.trim()) {
+      for (const line of tail.split("\n")) {
+        handleLine(line);
+      }
+    }
+    if (!finalPayload) {
+      throw new Error("Stream ended without a final result payload.");
+    }
+    return finalPayload;
+  }
+
+  async function runWithLiveStepper(containerEl, { title, totalSteps, runnerFn }) {
+    if (!containerEl) {
+      return runnerFn(() => {});
+    }
+    containerEl.hidden = false;
+    containerEl.replaceChildren();
+
+    const header = el("div", "stream-progress-header");
+    const titleEl = el("strong", "", title);
+    const timerEl = el("span", "expander-choice-pill", "0.0s");
+    header.append(titleEl, timerEl);
+
+    const statusEl = el("p", "field-hint", "Initializing live execution stream...");
+    const meter = el("progress", "meter-bar");
+    meter.max = totalSteps || 1;
+    meter.value = 0;
+
+    const stepsList = el("ul", "stream-steps-list");
+    containerEl.append(header, statusEl, meter, stepsList);
+
+    const tStart = performance.now();
+    const timerId = window.setInterval(() => {
+      timerEl.textContent = formatElapsedSeconds(performance.now() - tStart);
+    }, 100);
+
+    try {
+      const result = await runnerFn((evt) => {
+        const stepNum = Number(evt.step || 0);
+        const tot = Number(evt.total_steps || totalSteps || 1);
+        meter.max = tot;
+        meter.value = Math.min(tot, stepNum);
+        const stepElapsed = evt.elapsed_ms ? formatElapsedSeconds(evt.elapsed_ms) : formatElapsedSeconds(performance.now() - tStart);
+        statusEl.textContent = `[Step ${stepNum}/${tot}] ${evt.status || "Running"} - ${evt.detail || ""} (${stepElapsed})`;
+        const item = el(
+          "li",
+          "stream-step-item",
+          `[${stepNum}/${tot}] ${evt.status || "Step"} (${stepElapsed}): ${evt.detail || ""}`
+        );
+        stepsList.appendChild(item);
+      });
+      meter.value = meter.max;
+      const finalSec = formatElapsedSeconds(performance.now() - tStart);
+      timerEl.textContent = `${finalSec} (Done)`;
+      statusEl.textContent = `Completed in ${finalSec}.`;
+      return result;
+    } catch (err) {
+      const failSec = formatElapsedSeconds(performance.now() - tStart);
+      timerEl.textContent = `${failSec} (Error)`;
+      statusEl.textContent = `Failed after ${failSec}: ${err.message}`;
+      throw err;
+    } finally {
+      window.clearInterval(timerId);
+    }
+  }
+
+  function tenantTerm(key, fallback = "") {
     return (
-      (state.tenant &&
-        state.tenant.terminology &&
-        state.tenant.terminology.customer_provider_short) ||
-      "Third-Party / OSS"
+      (state.tenant && state.tenant.terminology && state.tenant.terminology[key]) ||
+      fallback
     );
   }
 
-  function gcpShortName() {
+  function tenantDefault(key, fallback = "") {
     return (
       (state.tenant &&
-        state.tenant.terminology &&
-        state.tenant.terminology.gcp_provider_short) ||
-      "Google Cloud"
+        state.tenant.governance_defaults &&
+        state.tenant.governance_defaults[key]) ||
+      fallback
     );
+  }
+
+  function customerShortName() {
+    return tenantTerm("customer_provider_short", "Third-Party / OSS");
+  }
+
+  function gcpShortName() {
+    return tenantTerm("gcp_provider_short", "Google Cloud");
   }
 
   function buLabel(buKey) {
@@ -273,7 +447,11 @@
       columns.every((col) => {
         const fVal = ctrl.filters[col.key];
         if (!fVal || String(fVal).trim() === "") return true;
-        const rawV = col.getValue ? col.getValue(row) : row[col.key];
+        const rawV = col.getFilterValue
+          ? col.getFilterValue(row)
+          : col.getValue
+          ? col.getValue(row)
+          : row[col.key];
         const dispV = col.getFilterText ? col.getFilterText(row) : rawV;
         return matchesColumnFilter(rawV, dispV, fVal, col.type || "string", col.filterType || "text");
       })
@@ -454,9 +632,10 @@
     state.activeStage = nextStage;
     clearBanners();
 
-    const brand =
-      (state.tenant && state.tenant.terminology && state.tenant.terminology.sidebar_brand) ||
-      "Cymbal Agent Governance Platform";
+    const brand = tenantTerm(
+      "platform_title",
+      tenantTerm("sidebar_brand", "Cymbal Agent Governance Platform")
+    );
     document.title = `${STAGE_TITLES[nextStage]} | ${brand}`;
     if (pushHistory && window.location.pathname !== `/${nextStage}`) {
       window.history.pushState({ stage: nextStage }, "", `/${nextStage}`);
@@ -506,13 +685,63 @@
     setStage(targetStage);
   }
 
+  function syncOfflineModeControl() {
+    const chk = document.getElementById("offline-demo-toggle");
+    const badge = document.getElementById("topbar-runtime-badge");
+    const tierBadge = document.getElementById("topbar-tier-badge");
+    if (chk) {
+      chk.checked = Boolean(state.offlineMode);
+      const lockedOffline = state.offlineMode && !state.liveCloudAvailable;
+      chk.disabled = lockedOffline;
+      chk.title = lockedOffline
+        ? "Live Vertex AI credentials are not active on this server instance."
+        : "Toggle between Live Vertex AI (gemini-3.8-flash) and Offline Demo Fallback.";
+    }
+    if (badge) {
+      badge.className = state.offlineMode ? "status-badge status-warn" : "status-badge status-ok";
+      badge.textContent = state.offlineMode
+        ? "Offline Demo Fallback"
+        : "Live Vertex AI (gemini-3.8-flash)";
+    }
+    if (tierBadge) {
+      tierBadge.textContent =
+        state.architectureMode === "google_native"
+          ? "Google-Native Paved Path"
+          : "4-Tier Coexistence";
+    }
+  }
+
   function renderHeaderAndBrand() {
     const terms = (state.tenant && state.tenant.terminology) || {};
     const fullBrand = terms.sidebar_brand || "Cymbal Agent Governance Platform";
-    const subEl = document.getElementById("sidebar-brand-subtitle");
-    if (subEl && fullBrand.toLowerCase().startsWith("cymbal ")) {
-      subEl.textContent = fullBrand.slice(7);
+    const wordEl = document.getElementById("sidebar-brand-wordmark");
+    if (wordEl) {
+      wordEl.textContent = terms.brand_wordmark || "Cymbal";
     }
+    const subEl = document.getElementById("sidebar-brand-subtitle");
+    if (subEl) {
+      subEl.textContent =
+        terms.brand_subtitle ||
+        (fullBrand.toLowerCase().startsWith("cymbal ")
+          ? fullBrand.slice(7)
+          : "Agent Governance Platform");
+    }
+    const topLabel = document.getElementById("topbar-platform-label");
+    if (topLabel) {
+      topLabel.textContent =
+        terms.platform_title || terms.platform_name || "Cymbal Agent Governance Platform";
+    }
+    const footBrand = document.getElementById("workspace-footer-brand");
+    if (footBrand) {
+      footBrand.textContent = `${
+        terms.platform_title || terms.platform_name || "Cymbal Agent Governance Platform"
+      } (Apache-2.0) | Foundation Model Standard: gemini-3.8-flash`;
+    }
+    const footDisc = document.getElementById("workspace-footer-disclaimer");
+    if (footDisc && terms.tco_framing_note) {
+      footDisc.textContent = `${terms.tco_framing_note}. Cost figures represent non-binding engineering capacity models.`;
+    }
+    syncOfflineModeControl();
   }
 
   /* Sync highlight between 10 horizontal blocks and 10 nested expanders */
@@ -838,37 +1067,55 @@
     }
   }
 
-  function exportCurrentTemplateYaml() {
+  async function exportCurrentTemplateYaml() {
     if (!state.workingTemplate) return;
     const t = state.workingTemplate;
-    const lines = [
-      `template_id: "${t.template_id}"`,
-      `agent_name: "${t.agent_name}"`,
-      `app_id: "${t.app_id}"`,
-      `intake_id: "${t.intake_id || ""}"`,
-      `business_unit: "${t.business_unit}"`,
-      `risk_tier: "${t.risk_tier}"`,
-      `runtime_cloud: "${t.runtime_cloud}"`,
-      `estimated_monthly_turns_millions: ${t.estimated_monthly_turns_millions}`,
-      `uap_cel_per_tool_enforced: ${Boolean(t.uap_cel_per_tool_enforced)}`,
-      `sdp_pii_mode: "${t.sdp_pii_mode}"`,
-      `prompt_version: "${t.prompt_version}"`,
-      `behavior_score: ${t.behavior_score}`,
-      "components:",
-    ];
-    state.slotCatalog.forEach((spec) => {
-      const c = (t.components && t.components[spec.slot_id]) || { provider: "unconfigured" };
-      lines.push(`  ${spec.slot_id}: "${c.provider}"`);
-    });
-    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/yaml;charset=utf-8" });
+    let yamlContent = "";
+    let downloadName = `${t.agent_name || t.template_id || "agent-template"}.local.yaml`;
+    try {
+      const res = await apiPost("/api/templates/export-yaml", { template: t });
+      yamlContent = res.yaml_content || "";
+      if (res.filename) {
+        downloadName = res.filename;
+      }
+    } catch (_) {
+      const lines = [
+        `template_id: "${t.template_id}"`,
+        `agent_name: "${t.agent_name}"`,
+        `app_id: "${t.app_id}"`,
+        `intake_id: "${t.intake_id || ""}"`,
+        `business_unit: "${t.business_unit}"`,
+        `risk_tier: "${t.risk_tier}"`,
+        `aegis_risk_level: "${t.aegis_risk_level || "R2"}"`,
+        `aigl_phase: ${Number(t.aigl_phase || 1)}`,
+        `caas_risk_level: "${t.caas_risk_level || "Level 1"}"`,
+        `runtime_cloud: "${t.runtime_cloud}"`,
+        `estimated_monthly_turns_millions: ${t.estimated_monthly_turns_millions}`,
+        `uap_cel_per_tool_enforced: ${Boolean(t.uap_cel_per_tool_enforced)}`,
+        `sdp_pii_mode: "${t.sdp_pii_mode}"`,
+        `prompt_version: "${t.prompt_version}"`,
+        `behavior_score: ${t.behavior_score}`,
+        "components:",
+      ];
+      state.slotCatalog.forEach((spec) => {
+        const c = (t.components && t.components[spec.slot_id]) || { provider: "unconfigured" };
+        lines.push(`  ${spec.slot_id}:`);
+        lines.push(`    provider: "${c.provider}"`);
+        lines.push(`    enabled: ${c.enabled !== false}`);
+        lines.push(`    enterprise_sync_enabled: ${c.enterprise_sync_enabled !== false}`);
+      });
+      yamlContent = lines.join("\n") + "\n";
+    }
+    const blob = new Blob([yamlContent], { type: "text/yaml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${t.agent_name}.yaml`;
+    link.download = downloadName;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    showNotice(`Exported canonical YAML manifest '${downloadName}'.`);
   }
 
   /* Shared Per-Slot Component Radio & Policy Controls (Zero Dropdown) */
@@ -879,6 +1126,8 @@
     radioGroupPrefix,
     slotStateField = "selectedSlotId"
   ) {
+    const terms = (state.tenant && state.tenant.terminology) || {};
+    const tcoOverrides = (terms.slot_tco_overrides && terms.slot_tco_overrides[spec.slot_id]) || {};
     container.appendChild(
       el("span", "status-badge status-ok", `${spec.pillar} Pillar | ${spec.workstream}`)
     );
@@ -890,6 +1139,7 @@
       slot_id: spec.slot_id,
       provider: "unconfigured",
       enabled: false,
+      enterprise_sync_enabled: true,
     };
     const curProv = comp.enabled === false ? "unconfigured" : comp.provider;
     const lockedGcp = tpl.template_mode === "google_gcp";
@@ -920,12 +1170,40 @@
     );
 
     const turns = Number(tpl.estimated_monthly_turns_millions || 3.5);
+    const syncSlots = new Set(["identity_access", "agent_registry", "observability_tracing"]);
     [
       ["cymbal_stack", spec.cymbal_name],
       ["google_gcp", spec.gcp_name],
     ].forEach(([provKey, compTitle]) => {
-      const rates = spec.pricing[provKey];
-      const monthly = rates.base_monthly_usd + rates.per_1m_turns_usd * turns;
+      const baseRates = spec.pricing[provKey];
+      const ov = tcoOverrides[provKey] || {};
+      const infraMo = Number(
+        ov.infra_monthly_usd !== undefined && ov.infra_monthly_usd !== null
+          ? ov.infra_monthly_usd
+          : baseRates.infra_monthly_usd !== undefined
+          ? baseRates.infra_monthly_usd
+          : baseRates.base_monthly_usd
+      );
+      const maintMo = Number(
+        ov.maintenance_monthly_usd !== undefined && ov.maintenance_monthly_usd !== null
+          ? ov.maintenance_monthly_usd
+          : baseRates.maintenance_monthly_usd || 0
+      );
+      const per1m = Number(
+        ov.per_1m_turns_usd !== undefined && ov.per_1m_turns_usd !== null
+          ? ov.per_1m_turns_usd
+          : baseRates.per_1m_turns_usd
+      );
+      const onboard = Number(
+        ov.onboarding_usd !== undefined && ov.onboarding_usd !== null
+          ? ov.onboarding_usd
+          : baseRates.onboarding_usd
+      );
+      const syncBridge =
+        provKey === "google_gcp" && syncSlots.has(spec.slot_id) && comp.enterprise_sync_enabled !== false
+          ? 15.0
+          : 0.0;
+      const monthly = infraMo + maintMo + syncBridge + per1m * turns;
       const isChecked = curProv === provKey;
       const lbl = el(
         "label",
@@ -942,11 +1220,12 @@
         state[slotStateField] = spec.slot_id;
         tpl.template_mode = "custom";
         tpl.origin = "custom_hybrid";
+        const keepSync = comp.enterprise_sync_enabled !== false;
         tpl.components[spec.slot_id] = {
           slot_id: spec.slot_id,
           provider: provKey,
           enabled: true,
-          enterprise_sync_enabled: true,
+          enterprise_sync_enabled: keepSync,
           parameters: {},
         };
         await refreshEvaluation(true);
@@ -954,19 +1233,47 @@
 
       const textCol = el("div", "field-group");
       textCol.appendChild(el("strong", "", compTitle));
-      textCol.appendChild(
-        el(
-          "span",
-          "field-hint",
-          `Est. ${formatUsd(monthly)}/mo at ${turns}M turns (+${formatUsd(
-            rates.onboarding_usd
-          )} onboarding)`
-        )
-      );
+      const breakdownTxt = maintMo > 0
+        ? `Est. ${formatUsd(monthly)}/mo (Infra ${formatUsd(infraMo)} + Maint ${formatUsd(maintMo)} + Usage at ${turns}M turns, +${formatUsd(onboard)} onboarding)`
+        : `Est. ${formatUsd(monthly)}/mo at ${turns}M turns (+${formatUsd(onboard)} onboarding)`;
+      textCol.appendChild(el("span", "field-hint", breakdownTxt));
+      if (ov.tco_notes) {
+        textCol.appendChild(el("span", "field-hint", ov.tco_notes));
+      }
       lbl.append(rad, textCol);
       fs.appendChild(lbl);
     });
     container.appendChild(fs);
+
+    if (syncSlots.has(spec.slot_id)) {
+      const syncCopy = {
+        identity_access: `Enterprise Sync: Federate ${tenantTerm("identity_provider_name", "Enterprise IdP")} via WIF during transition (+$15/mo bridge)`,
+        agent_registry: `Enterprise Sync: Bi-directional sync with ${tenantTerm("registry_name", "Enterprise Registry")} (+$15/mo bridge)`,
+        observability_tracing: `Enterprise Sync: Dual-export OTLP spans to ${tenantTerm("observability_name", "Enterprise OTLP")} (+$15/mo bridge)`,
+      }[spec.slot_id];
+      const syncLbl = el("label", "radio-card-option enterprise-sync-option");
+      const syncChk = el("input");
+      syncChk.type = "checkbox";
+      syncChk.id = `${radioGroupPrefix}-sync-${tpl.template_id}-${spec.slot_id}`;
+      syncChk.checked = comp.enterprise_sync_enabled !== false;
+      syncChk.addEventListener("change", async () => {
+        state[slotStateField] = spec.slot_id;
+        if (!tpl.components[spec.slot_id]) {
+          tpl.components[spec.slot_id] = {
+            slot_id: spec.slot_id,
+            provider: curProv,
+            enabled: curProv !== "unconfigured",
+            enterprise_sync_enabled: syncChk.checked,
+            parameters: {},
+          };
+        } else {
+          tpl.components[spec.slot_id].enterprise_sync_enabled = syncChk.checked;
+        }
+        await refreshEvaluation(true);
+      });
+      syncLbl.append(syncChk, el("span", "", syncCopy));
+      container.appendChild(syncLbl);
+    }
 
     if (
       spec.slot_id === "identity_access" &&
@@ -1254,21 +1561,21 @@
       },
       {
         key: "app_id",
-        label: terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
+        label: tenantTerm("cmdb_col_label", "CMDB App ID"),
         type: "string",
         filterType: "text",
         getValue: (r) => r.app_id || "",
       },
       {
         key: "intake_id",
-        label: terms.intake_col_label || "ATLAS Intake ID",
+        label: tenantTerm("intake_col_label", "Intake ID"),
         type: "string",
         filterType: "text",
         getValue: (r) => r.intake_id || "Pending",
       },
       {
         key: "risk_tier",
-        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        label: tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier")),
         type: "string",
         filterType: "select",
         options: [
@@ -1276,6 +1583,7 @@
           ["ag2", "ag2"],
           ["ag3", "ag3"],
           ["ag4", "ag4"],
+          ["ag5", "ag5"],
         ],
         getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
       },
@@ -1392,6 +1700,27 @@
     td.colSpan = 7;
 
     const panel = el("div", "expanded-instance-panel");
+    const evalObj = state.currentEvaluation;
+
+    if (tpl.risk_tier === "AG5" || (evalObj && evalObj.ag5_prohibited_blocked)) {
+      const ag5Banner = el("div", "alert-banner ag5-block-banner");
+      ag5Banner.setAttribute("role", "alert");
+      ag5Banner.appendChild(
+        el(
+          "strong",
+          "",
+          `[X] ${tenantTerm("prohibited_risk_tier", "AG5")} (Fully Autonomous) Prohibited: `
+        )
+      );
+      ag5Banner.appendChild(
+        el(
+          "span",
+          "",
+          "Enterprise policy prohibits AG5 deployment without human intervention. Reclassify to AG1-AG4 with HITL and kill-switch controls."
+        )
+      );
+      panel.appendChild(ag5Banner);
+    }
 
     // 1. Instance-Scoped Toolbar: Template [Google Cloud | Custom] + Import / Export / Save / Evaluate
     const bar = el("div", "instance-toolbar");
@@ -1509,7 +1838,7 @@
     const gridMid = el("div", "form-grid-2");
     const fApp = makeField(
       "app-id",
-      terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
+      tenantTerm("cmdb_col_label", "CMDB App ID"),
       tpl.app_id,
       (v) => {
         tpl.app_id = v.trim() || tpl.app_id;
@@ -1518,7 +1847,7 @@
     );
     const fIntake = makeField(
       "intake-id",
-      terms.intake_col_label || "ATLAS Intake ID",
+      tenantTerm("intake_col_label", "Intake ID"),
       tpl.intake_id,
       async (v) => {
         tpl.intake_id = v.trim();
@@ -1530,12 +1859,22 @@
     const gridBot = el("div", "form-grid-2");
     const riskGrp = el("div", "field-group");
     const riskId = `inst-${tpl.template_id}-risk`;
-    const riskLbl = el("label", "", terms.risk_col_label || "SENTINEL Agency Tier");
+    const riskLbl = el(
+      "label",
+      "",
+      tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier"))
+    );
     riskLbl.setAttribute("for", riskId);
     const riskSel = el("select");
     riskSel.id = riskId;
-    ["AG1", "AG2", "AG3", "AG4"].forEach((r) => {
-      const o = el("option", "", r.toLowerCase());
+    [
+      ["AG1", "ag1"],
+      ["AG2", "ag2"],
+      ["AG3", "ag3"],
+      ["AG4", "ag4"],
+      ["AG5", "ag5 (Prohibited - Fully Autonomous)"],
+    ].forEach(([r, txt]) => {
+      const o = el("option", "", txt);
       o.value = r;
       if (tpl.risk_tier === r) o.selected = true;
       riskSel.appendChild(o);
@@ -1573,7 +1912,28 @@
     });
     sysGrp.append(sysLbl, sysTxt);
 
-    metaCard.append(gridTop, gridMid, gridBot, sysGrp);
+    const aiglBuildStrip = el("div", "aigl-phase-strip");
+    aiglBuildStrip.appendChild(
+      el(
+        "p",
+        "field-hint",
+        `AIGL Phases 1-3 | AEGIS ${tpl.aegis_risk_level || "R2"} | CaaS ${(evalObj && evalObj.caas_matrix && evalObj.caas_matrix.effective_caas_level) || tpl.caas_risk_level || "Level 1"}`
+      )
+    );
+    const buildPhases =
+      (evalObj && evalObj.aigl_lifecycle && evalObj.aigl_lifecycle.phases) ||
+      state.aiglPhaseSpecs ||
+      [];
+    const phaseChips = el("div", "aigl-phase-chips");
+    buildPhases.slice(0, 3).forEach((ph) => {
+      const chip = el("div", "aigl-phase-chip");
+      chip.appendChild(el("strong", "", `Phase ${ph.phase}: ${ph.name}`));
+      chip.appendChild(el("span", "field-hint", `${(ph.owners || []).join(", ")} (${ph.status || "ACTIVE"})`));
+      phaseChips.appendChild(chip);
+    });
+    aiglBuildStrip.appendChild(phaseChips);
+
+    metaCard.append(gridTop, gridMid, gridBot, sysGrp, aiglBuildStrip);
 
     const compCard = buildNestedComponentExpanders(tpl, panel);
     twoCol.append(metaCard, compCard);
@@ -1628,7 +1988,7 @@
       },
       {
         key: "risk_tier",
-        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        label: tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier")),
         type: "string",
         filterType: "select",
         options: [
@@ -1636,6 +1996,7 @@
           ["ag2", "ag2"],
           ["ag3", "ag3"],
           ["ag4", "ag4"],
+          ["ag5", "ag5"],
         ],
         getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
       },
@@ -1784,12 +2145,136 @@
     root.appendChild(tableWrap);
   }
 
+  function buildCaasMatrixCard(tpl, ev) {
+    const matrix = ev.caas_matrix;
+    if (!matrix) return null;
+    const card = el("div", "surface-card caas-matrix-card");
+
+    const head = el("div", "toolbar-row");
+    const left = el("div", "toolbar-left");
+    left.appendChild(
+      el(
+        "h3",
+        "section-heading",
+        `AIGL Phase 4: ${matrix.total_domains}-Domain / ${matrix.total_factors}-Factor CaaS Risk Matrix`
+      )
+    );
+    left.appendChild(
+      el(
+        "span",
+        matrix.effective_caas_level === "Prohibited"
+          ? "status-badge status-err"
+          : matrix.collapsed_from_level_2
+          ? "status-badge status-ok"
+          : "status-badge status-warn",
+        matrix.collapse_summary || `${matrix.baseline_caas_level} -> ${matrix.effective_caas_level}`
+      )
+    );
+    head.appendChild(left);
+    head.appendChild(
+      el("span", "field-hint", `Review SLA: ${matrix.review_sla_estimate || "Standard"}`)
+    );
+    card.appendChild(head);
+
+    const kpiStrip = el("div", "kpi-grid-4");
+    [
+      ["Baseline CaaS Level", matrix.baseline_caas_level || "Level 2", "Before platform certification"],
+      ["Effective CaaS Level", matrix.effective_caas_level || "Level 1", matrix.collapsed_from_level_2 ? "Collapsed from Level 2" : "Active tier"],
+      ["Google-Certified Controls", `${matrix.platform_covered_count || 0} / ${matrix.total_factors || 49}`, `${matrix.custom_control_count || 0} enterprise baseline`],
+      ["Manual / Gap Factors", `${matrix.manual_review_count || 0} / ${matrix.total_factors || 49}`, "Remaining human-review items"],
+    ].forEach(([l, v, s]) => {
+      const c = el("div", "surface-card");
+      c.append(el("p", "kpi-label", l), el("p", "kpi-value", v), el("p", "kpi-sub", s));
+      kpiStrip.appendChild(c);
+    });
+    card.appendChild(kpiStrip);
+
+    const domGrid = el("div", "caas-domain-grid");
+    (matrix.domains || []).forEach((dom) => {
+      const dCard = el("div", "caas-domain-card");
+      const top = el("div", "pipeline-item-top");
+      top.appendChild(el("strong", "", dom.name));
+      const dCls =
+        dom.status === "CERTIFIED_AUTOMATED"
+          ? "status-badge status-ok"
+          : dom.status === "PROHIBITED"
+          ? "status-badge status-err"
+          : "status-badge status-warn";
+      top.appendChild(
+        el(
+          "span",
+          dCls,
+          dom.status === "CERTIFIED_AUTOMATED"
+            ? `${dom.google_certified_count}/${dom.factor_count} Auto`
+            : dom.status === "PROHIBITED"
+            ? "PROHIBITED"
+            : `${dom.manual_or_gap_count}/${dom.factor_count} Gap`
+        )
+      );
+      dCard.appendChild(top);
+      dCard.appendChild(el("span", "field-hint", dom.google_certified_control || ""));
+      domGrid.appendChild(dCard);
+    });
+    card.appendChild(domGrid);
+
+    const fDet = el("details", "caas-factors-expander");
+    const fSum = el("summary", "component-expander-summary");
+    fSum.append(
+      el("span", "expander-title-group", `Inspect All ${matrix.total_factors || 49} CaaS Risk Factors`),
+      el("span", "expander-choice-pill", `${matrix.platform_covered_count || 0} Auto | ${matrix.custom_control_count || 0} Baseline | ${matrix.manual_review_count || 0} Manual`)
+    );
+    const fBody = el("div", "component-expander-body");
+    const fList = el("ul", "caas-factors-list");
+    (matrix.factors || []).forEach((fac) => {
+      const li = el("li", "caas-factor-row");
+      li.appendChild(el("strong", "", `${fac.factor_id}: ${fac.name}`));
+      li.appendChild(el("span", "field-hint", `${fac.nist_ai_rmf} | ${fac.assessment_mode} | ${fac.provider_label}`));
+      const stBadgeCls =
+        fac.coverage_state === "google_certified_automated"
+          ? "status-badge status-ok"
+          : fac.coverage_state === "prohibited_ag5"
+          ? "status-badge status-err"
+          : "status-badge status-warn";
+      li.appendChild(el("span", stBadgeCls, fac.coverage_state));
+      fList.appendChild(li);
+    });
+    fBody.appendChild(fList);
+    fDet.append(fSum, fBody);
+    card.appendChild(fDet);
+
+    return card;
+  }
+
   function buildExpandedEvaluateRow(tpl, ev) {
     const expTr = el("tr", "expanded-editor-row");
     const td = el("td", "expanded-editor-cell");
     td.colSpan = 8;
 
     const panel = el("div", "expanded-instance-panel");
+    const streamPanel = el("div", "stream-progress-panel");
+    streamPanel.id = "eval-stream-progress";
+    streamPanel.setAttribute("aria-live", "polite");
+    streamPanel.hidden = true;
+
+    if (ev.ag5_prohibited_blocked || tpl.risk_tier === "AG5") {
+      const ag5Banner = el("div", "alert-banner ag5-block-banner");
+      ag5Banner.setAttribute("role", "alert");
+      const msgWrap = el("div", "toolbar-row");
+      const msgTxt = el(
+        "span",
+        "",
+        `[X] ${tenantTerm("prohibited_risk_tier", "AG5")} (Fully Autonomous) is unconditionally prohibited and cannot pass evaluation or be exempted.`
+      );
+      const reclassBtn = el("button", "secondary-btn sm-btn", "Reclassify to AG3");
+      reclassBtn.type = "button";
+      reclassBtn.addEventListener("click", async () => {
+        tpl.risk_tier = "AG3";
+        await refreshEvaluation(true);
+      });
+      msgWrap.append(msgTxt, reclassBtn);
+      ag5Banner.appendChild(msgWrap);
+      panel.appendChild(ag5Banner);
+    }
 
     // 1. Instance Action Bar
     const bar = el("div", "instance-toolbar");
@@ -1819,15 +2304,19 @@
     optBtn.addEventListener("click", async () => {
       optBtn.disabled = true;
       try {
-        const fly = await apiPost("/api/steward/closed-loop-eval", {});
-        state.workingTemplate.prompt_version = "v2";
+        const fly = await runWithLiveStepper(streamPanel, {
+          title: "Live 6-Stage Closed-Loop Prompt & Trace Optimization",
+          totalSteps: 6,
+          runnerFn: (onStep) => apiPostStream("/api/steward/closed-loop-eval", {}, onStep),
+        });
+        state.workingTemplate.prompt_version = (fly.v2_candidate && fly.v2_candidate.prompt_version) || "v2";
         state.workingTemplate.behavior_score = fly.v2_candidate.behavior_score;
         state.workingTemplate.components.eval_optimization = {
           slot_id: "eval_optimization",
           provider: "google_gcp",
           enabled: true,
           enterprise_sync_enabled: true,
-          parameters: { promoted_blueprint: "v2" },
+          parameters: { promoted_blueprint: state.workingTemplate.prompt_version },
         };
         await refreshEvaluation(true);
         showNotice(
@@ -1845,13 +2334,35 @@
     auditBtn.addEventListener("click", async () => {
       auditBtn.disabled = true;
       try {
-        const auditRes = await apiPost("/api/agent/audit", {
-          candidate_id: "CAND-101",
-          agent_name: tpl.agent_name,
-          app_id: tpl.app_id,
-          operator_prompt: `Verify governance readiness and synthesize Terraform module for ${tpl.agent_name} (${tpl.app_id}).`,
-          architecture_mode:
-            tpl.template_mode === "google_gcp" ? "google_native" : "enterprise_hybrid",
+        const matchedCand = (state.candidates || []).find(
+          (c) =>
+            c.agent_name === tpl.agent_name ||
+            c.candidate_id === tpl.candidate_id ||
+            c.candidate_id === tpl.template_id
+        );
+        const resolvedCandidateId = String(
+          (matchedCand && matchedCand.candidate_id) ||
+            tpl.candidate_id ||
+            tpl.template_id ||
+            tpl.agent_name
+        ).slice(0, 32);
+        const auditRes = await runWithLiveStepper(streamPanel, {
+          title: `Live ADK 2.0 Governance Workflow Audit (${resolvedCandidateId})`,
+          totalSteps: 7,
+          runnerFn: (onStep) =>
+            apiPostStream(
+              "/api/agent/audit",
+              {
+                candidate_id: resolvedCandidateId,
+                agent_name: tpl.agent_name,
+                app_id: tpl.app_id,
+                risk_tier: tpl.risk_tier,
+                operator_prompt: `Verify governance readiness and synthesize Terraform module for ${tpl.agent_name} (${tpl.app_id}).`,
+                architecture_mode:
+                  tpl.template_mode === "google_gcp" ? "google_native" : "enterprise_hybrid",
+              },
+              onStep
+            ),
         });
         state.pendingHitl = auditRes.pending_approval
           ? {
@@ -1859,11 +2370,18 @@
               interrupt_id: auditRes.pending_approval.interrupt_id,
             }
           : null;
-        showNotice(
-          auditRes.status === "WAITING_AG3_APPROVAL"
-            ? `ADK 2.0 workflow audit complete; AG3 approval checkpoint '${auditRes.pending_approval.interrupt_id}' staged for Deploy.`
-            : "ADK 2.0 workflow audit completed with zero blocking interrupts."
-        );
+        if (auditRes.status === "BLOCKED_PROHIBITED_AG5") {
+          showError(
+            (auditRes.remediation_outcome && auditRes.remediation_outcome.summary) ||
+              "Blocked unconditionally: AEGIS AG5 (Fully Autonomous) is prohibited."
+          );
+        } else {
+          showNotice(
+            auditRes.status === "WAITING_AG3_APPROVAL"
+              ? `ADK 2.0 workflow audit complete; AG3 approval checkpoint '${auditRes.pending_approval.interrupt_id}' staged for Deploy.`
+              : "ADK 2.0 workflow audit completed with zero blocking interrupts."
+          );
+        }
       } catch (err) {
         showError(err.message);
       } finally {
@@ -1880,7 +2398,7 @@
 
     rightBtns.append(openBuildBtn, optBtn, auditBtn, toDeployBtn);
     bar.append(leftInfo, rightBtns);
-    panel.appendChild(bar);
+    panel.append(bar, streamPanel);
 
     // 2. Compact 5-KPI Readiness & Pillar Strip
     const kpiRow = el("div", "kpi-grid-5");
@@ -1891,7 +2409,9 @@
       el(
         "span",
         ev.gate_passed ? "status-badge status-ok" : "status-badge status-err",
-        ev.gate_passed
+        ev.ag5_prohibited_blocked
+          ? "[X] PROHIBITED (AG5 BLOCKED)"
+          : ev.gate_passed
           ? "[OK] Gate Passed"
           : `[!] ${ev.mandatory_failures_count} Blocking Gate(s)`
       )
@@ -1932,6 +2452,12 @@
 
     // 4. 10 Nested Rule & Remediation Expanders
     panel.appendChild(buildNestedEvaluateExpanders(tpl, ev, panel));
+
+    // 5. AIGL Phase 4: 12-Domain / 49-Factor CaaS Matrix
+    const caasCard = buildCaasMatrixCard(tpl, ev);
+    if (caasCard) {
+      panel.appendChild(caasCard);
+    }
 
     td.appendChild(panel);
     expTr.appendChild(td);
@@ -1981,8 +2507,10 @@
       const badgeCls =
         r.status === "PASSED"
           ? "status-badge status-ok"
-          : r.status === "EXCEPTION_APPROVED"
+          : r.status === "EXCEPTION_APPROVED" || r.status === "ADVISORY"
           ? "status-badge status-warn"
+          : r.status === "BLOCKED"
+          ? "status-badge status-err"
           : r.mandatory
           ? "status-badge status-err"
           : "status-badge status-warn";
@@ -1991,6 +2519,10 @@
           ? "PASSED"
           : r.status === "EXCEPTION_APPROVED"
           ? "EXCEPTION"
+          : r.status === "ADVISORY"
+          ? "[~] ADVISORY"
+          : r.status === "BLOCKED"
+          ? "[X] PROHIBITED"
           : r.mandatory
           ? "[!] MANDATORY GATE"
           : "[~] ADVISORY";
@@ -1998,7 +2530,7 @@
       summary.append(titleSpan, rightMeta);
 
       const body = el("div", "component-expander-body");
-      if (rec) {
+      if (rec && rec.rule_id !== "AEGIS-AG5") {
         const callout = el(
           "div",
           rec.severity === "MANDATORY_GATE"
@@ -2022,6 +2554,9 @@
             `Recommended: ${rec.recommended_provider_label} - ${rec.recommendation_summary}`
           )
         );
+        if (rec.capability_delta) {
+          callout.appendChild(el("span", "field-hint", `Capability Delta: ${rec.capability_delta}`));
+        }
 
         const btnRow = el("div", "toolbar-left");
         const fixBtn = el("button", "primary-btn sm-btn", "Apply Recommended Fix");
@@ -2177,7 +2712,7 @@
       },
       {
         key: "risk_tier",
-        label: terms.risk_col_label || "SENTINEL Agency Tier",
+        label: tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier")),
         type: "string",
         filterType: "select",
         options: [
@@ -2185,6 +2720,7 @@
           ["ag2", "ag2"],
           ["ag3", "ag3"],
           ["ag4", "ag4"],
+          ["ag5", "ag5"],
         ],
         getValue: (r) => String(r.risk_tier || "AG2").toLowerCase(),
       },
@@ -2318,13 +2854,36 @@
     td.colSpan = 8;
 
     const panel = el("div", "expanded-instance-panel");
+    const isAg5Blocked = Boolean(ev.ag5_prohibited_blocked || tpl.risk_tier === "AG5");
+    if (isAg5Blocked) {
+      const ag5Banner = el("div", "alert-banner ag5-block-banner");
+      ag5Banner.setAttribute("role", "alert");
+      ag5Banner.appendChild(
+        el(
+          "strong",
+          "",
+          `[X] ${tenantTerm("prohibited_risk_tier", "AG5")} Deployment Unconditionally Blocked: `
+        )
+      );
+      ag5Banner.appendChild(
+        el(
+          "span",
+          "",
+          "Fully autonomous (AG5) agents cannot be deployed or exempted. Reclassify to AG1-AG4 in Build."
+        )
+      );
+      panel.appendChild(ag5Banner);
+    }
+
     const bar = el("div", "instance-toolbar");
     const left = el("div", "toolbar-left");
     left.appendChild(
       el(
         "span",
-        ev.gate_passed ? "status-badge status-ok" : "status-badge status-err",
-        ev.gate_passed
+        ev.gate_passed && !isAg5Blocked ? "status-badge status-ok" : "status-badge status-err",
+        isAg5Blocked
+          ? "[X] PROHIBITED (AG5 BLOCKED)"
+          : ev.gate_passed
           ? `[OK] Ready for Production (${ev.overall_score.toFixed(1)}/100)`
           : `[!] Gate Blocked (${ev.overall_score.toFixed(1)} / ${ev.passing_threshold.toFixed(1)})`
       )
@@ -2409,9 +2968,11 @@
               `vs. ${customerShortName()} baseline`,
             ],
             [
-              "SENTINEL Agency Tier",
+              tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier")),
               tpl.risk_tier,
-              tpl.risk_tier === "AG3" || tpl.risk_tier === "AG4"
+              tpl.risk_tier === "AG5"
+                ? "PROHIBITED - Deployment Blocked"
+                : tpl.risk_tier === "AG3" || tpl.risk_tier === "AG4"
                 ? "Reviewer sign-off enforced"
                 : "Automated release eligible",
             ],
@@ -2425,6 +2986,118 @@
             kpis.appendChild(c);
           });
           body.appendChild(kpis);
+
+          const p5Gate = ev.phase5_reviewer_gate;
+          if (p5Gate) {
+            const p5Panel = el("div", "surface-card phase5-gate-panel");
+            const p5Head = el("div", "toolbar-row");
+            const p5Left = el("div", "toolbar-left");
+            p5Left.appendChild(
+              el(
+                "h4",
+                "section-heading",
+                `AIGL Phase 5: 7-Reviewer Governance Board (${p5Gate.approved_count || 0}/${p5Gate.total_reviewers || 7} Approved)`
+              )
+            );
+            const p5Cls =
+              p5Gate.verdict === "APPROVED"
+                ? "status-badge status-ok"
+                : p5Gate.verdict === "DENIED"
+                ? "status-badge status-err"
+                : "status-badge status-warn";
+            p5Left.appendChild(el("span", p5Cls, p5Gate.verdict || "PENDING_REVIEW"));
+            p5Head.appendChild(p5Left);
+
+            if (!isAg5Blocked && p5Gate.verdict !== "APPROVED") {
+              const approveAllBtn = el("button", "secondary-btn sm-btn", "Record 7-Reviewer Sign-Off");
+              approveAllBtn.type = "button";
+              approveAllBtn.addEventListener("click", async () => {
+                approveAllBtn.disabled = true;
+                try {
+                  let latestTpl = state.workingTemplate;
+                  let latestEval = state.currentEvaluation;
+                  const roles = (p5Gate.reviewers || []).filter(
+                    (r) => r.status !== "Approved" && r.status !== "Approved with Conditions"
+                  );
+                  for (const rev of roles) {
+                    const res = await apiPost("/api/templates/phase5-reviewers", {
+                      template: latestTpl,
+                      role: rev.role,
+                      status: "Approved",
+                      notes: "Parallel board sign-off recorded in Deploy.",
+                      reviewer_principal: appInp.value || "gov-steward-lead",
+                    });
+                    latestTpl = res.template;
+                    latestEval = res.evaluation;
+                    if (res.templates) {
+                      state.templates = res.templates;
+                    }
+                  }
+                  state.workingTemplate = latestTpl;
+                  state.currentEvaluation = latestEval;
+                  syncWorkingTemplateIntoList();
+                  renderStageBody();
+                  showNotice("Recorded Phase 5 7-Reviewer board sign-offs.");
+                } catch (err) {
+                  showError(err.message);
+                } finally {
+                  approveAllBtn.disabled = false;
+                }
+              });
+              p5Head.appendChild(approveAllBtn);
+            }
+            p5Panel.appendChild(p5Head);
+
+            const revGrid = el("div", "phase5-reviewer-grid");
+            (p5Gate.reviewers || []).forEach((rev) => {
+              const rCard = el("div", "phase5-reviewer-card");
+              const rTop = el("div", "pipeline-item-top");
+              rTop.appendChild(el("strong", "", rev.role));
+              const rCls =
+                rev.status === "Approved" || rev.status === "Approved with Conditions"
+                  ? "status-badge status-ok"
+                  : rev.status === "Denied"
+                  ? "status-badge status-err"
+                  : "status-badge status-draft";
+              rTop.appendChild(el("span", rCls, rev.status));
+              rCard.appendChild(rTop);
+
+              const rSel = el("select", "col-filter-select");
+              rSel.setAttribute("aria-label", `${rev.role} Phase 5 sign-off status`);
+              rSel.disabled = isAg5Blocked;
+              ["Pending", "Approved", "Approved with Conditions", "Denied"].forEach((opt) => {
+                const o = el("option", "", opt);
+                o.value = opt;
+                if (rev.status === opt) o.selected = true;
+                rSel.appendChild(o);
+              });
+              rSel.addEventListener("change", async () => {
+                try {
+                  const res = await apiPost("/api/templates/phase5-reviewers", {
+                    template: state.workingTemplate,
+                    role: rev.role,
+                    status: rSel.value,
+                    notes: `Updated ${rev.role} review to ${rSel.value}.`,
+                    reviewer_principal: appInp.value || "gov-steward-lead",
+                  });
+                  state.workingTemplate = res.template;
+                  state.currentEvaluation = res.evaluation;
+                  if (res.templates) state.templates = res.templates;
+                  syncWorkingTemplateIntoList();
+                  renderStageBody();
+                } catch (err) {
+                  showError(err.message);
+                }
+              });
+              rCard.appendChild(rSel);
+              if (rev.notes) {
+                rCard.appendChild(el("span", "field-hint", rev.notes));
+              }
+              revGrid.appendChild(rCard);
+            });
+            p5Panel.appendChild(revGrid);
+            body.appendChild(p5Panel);
+          }
 
           const deployForm = el("form", "inline-action-form");
           const appGrp = el("div", "field-group");
@@ -2453,6 +3126,9 @@
           const submitWrap = el("div", "form-actions-end");
           const deployBtn = el("button", "primary-btn", "Deploy Agent to Fleet");
           deployBtn.type = "submit";
+          if (isAg5Blocked || (p5Gate && p5Gate.verdict === "DENIED")) {
+            deployBtn.disabled = true;
+          }
 
           if (!ev.gate_passed) {
             const fixFirstBtn = el("button", "secondary-btn", "<- Remediate in Evaluate");
@@ -2463,7 +3139,7 @@
             submitWrap.appendChild(fixFirstBtn);
           }
 
-          if (state.pendingHitl) {
+          if (state.pendingHitl && !isAg5Blocked) {
             const hitlBtn = el(
               "button",
               "secondary-btn",
@@ -2473,17 +3149,25 @@
             hitlBtn.addEventListener("click", async () => {
               hitlBtn.disabled = true;
               try {
-                await apiPost("/api/agent/resume", {
+                const res = await apiPost("/api/agent/resume", {
                   session_id: state.pendingHitl.session_id,
                   interrupt_id: state.pendingHitl.interrupt_id,
                   approved: true,
                   approver_principal: appInp.value || "platform-governance-lead",
                   vp_exception_ticket: tktInp.value || null,
-                  reason: "Approved via Cymbal Agent Governance Platform Deploy Gate.",
+                  reason: `Approved via ${tenantTerm("platform_name", "Agent Governance Platform")} Deploy Gate.`,
                 });
                 state.pendingHitl = null;
                 renderStageBody();
-                showNotice("Resumed and completed ADK 2.0 AG3 deployment checkpoint.");
+                const remStatus = res.remediation_outcome && res.remediation_outcome.status;
+                if (remStatus === "HELD_FOR_GOVERNANCE_EXCEPTION") {
+                  showError(
+                    (res.remediation_outcome && res.remediation_outcome.summary) ||
+                      "Held pending VP Governance-Freeze exception ticket."
+                  );
+                } else {
+                  showNotice("Resumed and completed ADK 2.0 AG3 deployment checkpoint.");
+                }
               } catch (err) {
                 showError(err.message);
               } finally {
@@ -2515,6 +3199,9 @@
                   state.workingTemplate = cloneJson(refreshed);
                 }
               }
+              if (depRes.recertification_records) {
+                state.recertificationRecords = depRes.recertification_records;
+              }
               state.operationsMetrics = depRes.operations_metrics;
               state.executiveCosts = depRes.executive_costs;
               state.walletState = depRes.wallet_state;
@@ -2532,7 +3219,9 @@
             } catch (err) {
               showError(err.message);
             } finally {
-              deployBtn.disabled = false;
+              if (!isAg5Blocked) {
+                deployBtn.disabled = false;
+              }
             }
           });
 
@@ -2649,7 +3338,7 @@
       },
       {
         key: "risk_tier",
-        label: "Agency Tier",
+        label: tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier")),
         type: "string",
         filterType: "select",
         options: [
@@ -2657,6 +3346,7 @@
           ["ag2", "ag2"],
           ["ag3", "ag3"],
           ["ag4", "ag4"],
+          ["ag5", "ag5"],
         ],
         getValue: (d) => String(d.risk_tier || "AG2").toLowerCase(),
       },
@@ -2864,7 +3554,34 @@
     headRow.appendChild(
       el("h1", "strip-title", "Platform Governance, Fleet Operations & FinOps")
     );
+    const recerts = state.recertificationRecords || [];
+    const dueOrExpCnt = recerts.filter(
+      (r) => r.lifecycle_state === "DUE_SOON" || r.lifecycle_state === "EXPIRED" || r.activity_status === "INACTIVE"
+    ).length;
+    const recertJumpBtn = el(
+      "button",
+      "secondary-btn sm-btn",
+      `Manage ADR-004 Recertification & Offboarding (${dueOrExpCnt} Action)`
+    );
+    recertJumpBtn.type = "button";
+    recertJumpBtn.addEventListener("click", () => {
+      state.activeGovernTab = "fleet";
+      state.selectedGovernFleetSub = "recertification";
+      renderStageBody();
+    });
+    headRow.appendChild(recertJumpBtn);
     root.appendChild(headRow);
+
+    const aiglGovernBanner = el("div", "aigl-phase-strip surface-card");
+    const govChips = el("div", "aigl-phase-chips");
+    (state.aiglPhaseSpecs || []).slice(5, 7).forEach((ph) => {
+      const chip = el("div", "aigl-phase-chip");
+      chip.appendChild(el("strong", "", `AIGL Phase ${ph.phase}: ${ph.name}`));
+      chip.appendChild(el("span", "field-hint", (ph.key_tasks || []).join(" | ")));
+      govChips.appendChild(chip);
+    });
+    aiglGovernBanner.appendChild(govChips);
+    root.appendChild(aiglGovernBanner);
 
     const rub = state.rubric;
     const m = state.operationsMetrics;
@@ -3722,6 +4439,275 @@
             );
           },
         ],
+        [
+          "recertification",
+          "2.3 Phase 7 Offboarding & ADR-004 90-Day Recertification",
+          `${(state.recertificationRecords || []).length} Registered Agent(s)`,
+          (subBody) => {
+            const recs = state.recertificationRecords || [];
+            const cntByState = { CURRENT: 0, DUE_SOON: 0, EXPIRED: 0, DECOMMISSIONED: 0 };
+            let inactiveCnt = 0;
+            recs.forEach((r) => {
+              if (cntByState[r.lifecycle_state] !== undefined) {
+                cntByState[r.lifecycle_state] += 1;
+              }
+              if (r.activity_status === "INACTIVE") {
+                inactiveCnt += 1;
+              }
+            });
+
+            const summaryStrip = el("div", "kpi-grid-4 recert-summary-strip");
+            [
+              ["Current (Active < 75d)", String(cntByState.CURRENT), "Identity enabled"],
+              ["Due Soon (Day 75-89)", String(cntByState.DUE_SOON), "15d / 5d / 1d warnings"],
+              ["Expired (Day 90+)", String(cntByState.EXPIRED), "Identity auto-disabled"],
+              ["Inactive (>30d) / Decomm.", `${inactiveCnt} / ${cntByState.DECOMMISSIONED}`, "Offboarding candidates"],
+            ].forEach(([l, v, s]) => {
+              const c = el("div", "surface-card");
+              c.append(el("p", "kpi-label", l), el("p", "kpi-value", v), el("p", "kpi-sub", s));
+              summaryStrip.appendChild(c);
+            });
+            subBody.appendChild(summaryStrip);
+
+            const wrap = el("div", "table-wrap");
+            const tbl = el("table", "data-table");
+            tbl.appendChild(
+              el(
+                "caption",
+                "",
+                "ADR-004 90-Day Recertification & AIGL Phase 7 Offboarding Queue (Select any row to recertify, advance timer, expire, or decommission)"
+              )
+            );
+            const thead = el("thead");
+            const hRow = el("tr");
+            [
+              "Agent ID",
+              "Owner",
+              "Activity",
+              "Lifecycle State",
+              "Alert Stage",
+              "Identity",
+              "Cycle / Remaining",
+              "Next Review",
+            ].forEach((lbl) => {
+              const th = el("th", "", lbl);
+              th.scope = "col";
+              hRow.appendChild(th);
+            });
+            thead.appendChild(hRow);
+            tbl.appendChild(thead);
+
+            const tbody = el("tbody");
+            recs.forEach((rec) => {
+              const isExp = state.expandedRecertAgentId === rec.agent_id;
+              const tr = el("tr", isExp ? "clickable-row is-expanded-parent" : "clickable-row");
+              const toggleRec = () => {
+                state.activeGovernTab = "fleet";
+                state.selectedGovernFleetSub = "recertification";
+                state.expandedRecertAgentId = isExp ? null : rec.agent_id;
+                renderStageBody();
+              };
+
+              const tdId = el("td");
+              const selBtn = el("button", "row-select-btn");
+              selBtn.type = "button";
+              selBtn.setAttribute("aria-expanded", isExp ? "true" : "false");
+              selBtn.append(
+                el("span", "row-chevron", isExp ? "\u25BE" : "\u25B8"),
+                el("span", "", rec.agent_id)
+              );
+              selBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                toggleRec();
+              });
+              tdId.appendChild(selBtn);
+
+              const tdAct = el("td");
+              tdAct.appendChild(
+                el(
+                  "span",
+                  rec.activity_status === "ACTIVE" ? "status-badge status-ok" : "status-badge status-warn",
+                  rec.activity_status
+                )
+              );
+
+              const tdLife = el("td");
+              const lifeCls =
+                rec.lifecycle_state === "CURRENT"
+                  ? "status-badge status-ok"
+                  : rec.lifecycle_state === "DUE_SOON"
+                  ? "status-badge status-warn"
+                  : rec.lifecycle_state === "EXPIRED"
+                  ? "status-badge status-err"
+                  : "status-badge status-draft";
+              tdLife.appendChild(el("span", lifeCls, rec.lifecycle_state));
+
+              const tdIdent = el("td");
+              tdIdent.appendChild(
+                el(
+                  "span",
+                  rec.identity_enabled ? "status-badge status-ok" : "status-badge status-err",
+                  rec.identity_enabled ? "ENABLED" : "DISABLED"
+                )
+              );
+
+              tr.append(
+                tdId,
+                el("td", "", rec.owner_team || "--"),
+                tdAct,
+                tdLife,
+                el("td", "", rec.alert_stage || "NONE"),
+                tdIdent,
+                el("td", "", `Day ${rec.cycle_day} (${rec.days_remaining}d left)`),
+                el("td", "", rec.next_review_date || "--")
+              );
+              tr.addEventListener("click", toggleRec);
+              tbody.appendChild(tr);
+
+              if (isExp) {
+                const expTr = el("tr", "expanded-editor-row");
+                const expTd = el("td", "expanded-editor-cell");
+                expTd.colSpan = 8;
+                const expPanel = el("div", "expanded-instance-panel");
+                expPanel.appendChild(
+                  el(
+                    "p",
+                    "field-hint",
+                    `${rec.description || ""} | Owner: ${rec.owner_email || ""} | Last LLM: ${rec.days_since_last_llm_call}d ago | Last A2A: ${rec.days_since_last_a2a_message}d ago`
+                  )
+                );
+
+                const scopeSet = new Set(rec.current_scopes || []);
+                const scopeRow = el("div", "toolbar-left");
+                scopeRow.appendChild(el("strong", "", "Scopes:"));
+                const scopeChecks = {};
+                (rec.current_scopes || []).forEach((sc) => {
+                  const lbl = el("label", "offline-toggle-label");
+                  const chk = el("input");
+                  chk.type = "checkbox";
+                  chk.checked = true;
+                  scopeChecks[sc] = chk;
+                  lbl.append(chk, el("span", "", sc));
+                  scopeRow.appendChild(lbl);
+                });
+                if (scopeSet.size === 0) {
+                  scopeRow.appendChild(el("span", "field-hint", "No active scopes (revoked)"));
+                }
+                expPanel.appendChild(scopeRow);
+
+                const btnRow = el("div", "toolbar-left");
+                const recertBtn = el("button", "primary-btn sm-btn", "Recertify (Reset 90-Day Timer)");
+                recertBtn.type = "button";
+                recertBtn.addEventListener("click", async () => {
+                  const confirmed = Object.keys(scopeChecks).filter((k) => scopeChecks[k].checked);
+                  const removed = Object.keys(scopeChecks).filter((k) => !scopeChecks[k].checked);
+                  try {
+                    const res = await apiPost(
+                      `/api/govern/recertification/${encodeURIComponent(rec.agent_id)}/recertify`,
+                      {
+                        scopes_confirmed: confirmed,
+                        scopes_removed: removed,
+                        certified_by: rec.owner_email || "platform-owner@cymbal.example",
+                      }
+                    );
+                    state.recertificationRecords = res.records || [];
+                    renderStageBody();
+                    showNotice(`Recertified '${rec.agent_id}'; 90-day ADR-004 timer reset.`);
+                  } catch (err) {
+                    showError(err.message);
+                  }
+                });
+
+                [
+                  ["Sim Day 75", 75, null],
+                  ["Sim Day 85", 85, null],
+                  ["Sim Day 89", 89, null],
+                  ["Sim Day 90 (Expire)", 90, null],
+                  ["Sim Inactive (>30d)", Math.max(rec.cycle_day || 0, 45), 35],
+                ].forEach(([lbl, cDay, inact]) => {
+                  const simBtn = el("button", "secondary-btn sm-btn", lbl);
+                  simBtn.type = "button";
+                  simBtn.addEventListener("click", async () => {
+                    try {
+                      const res = await apiPost(
+                        `/api/govern/recertification/${encodeURIComponent(rec.agent_id)}/advance-timer`,
+                        { cycle_day: cDay, days_since_activity: inact }
+                      );
+                      state.recertificationRecords = res.records || [];
+                      renderStageBody();
+                    } catch (err) {
+                      showError(err.message);
+                    }
+                  });
+                  btnRow.appendChild(simBtn);
+                });
+
+                const expBtn = el("button", "secondary-btn sm-btn", "Expire Identity (Day 90)");
+                expBtn.type = "button";
+                expBtn.addEventListener("click", async () => {
+                  try {
+                    const res = await apiPost(
+                      `/api/govern/recertification/${encodeURIComponent(rec.agent_id)}/expire`,
+                      { reason: "Missed ADR-004 90-day recertification deadline" }
+                    );
+                    state.recertificationRecords = res.records || [];
+                    renderStageBody();
+                    showNotice(`Expired '${rec.agent_id}'; Agent Identity disabled.`);
+                  } catch (err) {
+                    showError(err.message);
+                  }
+                });
+
+                const offBtn = el("button", "danger-btn sm-btn", "Offboard & Transfer Ownership");
+                offBtn.type = "button";
+                offBtn.addEventListener("click", async () => {
+                  try {
+                    const res = await apiPost(
+                      `/api/govern/recertification/${encodeURIComponent(rec.agent_id)}/offboard`,
+                      {
+                        actor: rec.owner_email || "platform-owner@cymbal.example",
+                        transfer_owner: "archived-platform-steward",
+                      }
+                    );
+                    state.recertificationRecords = res.records || [];
+                    if (res.operations_metrics) {
+                      state.operationsMetrics = res.operations_metrics;
+                    }
+                    renderStageBody();
+                    showNotice(`Offboarded '${rec.agent_id}' and transferred ownership to archived-platform-steward.`);
+                  } catch (err) {
+                    showError(err.message);
+                  }
+                });
+
+                const actBar = el("div", "toolbar-row");
+                const primaryActs = el("div", "toolbar-left");
+                primaryActs.append(recertBtn, expBtn, offBtn);
+                actBar.append(primaryActs, btnRow);
+                expPanel.appendChild(actBar);
+
+                if (rec.audit_log && rec.audit_log.length > 0) {
+                  const logPre = el(
+                    "pre",
+                    "code-block",
+                    rec.audit_log
+                      .map((entry) => `[${entry.timestamp || ""}] ${entry.action}: ${entry.detail}`)
+                      .join("\n")
+                  );
+                  expPanel.appendChild(logPre);
+                }
+
+                expTd.appendChild(expPanel);
+                expTr.appendChild(expTd);
+                tbody.appendChild(expTr);
+              }
+            });
+
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+            subBody.appendChild(wrap);
+          },
+        ],
       ])
     );
   }
@@ -4094,7 +5080,7 @@
                 [
                   "Tier-0 + 20% Ensemble Hybrid",
                   formatUsd(t.ensemble_tier0_hybrid_annual_usd),
-                  "Tier-0 + 20% secondary voter",
+                  "100% Tier-0 pre-filter + 20% secondary escalation",
                 ],
                 [
                   "Legacy Guardrail List Baseline",
@@ -4102,7 +5088,7 @@
                   "$1.00 / 1K text records benchmark",
                 ],
                 [
-                  "Annual Savings (Model Armor)",
+                  "Standalone Savings (Model Armor)",
                   formatUsd(t.annual_savings_vs_azure_usd),
                   `${t.pct_reduction_vs_azure}% reduction vs. baseline`,
                 ],
@@ -4112,6 +5098,30 @@
                 tGrid.appendChild(c);
               });
               subBody.appendChild(tGrid);
+
+              const savGrid = el("div", "split-2-col");
+              const cStd = el("div", "surface-card");
+              cStd.append(
+                el("p", "kpi-label", "Standalone Model Armor Savings vs. Azure Content Safety"),
+                el("p", "kpi-value", `${formatUsd(t.annual_savings_vs_azure_usd)} / yr`),
+                el(
+                  "p",
+                  "kpi-sub",
+                  `${t.pct_reduction_vs_azure}% reduction (${formatUsd(t.google_model_armor_annual_usd)} vs. ${formatUsd(t.azure_content_safety_annual_usd)})`
+                )
+              );
+              const cEns = el("div", "surface-card hero-metric-card");
+              cEns.append(
+                el("p", "kpi-label", "Ensemble Tier-0 Hybrid Savings (100% Pre-Filter + 20% Escalation)"),
+                el("p", "kpi-value", `${formatUsd(t.ensemble_annual_savings_vs_azure_usd)} / yr`),
+                el(
+                  "p",
+                  "kpi-sub",
+                  `${t.ensemble_pct_reduction_vs_azure}% reduction (${formatUsd(t.ensemble_tier0_hybrid_annual_usd)} vs. ${formatUsd(t.azure_content_safety_annual_usd)})`
+                )
+              );
+              savGrid.append(cStd, cEns);
+              subBody.appendChild(savGrid);
             }
           },
         ],
@@ -4330,12 +5340,21 @@
                 "Execute live assertions across SPIFFE, UAP CEL, Atomic Wallet, Model Armor SDP, gVisor, Memory Bank, and Eval gates."
               )
             );
+            const streamBox = el("div", "stream-progress-panel");
+            streamBox.id = "proofs-stream-progress";
+            streamBox.setAttribute("aria-live", "polite");
+            streamBox.hidden = true;
+
             const runAllBtn = el("button", "primary-btn sm-btn", "Run All 8 Verification Checks");
             runAllBtn.type = "button";
             runAllBtn.addEventListener("click", async () => {
               runAllBtn.disabled = true;
               try {
-                const res = await apiPost("/api/steward/proofs-all", {});
+                const res = await runWithLiveStepper(streamBox, {
+                  title: "Running 8 Modular Coexistence Verification Checks",
+                  totalSteps: 8,
+                  runnerFn: (onStep) => apiPostStream("/api/steward/proofs-all", {}, onStep),
+                });
                 state.proofResults = res.proofs || [];
                 state.activeGovernTab = "controls";
                 state.selectedGovernControlsSub = "proofs";
@@ -4347,7 +5366,7 @@
               }
             });
             pHead.appendChild(runAllBtn);
-            subBody.appendChild(pHead);
+            subBody.append(pHead, streamBox);
 
             if (state.proofResults.length > 0) {
               const proofKey = "gov-proofs";
@@ -4365,6 +5384,19 @@
                   type: "string",
                   filterType: "text",
                   getValue: (p) => p.title,
+                },
+                {
+                  key: "control_availability",
+                  label: "Availability",
+                  type: "string",
+                  filterType: "select",
+                  options: [
+                    ["GA", "GA"],
+                    ["Preview", "Preview"],
+                  ],
+                  getValue: (p) => p.control_availability || "GA",
+                  getFilterValue: (p) =>
+                    /preview/i.test(String(p.control_availability || "")) ? "Preview" : "GA",
                 },
                 {
                   key: "passed",
@@ -4429,6 +5461,16 @@
                 const tr = el("tr");
                 tr.appendChild(el("td", "", String(pr.proof_id)));
                 tr.appendChild(el("td", "", pr.title));
+                const avail = pr.control_availability || "GA";
+                const tdAvail = el("td");
+                tdAvail.appendChild(
+                  el(
+                    "span",
+                    /preview/i.test(avail) ? "status-badge preview-badge" : "status-badge ga-badge",
+                    avail
+                  )
+                );
+                tr.appendChild(tdAvail);
                 const tdS = el("td");
                 tdS.appendChild(
                   el(
@@ -4453,6 +5495,7 @@
           "4.4 Control Plane Service Topology (9 Runtime Services)",
           "9 Active Services",
           (subBody) => {
+            const previewIds = new Set(["agent_registry", "agent_gateway", "memory_bank"]);
             if (state.platformServices && state.platformServices.services) {
               subBody.appendChild(
                 el("p", "field-hint", state.platformServices.last_event || "Control plane ready.")
@@ -4462,16 +5505,34 @@
                 const li = el("li", "pipeline-item");
                 const top = el("div", "pipeline-item-top");
                 top.appendChild(el("strong", "", `${svc.step}. ${svc.name}`));
+                const availTxt = previewIds.has(svc.id) ? "Preview" : "GA";
+                const badgeWrap = el("span", "toolbar-left");
+                badgeWrap.appendChild(
+                  el(
+                    "span",
+                    availTxt === "Preview" ? "status-badge preview-badge" : "status-badge ga-badge",
+                    availTxt
+                  )
+                );
                 const ok =
                   svc.status === "READY" || svc.status === "VERIFIED" || svc.status === "ACTIVE";
-                top.appendChild(
+                badgeWrap.appendChild(
                   el(
                     "span",
                     ok ? "status-badge status-ok" : "status-badge status-warn",
                     svc.badge_label || svc.status
                   )
                 );
+                top.appendChild(badgeWrap);
                 li.append(top, el("span", "field-hint", svc.subtitle));
+                if (svc.summary) {
+                  li.appendChild(el("span", "field-hint", svc.summary));
+                }
+                if (svc.id === "agent_runtime" && svc.metrics && svc.metrics.sandbox) {
+                  li.appendChild(el("span", "field-hint", `Sandbox: ${svc.metrics.sandbox}`));
+                } else if (svc.id === "model_armor" && svc.metrics && svc.metrics.base_pool) {
+                  li.appendChild(el("span", "field-hint", `Base Pool: ${svc.metrics.base_pool}`));
+                }
                 pList.appendChild(li);
               });
               subBody.appendChild(pList);
@@ -4491,7 +5552,6 @@
     if (hd) hd.textContent = "Register New Agent";
     body.replaceChildren();
 
-    const terms = (state.tenant && state.tenant.terminology) || {};
     const form = el("form", "form-stack");
 
     const addInput = (id, label, defVal) => {
@@ -4508,16 +5568,21 @@
     };
 
     const nextNum = state.templates.length + 1;
+    const cmdbSeed = tenantDefault("cmdb_app_id", "svc-ops-992");
+    const cmdbPrefix = cmdbSeed.replace(/\d+$/, "");
+    const intakeSeed = tenantDefault("intake_record_id", "intake-2026-0841");
+    const intakePrefix = intakeSeed.replace(/\d+$/, "");
+
     const fName = addInput("new-agent-id", "Agent ID", `customer-care-agent-${nextNum}`);
     const fApp = addInput(
       "new-app-id",
-      terms.cmdb_col_label || "ServiceAtlas CMDB App ID",
-      `svc-cymbal-${990 + nextNum}`
+      tenantTerm("cmdb_col_label", "CMDB App ID"),
+      `${cmdbPrefix}${990 + nextNum}`
     );
     const fIntake = addInput(
       "new-intake-id",
-      terms.intake_col_label || "ATLAS Intake ID",
-      `atlas-2026-08${40 + nextNum}`
+      tenantTerm("intake_col_label", "Intake ID"),
+      `${intakePrefix}${840 + nextNum}`
     );
 
     const profGrp = el("div", "field-group");
@@ -4527,7 +5592,7 @@
     profSel.id = "new-agent-profile";
     [
       ["google_gcp", `${gcpShortName()} (All 10 Google Cloud components)`],
-      ["custom", "Custom (Select per-component choices)"],
+      ["custom", `Custom (${customerShortName()} baseline / per-component choices)`],
     ].forEach(([val, txt]) => {
       const o = el("option", "", txt);
       o.value = val;
@@ -4535,19 +5600,43 @@
     });
     profGrp.append(profLbl, profSel);
 
+    const riskGrp = el("div", "field-group");
+    const riskLbl = el(
+      "label",
+      "",
+      tenantTerm("agency_tier_label", tenantTerm("risk_col_label", "Agency Tier"))
+    );
+    riskLbl.setAttribute("for", "new-agent-risk-tier");
+    const riskSel = el("select");
+    riskSel.id = "new-agent-risk-tier";
+    [
+      ["AG1", "AG1 (Low Risk / Read-Only)"],
+      ["AG2", "AG2 (Standard Governed)"],
+      ["AG3", "AG3 (High-Risk HITL Gate)"],
+      ["AG4", "AG4 (Critical Multi-BU)"],
+      ["AG5", "AG5 (Prohibited - Fully Autonomous)"],
+    ].forEach(([val, txt]) => {
+      const o = el("option", "", txt);
+      o.value = val;
+      if (val === "AG2") o.selected = true;
+      riskSel.appendChild(o);
+    });
+    riskGrp.append(riskLbl, riskSel);
+
     const createBtn = el("button", "primary-btn", "Create & Open Agent");
     createBtn.type = "submit";
-    form.append(fName.group, fApp.group, fIntake.group, profGrp, createBtn);
+    form.append(fName.group, fApp.group, fIntake.group, profGrp, riskGrp, createBtn);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const slug = fName.input.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
       const useGcp = profSel.value === "google_gcp";
+      const targetProv = useGcp ? "google_gcp" : "cymbal_stack";
       const comps = {};
       state.slotCatalog.forEach((s) => {
         comps[s.slot_id] = {
           slot_id: s.slot_id,
-          provider: "google_gcp",
+          provider: targetProv,
           enabled: true,
           enterprise_sync_enabled: true,
           parameters: {},
@@ -4556,21 +5645,21 @@
       const payload = {
         template_id: slug,
         name: slug,
-        description: "Registered via Cymbal Agent Governance Platform.",
+        description: `Registered via ${tenantTerm("platform_name", "Agent Governance Platform")}.`,
         template_mode: useGcp ? "google_gcp" : "custom",
         origin: useGcp ? "google_gcp_standard" : "custom_hybrid",
         agent_name: slug,
         app_id: fApp.input.value.trim(),
         intake_id: fIntake.input.value.trim(),
         business_unit: "core_cable",
-        risk_tier: "AG2",
-        onboarding_path: "Path C: Greenfield",
-        runtime_cloud: "gcp",
+        risk_tier: riskSel.value || "AG2",
+        onboarding_path: useGcp ? "Path C: Greenfield" : "Path B: SDK Integration",
+        runtime_cloud: useGcp ? "gcp" : "hybrid_multicloud",
         estimated_monthly_turns_millions: 3.5,
         uap_cel_per_tool_enforced: true,
         sdp_pii_mode: "DEIDENTIFY_INLINE",
         prompt_version: "v2",
-        behavior_score: 96.4,
+        behavior_score: useGcp ? 96.4 : 88.5,
         components: comps,
       };
       try {
@@ -4590,6 +5679,94 @@
     });
 
     body.appendChild(form);
+
+    const starterSection = el("div", "surface-card form-stack modal-starter-section");
+    starterSection.appendChild(
+      el("h3", "section-heading", "Import Saved Template or Load Starter YAML")
+    );
+
+    if (state.starterTemplates && state.starterTemplates.length > 0) {
+      const starterList = el("div", "form-stack");
+      state.starterTemplates.forEach((st) => {
+        const stBtn = el(
+          "button",
+          "secondary-btn starter-preset-btn",
+          `Load Starter: ${st.name} (${st.cymbal_stack_slots} ${customerShortName()} / ${st.google_gcp_slots} ${gcpShortName()} | ${Number(st.overall_score || 0).toFixed(1)}/100)`
+        );
+        stBtn.type = "button";
+        stBtn.addEventListener("click", async () => {
+          stBtn.disabled = true;
+          try {
+            const customName = fName.input.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+            const res = await apiPost(
+              `/api/templates/starters/${encodeURIComponent(st.starter_id)}/load`,
+              { save: true, agent_name: customName || null }
+            );
+            state.templates = res.templates || state.templates;
+            state.workingTemplate = res.template;
+            state.currentEvaluation = res.evaluation;
+            state.initialScoreBaseline = res.evaluation.overall_score;
+            clearTableFilters("build-agents", state.buildPagination);
+            state.buildPagination.page = 1;
+            state.expandedAgentId = res.template.template_id;
+            dlg.close();
+            renderHeaderAndBrand();
+            renderStageBody();
+            showNotice(`Loaded starter template '${res.template.agent_name}'.`);
+          } catch (err) {
+            showError(err.message);
+          } finally {
+            stBtn.disabled = false;
+          }
+        });
+        starterList.appendChild(stBtn);
+      });
+      starterSection.appendChild(starterList);
+    }
+
+    const importRow = el("div", "toolbar-left");
+    const hiddenFile = el("input", "visually-hidden");
+    hiddenFile.type = "file";
+    hiddenFile.id = "new-agent-yaml-file";
+    hiddenFile.accept = ".yaml,.yml,.json";
+    hiddenFile.addEventListener("change", async () => {
+      const file = hiddenFile.files && hiddenFile.files[0];
+      if (!file) return;
+      try {
+        const content = await file.text();
+        const up = await apiPost("/api/templates/upload", {
+          filename: file.name,
+          content,
+        });
+        const saved = await apiPost("/api/agents/save", up.template);
+        state.templates = saved.templates;
+        state.workingTemplate = saved.template;
+        state.currentEvaluation = saved.evaluation;
+        state.initialScoreBaseline = saved.evaluation.overall_score;
+        clearTableFilters("build-agents", state.buildPagination);
+        state.buildPagination.page = 1;
+        state.expandedAgentId = saved.template.template_id;
+        dlg.close();
+        renderHeaderAndBrand();
+        renderStageBody();
+        showNotice(`Imported template '${saved.template.agent_name}' from '${file.name}'.`);
+      } catch (err) {
+        showError(err.message);
+      }
+    });
+
+    const yamlFileBtn = el("button", "secondary-btn sm-btn", "Import Saved Template (.yaml)");
+    yamlFileBtn.type = "button";
+    yamlFileBtn.addEventListener("click", () => hiddenFile.click());
+
+    const pasteYamlBtn = el("button", "secondary-btn sm-btn", "Paste / Edit YAML...");
+    pasteYamlBtn.type = "button";
+    pasteYamlBtn.addEventListener("click", () => openImportManifestModal(false));
+
+    importRow.append(hiddenFile, yamlFileBtn, pasteYamlBtn);
+    starterSection.appendChild(importRow);
+    body.appendChild(starterSection);
+
     dlg.showModal();
   }
 
@@ -4626,10 +5803,11 @@
       applyToSelectedAgent && state.workingTemplate
         ? state.workingTemplate.agent_name
         : "order-fulfillment-specialist";
+    const cmdbSeed = tenantDefault("cmdb_app_id", "svc-ops-740").replace(/\d+$/, "");
     txtArea.value = [
       `template_id: ${defaultId}`,
       `agent_name: ${defaultId}`,
-      "app_id: svc-cymbal-740",
+      `app_id: ${cmdbSeed}740`,
       "intake_id: ''",
       "business_unit: media_studio",
       "risk_tier: AG3",
@@ -4698,6 +5876,31 @@
       });
     });
 
+    const offlineChk = document.getElementById("offline-demo-toggle");
+    if (offlineChk) {
+      offlineChk.addEventListener("change", async () => {
+        const desiredOffline = Boolean(offlineChk.checked);
+        offlineChk.disabled = true;
+        try {
+          const res = await apiPost("/api/config/mode", { offline_mode: desiredOffline });
+          state.offlineMode = Boolean(res.offline_mode);
+          state.liveCloudAvailable = Boolean(res.live_cloud_available);
+          state.architectureMode = res.architecture_mode || state.architectureMode;
+          renderHeaderAndBrand();
+          showNotice(
+            state.offlineMode
+              ? "Offline Demo Fallback enabled for this browser session."
+              : "Live Vertex AI (gemini-3.8-flash) execution enabled for this browser session."
+          );
+        } catch (err) {
+          offlineChk.checked = state.offlineMode;
+          showError(err.message);
+        } finally {
+          syncOfflineModeControl();
+        }
+      });
+    }
+
     window.addEventListener("popstate", () => {
       setStage(resolveInitialStageFromPath(), false);
     });
@@ -4720,13 +5923,23 @@
     try {
       const boot = await apiGet("/api/bootstrap");
       state.csrfToken = boot.csrf_token;
+      state.offlineMode = Boolean(boot.offline_mode);
+      state.liveCloudAvailable = Boolean(boot.live_cloud_available);
+      state.architectureMode = boot.architecture_mode || "enterprise_hybrid";
       state.tenant = boot.tenant;
+      state.candidates = boot.candidates || [];
       state.slotCatalog = boot.slot_catalog || [];
       state.slotById = {};
       state.slotCatalog.forEach((s) => {
         state.slotById[s.slot_id] = s;
       });
       state.templates = boot.templates || [];
+      state.starterTemplates = boot.starter_templates || [];
+      state.aiglPhaseSpecs = boot.aigl_phase_specs || [];
+      state.caasRiskDomains = boot.caas_risk_domains || [];
+      state.caas49Factors = boot.caas_49_factors || [];
+      state.phase5ReviewerRoles = boot.phase5_reviewer_roles || [];
+      state.recertificationRecords = boot.recertification_records || [];
       state.rubric = boot.rubric;
       state.operationsMetrics = boot.operations_metrics;
       state.executiveCosts = boot.executive_costs;

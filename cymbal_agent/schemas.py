@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,9 @@ class Tier1IntakeSupergraphSignal(BaseModel):
     catalog_registered: bool
     wallet_quota_bound: bool
     risk_tier: str
+    aegis_risk_level: Literal["R1", "R2", "R3", "R4", "R5"] = "R2"
+    caas_risk_level: Literal["Level 0", "Level 1", "Level 2", "Prohibited"] = "Level 1"
+    aigl_phase: int = Field(default=1, ge=1, le=7)
     policy_freeze_active: bool
     freeze_window_name: str
     vp_exception_required: bool
@@ -126,8 +129,13 @@ class GovernanceRemediationAssessment(BaseModel):
     agent_name: str
     app_id: str
     governance_gaps_summary: str
-    risk_level: Literal["AG1", "AG3"]
-    recommended_route: Literal["advisory_ag1", "deploy_ag3_gate"]
+    risk_level: Literal["AG1", "AG2", "AG3", "AG4", "AG5"]
+    recommended_route: Literal[
+        "advisory_ag1",
+        "deploy_ag3_gate",
+        "freeze_quarantine",
+        "prohibited_ag5_block",
+    ]
     policy_freeze_detected: bool = False
     vp_exception_required: bool = False
     degraded_telemetry_mode: bool = False
@@ -167,6 +175,7 @@ class DeploymentRemediationOutcome(BaseModel):
         "DEPLOYED_PAVED_PATH",
         "HELD_FOR_GOVERNANCE_EXCEPTION",
         "ADVISORY_COMPLIANT_AG1",
+        "PROHIBITED_AG5_BLOCKED",
     ]
     candidate_id: str
     agent_name: str
@@ -176,6 +185,42 @@ class DeploymentRemediationOutcome(BaseModel):
     compliance_verified: bool = False
     terraform_paved_path_hcl: str = ""
     summary: str
+
+
+class Phase5ReviewerSignoff(BaseModel):
+    role: Literal["VP", "HR", "IP", "Privacy", "PTnO", "Compliance", "Intl Legal"]
+    status: Literal["Approved", "Approved with Conditions", "Denied", "Pending"] = "Pending"
+    conditions: str = ""
+    notes: str = ""
+    reviewer_principal: str = ""
+    updated_at: str = ""
+
+
+class Adr004RecertificationRecord(BaseModel):
+    agent_id: str
+    agent_name: str
+    description: str = ""
+    owner_team: str = ""
+    owner_email: str = ""
+    current_scopes: list[str] = Field(default_factory=list)
+    activity_status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
+    lifecycle_state: Literal["CURRENT", "DUE_SOON", "EXPIRED", "DECOMMISSIONED"] = "CURRENT"
+    alert_stage: Literal[
+        "NONE",
+        "DAY_75_DUE_IN_15D",
+        "DAY_85_REMINDER_5D",
+        "DAY_89_FINAL_WARNING_1D",
+        "DAY_90_EXPIRED",
+    ] = "NONE"
+    identity_enabled: bool = True
+    cycle_day: int = Field(default=12, ge=0, le=365)
+    days_remaining: int = Field(default=78, ge=0, le=90)
+    days_since_last_llm_call: int = Field(default=2, ge=0)
+    days_since_last_a2a_message: int = Field(default=2, ge=0)
+    next_review_date: str = ""
+    last_certified_by: str = ""
+    last_certified_at: str = ""
+    audit_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GovernanceAuditMemoryRecord(BaseModel):

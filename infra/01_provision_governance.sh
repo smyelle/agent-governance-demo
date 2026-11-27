@@ -216,8 +216,30 @@ create_or_update_ma_template() {
   echo "[OK] Model Armor template ${tpl_id} (${confidence}, fail-closed) ready."
 }
 
-create_or_update_ma_template "cymbal-default-medium-gpp" "MEDIUM_AND_ABOVE"
-create_or_update_ma_template "cymbal-strict-ag3-gpp" "LOW_AND_ABOVE"
+create_or_update_ma_template "cymbal-low-baseline-gpp" "MEDIUM_AND_ABOVE" "HIGH"
+create_or_update_ma_template "cymbal-default-medium-gpp" "MEDIUM_AND_ABOVE" "MEDIUM_AND_ABOVE"
+create_or_update_ma_template "cymbal-strict-ag3-gpp" "LOW_AND_ABOVE" "MEDIUM_AND_ABOVE"
+
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  PROJECT_ID="${PROJECT_ID}" REGION="${REGION}" REPO_ROOT="${REPO_ROOT}" "${PYTHON_BIN}" - <<'PY'
+import os
+from pathlib import Path
+
+env_path = Path(os.environ["REPO_ROOT"]) / ".env"
+low_tpl = (
+    f"projects/{os.environ['PROJECT_ID']}/locations/{os.environ['REGION']}/"
+    "templates/cymbal-low-baseline-gpp"
+)
+lines = env_path.read_text(encoding="utf-8").splitlines()
+out = [
+    ln
+    for ln in lines
+    if not (ln.startswith("CYMBAL_MODEL_ARMOR_LOW_TEMPLATE=") and not ln.strip().startswith("#"))
+]
+out.append(f"CYMBAL_MODEL_ARMOR_LOW_TEMPLATE={low_tpl}")
+env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+fi
 
 CLOUDSDK_API_ENDPOINT_OVERRIDES_MODELARMOR="https://modelarmor.googleapis.com/" gcloud model-armor floorsettings update \
   --full-uri="projects/${PROJECT_ID}/locations/global/floorSetting" \

@@ -28,6 +28,8 @@ Enforces across both `CYMBAL_PLATFORM_MODE=google_native` and `enterprise_hybrid
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import time
 from typing import Any
@@ -42,6 +44,7 @@ from cymbal_agent.governance.identity_obo import (
 from cymbal_agent.governance.model_armor_guard import (
     FailClosedModelArmorGuard,
     ModelArmorBlockedError,
+    mask_inline_pii,
 )
 from cymbal_agent.governance.telemetry_bridge import UnifiedTraceBridge
 from cymbal_agent.governance.wallet_ledger import (
@@ -228,16 +231,19 @@ class CymbalGovernancePlugin(BasePlugin):
         )
         state["last_wallet_reservation_id"] = reservation_id
 
-        # 2. Extract non-thought user prompt text, scrub PII inline, and run fail-closed Model Armor
+        # 2. Extract latest-turn non-thought user prompt text, scrub PII inline, and run fail-closed Model Armor
         dynamic_policy = state.get("dynamic_guardrail_policy")
         collected_texts: list[str] = []
-        for content in getattr(llm_request, "contents", None) or []:
+        contents = list(getattr(llm_request, "contents", None) or [])
+        latest_contents = [contents[-1]] if contents else []
+        for content in latest_contents:
             for part in getattr(content, "parts", None) or []:
                 if getattr(part, "thought", False):
                     continue
                 if getattr(part, "text", None):
                     txt = str(part.text)
-                    verdict = self.guard.inspect_text(
+                    verdict = await asyncio.to_thread(
+                        self.guard.inspect_text,
                         txt,
                         direction="USER_PROMPT",
                         dynamic_policy=dynamic_policy,
@@ -270,9 +276,22 @@ class CymbalGovernancePlugin(BasePlugin):
                         state["pii_masked_inline"] = True
                     collected_texts.append(part.text)
 
-        # 3. Hybrid gateway passthrough: set adjustable Gemini safety_settings=OFF so
-        # Model Armor acts as the single deterministic policy plane without double-filtering.
-        if mode == "enterprise_hybrid" and getattr(llm_request, "config", None) is not None:
+        # 3. Hybrid gateway passthrough: ONLY lower Gemini safety_settings when
+        # upstream SGP Content Authz is explicitly active and verified.
+        upstream_authz_env = os.getenv("CYMBAL_UPSTREAM_CONTENT_AUTHZ_ACTIVE", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        upstream_authz_verified = bool(
+            state.get("upstream_content_authz_verified", upstream_authz_env)
+        )
+        if (
+            mode == "enterprise_hybrid"
+            and upstream_authz_env
+            and upstream_authz_verified
+            and getattr(llm_request, "config", None) is not None
+        ):
             llm_request.config.safety_settings = [
                 types.SafetySetting(
                     category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -292,6 +311,8 @@ class CymbalGovernancePlugin(BasePlugin):
                 ),
             ]
             state["hybrid_gateway_safety_off_applied"] = True
+        else:
+            state["hybrid_gateway_safety_off_applied"] = False
 
         self.tracer.record_span(
             trace_id=trace_id,
@@ -303,7 +324,7 @@ class CymbalGovernancePlugin(BasePlugin):
             attributes={
                 "wallet.reservation_id": reservation_id,
                 "prompt.segments_scanned": len(collected_texts),
-                "cymbal.hybrid_safety_off": mode == "enterprise_hybrid",
+                "cymbal.hybrid_safety_off": bool(state.get("hybrid_gateway_safety_off_applied", False)),
             },
         )
         return None
@@ -322,7 +343,8 @@ class CymbalGovernancePlugin(BasePlugin):
             if getattr(part, "thought", False):
                 continue
             if getattr(part, "text", None):
-                verdict = self.guard.inspect_text(
+                verdict = await asyncio.to_thread(
+                    self.guard.inspect_text,
                     str(part.text),
                     direction="MODEL_RESPONSE",
                     block_malicious_urls_inline_mask_only=True,
@@ -342,7 +364,9 @@ class CymbalGovernancePlugin(BasePlugin):
         usage = getattr(llm_response, "usage_metadata", None)
         in_tok = int(getattr(usage, "prompt_token_count", 0) or 180)
         out_tok = int(getattr(usage, "candidates_token_count", 0) or 120)
-        incident_id = str(state.get("incident_id", "INC-4092"))
+        incident_id = str(
+            state.get("candidate_id") or state.get("incident_id") or "UNSPECIFIED"
+        )
 
         ledger_row = self.store.settle_turn_spend(
             wallet_id=self.wallet_id,
@@ -408,4 +432,72 @@ class CymbalGovernancePlugin(BasePlugin):
                 "uap.allowed": decision["allowed"],
             },
         )
+        return None
+
+    @staticmethod
+    def _mask_tool_payload(obj: Any) -> Any:
+        if isinstance(obj, str):
+            masked, _ = mask_inline_pii(obj)
+            return masked
+        if isinstance(obj, list):
+            return [CymbalGovernancePlugin._mask_tool_payload(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: CymbalGovernancePlugin._mask_tool_payload(v) for k, v in obj.items()}
+        return obj
+
+    async def after_tool_callback(
+        self,
+        *,
+        tool: Any,
+        tool_args: dict[str, Any],
+        tool_context: Any,
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        del tool_args
+        t0 = time.perf_counter()
+        state = getattr(tool_context, "state", {})
+        session_id = getattr(getattr(tool_context, "session", None), "id", "session-local")
+        trace_id = self._ensure_trace_id(state)
+        mode = self._active_mode(state)
+        tool_name = getattr(tool, "name", "") or ""
+
+        raw_text = (
+            json.dumps(result, ensure_ascii=False)
+            if isinstance(result, (dict, list))
+            else str(result)
+        )
+        verdict = await asyncio.to_thread(
+            self.guard.inspect_text,
+            raw_text,
+            direction="USER_PROMPT",
+            dynamic_policy=state.get("dynamic_guardrail_policy"),
+        )
+        self.store.record_guardrail_audit(
+            trace_id=trace_id,
+            session_id=session_id,
+            agent_id=self.agent_id,
+            direction="TOOL_RESPONSE",
+            verdict=verdict,
+        )
+        self.tracer.record_span(
+            trace_id=trace_id,
+            session_id=session_id,
+            span_name=f"governance.after_tool_guard.{tool_name or 'tool'}",
+            stage="after_tool_model_armor",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            architecture_mode=mode,
+            attributes={
+                "mcp.tool.name": tool_name,
+                "guardrail.action": verdict.action_taken,
+                "guardrail.allowed": verdict.allowed,
+                "guardrail.pii_masked": verdict.pii_masked,
+            },
+        )
+        if not verdict.allowed:
+            raise ModelArmorBlockedError(verdict.summary, verdict)
+        if verdict.pii_masked:
+            state["pii_masked_inline"] = True
+            if isinstance(result, dict):
+                return self._mask_tool_payload(result)
+            return {"sanitized_result": verdict.sanitized_text}
         return None

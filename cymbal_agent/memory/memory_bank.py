@@ -146,8 +146,6 @@ class ScopedMemoryBankClient:
                 for item in list(vx_memories)[:limit]:
                     mem_obj = getattr(item, "memory", item)
                     fact_txt = getattr(mem_obj, "fact", None) or str(mem_obj)
-                    if any(legacy in fact_txt.lower() for legacy in ("devhub", "flow-intel", "scape")):
-                        continue
                     results.append(
                         {
                             "memory_id": getattr(mem_obj, "name", "vx-memory").split("/")[-1],

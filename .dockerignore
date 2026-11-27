@@ -30,6 +30,9 @@ build
 *.egg-info
 .env
 .env.*
+PLAN.md
+*.internal.md
+scape_docs*
 *.local.yaml
 *.local.yml
 *.local.json

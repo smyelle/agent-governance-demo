@@ -43,22 +43,24 @@ import os
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
-from collections import defaultdict, deque
+import asyncio
+from collections import OrderedDict, defaultdict, deque
 import hmac
 import json
 import logging
 from pathlib import Path
 import secrets
 import sys
+import threading
 import time
 from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.adk.apps.app import App, ResumabilityConfig
-from google.adk.runners import InMemoryRunner
+from google.adk.runners import InMemoryRunner, Runner
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -70,7 +72,7 @@ if str(REPO_ROOT) not in sys.path:
 
 load_dotenv(REPO_ROOT / ".env")
 
-from cymbal_agent.agent import build_cymbal_workflow  # noqa: E402
+from cymbal_agent.agent import build_cymbal_workflow, build_workflow_runner  # noqa: E402
 from cymbal_agent.governance.gcp_auth import (  # noqa: E402
     get_gcp_credentials,
     is_cloud_managed_runtime,
@@ -95,16 +97,27 @@ from cymbal_agent.governance.wallet_ledger import (  # noqa: E402
     WalletBudgetExceededError,
 )
 from cymbal_agent.governance.workbench_state import (  # noqa: E402
+    AIGL_PHASE_SPECS,
+    CAAS_49_FACTORS,
+    CAAS_RISK_DOMAINS,
+    PHASE5_REVIEWER_ROLES,
     AgentDeploymentTemplate,
     ProviderChoice,
     RubricConfig,
     WorkbenchGovernanceEngine,
     apply_remediation_action_to_template,
+    build_aigl_lifecycle_summary,
     build_localized_slot_catalog,
+    evaluate_caas_49_factor_matrix,
+    evaluate_phase5_reviewer_gate,
     evaluate_template_against_rubric,
+    export_template_to_yaml,
+    list_local_starter_templates,
+    load_local_starter_template,
     parse_uploaded_template_manifest,
 )
 from cymbal_agent.memory.memory_bank import ScopedMemoryBankClient  # noqa: E402
+from cymbal_agent.schemas import Phase5ReviewerSignoff  # noqa: E402
 from cymbal_agent.tenant import load_tenant_profile  # noqa: E402
 from evals.run_beyond_scape_proofs import (  # noqa: E402
     calculate_guardrail_tco,
@@ -262,8 +275,10 @@ class TriageStartRequest(BaseModel):
     agent_name: str | None = Field(default=None, max_length=80)
     service_name: str | None = Field(default=None, max_length=80)
     app_id: str = Field(default="SVC-CYMBAL-101", min_length=3, max_length=64)
+    risk_tier: Literal["AG1", "AG2", "AG3", "AG4", "AG5"] | None = None
     operator_prompt: str = Field(..., min_length=4, max_length=4000)
     architecture_mode: Literal["enterprise_hybrid", "google_native"] = "enterprise_hybrid"
+    stream: bool = False
 
 
 class HitlResumeRequest(BaseModel):
@@ -279,7 +294,8 @@ class HitlResumeRequest(BaseModel):
 
 
 class ModeSwitchRequest(BaseModel):
-    architecture_mode: Literal["enterprise_hybrid", "google_native"]
+    architecture_mode: Literal["enterprise_hybrid", "google_native"] | None = None
+    offline_mode: bool | None = None
 
 
 class KillSwitchUpdateRequest(BaseModel):
@@ -298,6 +314,11 @@ class GuardrailTestRequest(BaseModel):
 
 class ClosedLoopTriggerRequest(BaseModel):
     custom_traces_json: str | None = Field(default=None, max_length=12000)
+    stream: bool = False
+
+
+class ProofsTriggerRequest(BaseModel):
+    stream: bool = False
 
 
 class TcoQueryRequest(BaseModel):
@@ -328,6 +349,45 @@ class TemplateDeployRequest(BaseModel):
     initial_score: float = Field(default=60.0, ge=0.0, le=100.0)
     approver_principal: str = Field(default="gov-steward-lead", min_length=2, max_length=80)
     vp_exception_ticket: str | None = Field(default=None, max_length=64)
+
+
+class StarterLoadRequest(BaseModel):
+    save: bool = True
+    agent_name: str | None = Field(default=None, max_length=80)
+
+
+class Phase5ReviewUpdateRequest(BaseModel):
+    template: AgentDeploymentTemplate
+    role: Literal["VP", "HR", "IP", "Privacy", "PTnO", "Compliance", "Intl Legal"]
+    status: Literal["Approved", "Approved with Conditions", "Denied", "Pending"]
+    conditions: str = Field(default="", max_length=300)
+    notes: str = Field(default="", max_length=400)
+    reviewer_principal: str = Field(default="gov-steward-lead", min_length=2, max_length=80)
+
+
+class RecertifyRequest(BaseModel):
+    scopes_confirmed: list[str] | None = None
+    scopes_removed: list[str] | None = None
+    certified_by: str = Field(default="platform-owner@cymbal.example", min_length=2, max_length=120)
+    next_review_date: str | None = Field(default=None, max_length=32)
+
+
+class ExpireAgentRequest(BaseModel):
+    reason: str = Field(
+        default="Missed ADR-004 90-day recertification deadline",
+        min_length=3,
+        max_length=300,
+    )
+
+
+class OffboardAgentRequest(BaseModel):
+    actor: str = Field(default="platform-owner@cymbal.example", min_length=2, max_length=120)
+    transfer_owner: str = Field(default="archived-platform-steward", min_length=2, max_length=120)
+
+
+class AdvanceTimerRequest(BaseModel):
+    cycle_day: int = Field(..., ge=0, le=365)
+    days_since_activity: int | None = Field(default=None, ge=0, le=365)
 
 
 CANDIDATE_PRESETS: list[dict[str, Any]] = [
@@ -409,10 +469,22 @@ def build_platform_services_snapshot(
     flow_sequence: list[str] | None = None,
     active_edges: list[str] | None = None,
     overrides: dict[str, dict[str, Any]] | None = None,
+    last_flywheel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Constructs live status across all 9 services mapped 1:1 to the 4-Tier Pyramid."""
     profile = load_tenant_profile()
     terms = profile.terminology
+    sandbox_resource = os.getenv("CYMBAL_SANDBOX_RESOURCE_NAME", "").strip()
+    sandbox_executor_label = (
+        f"AgentEngineSandboxCodeExecutor ({sandbox_resource})"
+        if sandbox_resource
+        else "BuiltInCodeExecutor (default gVisor sandbox; AgentEngineSandboxCodeExecutor when CYMBAL_SANDBOX_RESOURCE_NAME is set)"
+    )
+    sandbox_summary_detail = (
+        f"AgentEngineSandboxCodeExecutor active ({sandbox_resource}) replacing default BuiltInCodeExecutor gVisor sandbox"
+        if sandbox_resource
+        else "BuiltInCodeExecutor (default gVisor sandbox; switches to AgentEngineSandboxCodeExecutor when CYMBAL_SANDBOX_RESOURCE_NAME is set)"
+    )
     agent_state = store.get_agent_state("agent-governance-demo")
     wallet_state = store.get_wallet_state("wallet-cymbal-ops")
     posture = inspect_zero_secret_posture()
@@ -427,6 +499,12 @@ def build_platform_services_snapshot(
     resolved_cnt = int(wallet_state.get("resolved_incidents_count", 0))
     active_ver = str(pointer.get("active_version", "v2"))
     b_score = pointer.get("behavior_score", 96.4)
+    fw_v1 = (last_flywheel or {}).get("v1_baseline") if isinstance(last_flywheel, dict) else None
+    v1_label = (
+        f"{fw_v1.get('behavior_score')} ({fw_v1.get('gate_verdict', 'EVALUATED')})"
+        if isinstance(fw_v1, dict) and fw_v1.get("behavior_score") is not None
+        else "Run Eval Flywheel"
+    )
 
     t1_label = f"Tier 1 - Mandatory Foundation ({terms.platform_name})"
     t2_label = "Tier 2 - Enterprise Control & Runtime"
@@ -533,20 +611,24 @@ def build_platform_services_snapshot(
             "stage_group": t2_label,
             "name": "Dynamic Model Armor + SDP",
             "plane": "Tier 2 Control & Guardrail",
-            "subtitle": "Per-Request BU Policy Router + Inline PII + 40-URL",
+            "subtitle": "3-Tier Floor Pool (LOW / DEFAULT_MEDIUM / STRICT_AG3) + Inline Cloud SDP + 40-URL",
             "status": "READY",
-            "badge_label": "Dynamic Router + Floor",
+            "badge_label": "3-Tier Pool + Floor",
             "latency_ms": None,
             "api_surface": "modelarmor.us-central1.rep.googleapis.com + dlp.googleapis.com",
             "consolidates": "Straiker.ai, Static Template Sprawl",
             "summary": (
-                "Routes per-request BU/risk/SDP JSON payloads onto 2 Floor-enforced base "
-                "templates (eliminating 280+ static templates) as a $0.10/1M-token Ensemble Tier-0 filter."
+                "Routes per-request BU/risk/SDP JSON payloads onto a 3-tier Floor-enforced "
+                "template pool (LOW / DEFAULT_MEDIUM / STRICT_AG3) plus inline Cloud SDP "
+                "and 40-URL inspection as a $0.10/1M-token Ensemble Tier-0 filter."
             ),
             "metrics": {
-                "base_pool": "cymbal-default-medium-gpp & cymbal-strict-ag3-gpp",
+                "base_pool": (
+                    "3-tier Floor-enforced pool: cymbal-low-baseline-gpp (LOW), "
+                    "cymbal-default-medium-gpp (DEFAULT_MEDIUM), cymbal-strict-ag3-gpp (STRICT_AG3)"
+                ),
                 "floor_enforcement": "ENABLED (failOpen=false)",
-                "ensemble_role": "Tier-0 Inline SDP & URL Pre-Filter",
+                "ensemble_role": "Tier-0 Inline Cloud SDP & 40-URL Pre-Filter",
             },
         },
         {
@@ -555,19 +637,20 @@ def build_platform_services_snapshot(
             "stage_group": t2_label,
             "name": "ADK 2.0 Runtime & gVisor",
             "plane": "Tier 2 Runtime & Sandbox",
-            "subtitle": "Parallel Audit Graph + gVisor + RequestInput HITL",
+            "subtitle": "Parallel Audit Graph + Sandbox Code Executor + RequestInput HITL",
             "status": "READY" if kill_status == "ACTIVE" else "BLOCKED",
             "badge_label": "ADK 2.0 Resumable" if kill_status == "ACTIVE" else f"Halted ({kill_status})",
             "latency_ms": None,
             "api_surface": "aiplatform.googleapis.com/ReasoningEngine + infra/terraform",
             "consolidates": "E2B MicroVMs, Custom Checkpoint State Glue",
             "summary": (
-                "Executes typed ADK 2.0 Governance Workflow: 3-way parallel MCP audit, JoinNode, "
-                "gVisor readiness scoring, Terraform Paved-Path generation, and AG3 HITL gate."
+                f"Executes typed ADK 2.0 Governance Workflow (3-way parallel MCP audit, JoinNode, "
+                f"Terraform Paved-Path generation, AG3 HITL gate) using {sandbox_summary_detail}."
             ),
             "metrics": {
                 "model": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-                "sandbox": "BuiltInCodeExecutor (gVisor)",
+                "sandbox": sandbox_executor_label,
+                "sandbox_mode": "agent_engine_sandbox" if sandbox_resource else "builtin_gvisor",
                 "paved_path_iac": "infra/terraform/ (Cloud Run & Vertex)",
             },
         },
@@ -633,7 +716,7 @@ def build_platform_services_snapshot(
             ),
             "metrics": {
                 "trace_sources": "AWS Bedrock, Azure OpenAI, GCP Vertex (OTLP)",
-                "baseline_v1_score": "58.0 (BLOCKED)",
+                "baseline_v1_score": v1_label,
                 "promoted_v2_score": f"{b_score} (PASSED)",
             },
         },
@@ -659,28 +742,102 @@ def build_platform_services_snapshot(
     }
 
 
+def _wants_ndjson(request: Request, body_stream: bool = False) -> bool:
+    if body_stream:
+        return True
+    q_val = (request.query_params.get("stream") or "").strip().lower()
+    if q_val in {"1", "true", "yes"}:
+        return True
+    accept = (request.headers.get("accept") or "").lower()
+    return "application/x-ndjson" in accept
+
+
+def _ndjson_stream_response(producer_coro_fn: Any) -> StreamingResponse:
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict[str, Any] | object] = asyncio.Queue()
+    sentinel = object()
+
+    def emit_cb(evt: dict[str, Any]) -> None:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            queue.put_nowait(evt)
+        else:
+            loop.call_soon_threadsafe(queue.put_nowait, evt)
+
+    async def event_generator() -> Any:
+        async def _run() -> None:
+            try:
+                result = await producer_coro_fn(emit_cb)
+                queue.put_nowait({"type": "result", "payload": result})
+            except HTTPException as exc:
+                queue.put_nowait(
+                    {
+                        "type": "error",
+                        "status_code": exc.status_code,
+                        "detail": str(exc.detail),
+                    }
+                )
+            except Exception as exc:
+                queue.put_nowait(
+                    {
+                        "type": "error",
+                        "status_code": 500,
+                        "detail": str(exc),
+                    }
+                )
+            finally:
+                queue.put_nowait(sentinel)
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                yield (json.dumps(item) + "\n").encode("utf-8")
+        finally:
+            await task
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
+    )
+
+
 def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
+    env_flag = (
+        os.getenv("CYMBAL_BFF_OFFLINE")
+        or os.getenv("SCAPE_BFF_OFFLINE")
+        or ""
+    ).strip().lower()
+    explicit_offline_locked = (offline_mode is True) or (
+        offline_mode is None and env_flag in {"1", "true", "yes"}
+    )
+
     if offline_mode is None:
-        flag = (
-            os.getenv("CYMBAL_BFF_OFFLINE")
-            or os.getenv("SCAPE_BFF_OFFLINE")
-            or "false"
-        )
-        offline_mode = flag.lower() in {"1", "true", "yes"}
+        offline_mode = env_flag in {"1", "true", "yes"}
 
-    if not offline_mode and not is_cloud_managed_runtime():
-        creds_ok, creds_reason = probe_local_gcp_credentials()
-        if not creds_ok:
-            logger.warning(
-                "Local gcloud credentials unavailable or expired (%s); "
-                "starting Web Workbench in resilient local mode. "
-                "Run 'gcloud auth login' to re-enable live GCP telemetry.",
-                creds_reason,
-            )
-            offline_mode = True
+    creds_ok = False
+    if not offline_mode:
+        if is_cloud_managed_runtime():
+            creds_ok = True
+        else:
+            creds_ok, creds_reason = probe_local_gcp_credentials()
+            if not creds_ok:
+                logger.warning(
+                    "Local gcloud credentials unavailable or expired (%s); "
+                    "starting Web Workbench in resilient local mode. "
+                    "Run 'gcloud auth login' to re-enable live GCP telemetry.",
+                    creds_reason,
+                )
+                offline_mode = True
 
-    live_cloud = not offline_mode
-    if live_cloud:
+    live_cloud_available = (not explicit_offline_locked) and creds_ok
+    if not offline_mode:
         try:
             get_gcp_credentials()
             a2a_url = os.getenv("CYMBAL_A2A_URL") or os.getenv("SCAPE_A2A_URL") or ""
@@ -689,27 +846,126 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         except Exception:
             pass
 
-    store = AtomicWalletAndGovernanceStore(in_memory_only=offline_mode)
-    guard = FailClosedModelArmorGuard(live_api_enabled=live_cloud)
-    tracer = UnifiedTraceBridge(cloud_trace_enabled=live_cloud)
-    mem_bank = ScopedMemoryBankClient(in_memory_only=offline_mode)
-    plugin = CymbalGovernancePlugin(store=store, guard=guard, tracer=tracer)
-    wf = build_cymbal_workflow(
-        memory_bank=mem_bank,
-        use_live_llm=False,
-    )
-    agent_adk_app = App(
-        name="cymbal_web_agent_app",
-        root_agent=wf,
-        resumability_config=ResumabilityConfig(is_resumable=True),
-        plugins=[plugin],
-    )
-    runner = InMemoryRunner(app=agent_adk_app)
     workbench = WorkbenchGovernanceEngine()
-
-    runtime_cfg: dict[str, str] = {
+    state_lock = threading.Lock()
+    runtime_cfg: dict[str, Any] = {
         "architecture_mode": os.getenv("CYMBAL_PLATFORM_MODE", "enterprise_hybrid"),
+        "offline_mode": bool(offline_mode),
     }
+    session_modes: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    adk_session_offline_flag: OrderedDict[str, bool] = OrderedDict()
+    last_flywheel_metrics: dict[str, Any] = {}
+    bundles: dict[bool, dict[str, Any]] = {}
+
+    def _build_bundle(is_offline: bool) -> dict[str, Any]:
+        is_live = not is_offline
+        b_store = AtomicWalletAndGovernanceStore(in_memory_only=is_offline)
+        b_guard = FailClosedModelArmorGuard(live_api_enabled=is_live)
+        b_tracer = UnifiedTraceBridge(cloud_trace_enabled=is_live)
+        b_mem_bank = ScopedMemoryBankClient(in_memory_only=is_offline)
+        b_plugin = CymbalGovernancePlugin(store=b_store, guard=b_guard, tracer=b_tracer)
+        tmp_wf = build_cymbal_workflow(memory_bank=b_mem_bank, use_live_llm=is_live)
+        tmp_app = App(
+            name="cymbal_web_agent_app",
+            root_agent=tmp_wf,
+            resumability_config=ResumabilityConfig(is_resumable=True),
+            plugins=[b_plugin],
+        )
+        base_runner = build_workflow_runner(
+            tmp_app,
+            live_cloud=is_live,
+            project_id=os.getenv("GOOGLE_CLOUD_PROJECT"),
+            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        )
+        return {
+            "store": b_store,
+            "guard": b_guard,
+            "tracer": b_tracer,
+            "mem_bank": b_mem_bank,
+            "plugin": b_plugin,
+            "session_svc": base_runner.session_service,
+        }
+
+    bundles[True] = _build_bundle(True)
+    if not offline_mode:
+        bundles[False] = _build_bundle(False)
+
+    def _get_bundle(is_offline: bool) -> dict[str, Any]:
+        with state_lock:
+            existing = bundles.get(is_offline)
+            if existing is not None:
+                return existing
+        created = _build_bundle(is_offline)
+        with state_lock:
+            bundles.setdefault(is_offline, created)
+            return bundles[is_offline]
+
+    def _extract_verified_sid(request: Request | None) -> str:
+        if request is None:
+            return ""
+        is_https = _is_effective_https(request)
+        sid = (
+            request.cookies.get("__Host-cymbal_sid") or ""
+            if is_https
+            else (
+                request.cookies.get("cymbal_sid")
+                or request.cookies.get("__Host-cymbal_sid")
+                or ""
+            )
+        )
+        if sid and _verify_signed_session_id(sid, time.time()):
+            return sid
+        return ""
+
+    def _resolve_ctx(
+        request: Request | None = None,
+        *,
+        adk_session_id: str | None = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        sid = _extract_verified_sid(request)
+        with state_lock:
+            sess_cfg = session_modes.get(sid) if sid else None
+            if sess_cfg is not None:
+                session_modes.move_to_end(sid)
+                is_offline = bool(sess_cfg.get("offline_mode", runtime_cfg["offline_mode"]))
+                arch_mode = str(
+                    sess_cfg.get("architecture_mode", runtime_cfg["architecture_mode"])
+                )
+            else:
+                is_offline = bool(runtime_cfg["offline_mode"])
+                arch_mode = str(runtime_cfg["architecture_mode"])
+            if adk_session_id and adk_session_id in adk_session_offline_flag:
+                is_offline = bool(adk_session_offline_flag[adk_session_id])
+        return is_offline, arch_mode, _get_bundle(is_offline)
+
+    def _make_per_request_runner(
+        is_offline: bool,
+        bundle: dict[str, Any],
+        progress_callback: Any = None,
+    ) -> Runner:
+        wf = build_cymbal_workflow(
+            memory_bank=bundle["mem_bank"],
+            use_live_llm=not is_offline,
+            progress_callback=progress_callback,
+        )
+        adk_app = App(
+            name="cymbal_web_agent_app",
+            root_agent=wf,
+            resumability_config=ResumabilityConfig(is_resumable=True),
+            plugins=[bundle["plugin"]],
+        )
+        return Runner(app=adk_app, session_service=bundle["session_svc"])
+
+    def _record_adk_session_mode(session_id: str, is_offline: bool) -> None:
+        with state_lock:
+            adk_session_offline_flag[session_id] = is_offline
+            adk_session_offline_flag.move_to_end(session_id)
+            while len(adk_session_offline_flag) > 2048:
+                adk_session_offline_flag.popitem(last=False)
+
+    def _get_last_flywheel() -> dict[str, Any] | None:
+        with state_lock:
+            return dict(last_flywheel_metrics) if last_flywheel_metrics else None
 
     bff = FastAPI(
         title="Cymbal Agent Governance, Optimization & Deployment Workbench",
@@ -843,6 +1099,8 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             val = request.cookies.get(cname)
             if val:
                 _REVOKED_SESSIONS.add(val)
+                with state_lock:
+                    session_modes.pop(val, None)
         resp = JSONResponse({"status": "session_cleared"})
         resp.headers["Clear-Site-Data"] = '"cookies", "storage"'
         return resp
@@ -854,6 +1112,11 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.get("/api/bootstrap")
     async def bootstrap(request: Request, response: Response) -> dict[str, Any]:
         _, csrf_token = _issue_or_get_session(request, response)
+        is_offline, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        b_mem_bank = bundle["mem_bank"]
+        b_tracer = bundle["tracer"]
+
         profile = load_tenant_profile()
         pointer = _load_prompt_pointer()
         active_pdir = _resolve_prompts_dir()
@@ -878,24 +1141,27 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         runtime_env = build_runtime_environment(request)
 
         platform_services = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=b_mem_bank,
+            tracer=b_tracer,
+            architecture_mode=arch_mode,
             last_event=(
                 f"Lifecycle control plane ready ({profile.terminology.platform_name} + Google Cloud)"
             ),
+            last_flywheel=_get_last_flywheel(),
         )
 
         return {
             "csrf_token": csrf_token,
             "runtime_environment": runtime_env,
-            "architecture_mode": runtime_cfg["architecture_mode"],
+            "architecture_mode": arch_mode,
+            "offline_mode": is_offline,
+            "live_cloud_available": live_cloud_available,
             "tenant": profile.model_dump(),
             "candidates": CANDIDATE_PRESETS,
             "incidents": CANDIDATE_PRESETS,
-            "agent_state": store.get_agent_state("agent-governance-demo"),
-            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
+            "agent_state": b_store.get_agent_state("agent-governance-demo"),
+            "wallet_state": b_store.get_wallet_state("wallet-cymbal-ops"),
             "identity_posture": inspect_zero_secret_posture().__dict__,
             "prompt_registry": {
                 "active": pointer,
@@ -904,15 +1170,21 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "golden_blueprint": bp_json,
             },
             "tco_default": calculate_guardrail_tco(daily_turns=10_000_000, tokens_per_turn=1000),
-            "recent_traces": tracer.list_recent_traces(limit=10),
-            "recent_otlp_exports": tracer.list_recent_otlp_exports(limit=5),
-            "recent_ledger": store.recent_ledger_rows(limit=10),
-            "recent_memories": mem_bank.retrieve_memories(
+            "recent_traces": b_tracer.list_recent_traces(limit=10),
+            "recent_otlp_exports": b_tracer.list_recent_otlp_exports(limit=5),
+            "recent_ledger": b_store.recent_ledger_rows(limit=10),
+            "recent_memories": b_mem_bank.retrieve_memories(
                 verified_user_id="gov-reviewer-01", limit=5
             ),
             "platform_services": platform_services,
             "slot_catalog": build_localized_slot_catalog(profile),
             "templates": workbench.list_templates(),
+            "starter_templates": list_local_starter_templates(profile=profile),
+            "aigl_phase_specs": AIGL_PHASE_SPECS,
+            "caas_risk_domains": CAAS_RISK_DOMAINS,
+            "caas_49_factors": CAAS_49_FACTORS,
+            "phase5_reviewer_roles": list(PHASE5_REVIEWER_ROLES),
+            "recertification_records": workbench.list_recertification_records(),
             "rubric": workbench.get_rubric().model_dump(),
             "operations_metrics": workbench.build_operations_metrics(),
             "executive_costs": workbench.build_executive_cost_summary(),
@@ -922,23 +1194,58 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     async def switch_mode(req: ModeSwitchRequest, request: Request) -> dict[str, Any]:
         _verify_csrf(request)
         profile = load_tenant_profile()
-        runtime_cfg["architecture_mode"] = req.architecture_mode
-        obo_note = (
+        sid = _extract_verified_sid(request)
+        cur_offline, cur_arch, _ = _resolve_ctx(request)
+
+        next_arch = req.architecture_mode or cur_arch
+        next_offline = cur_offline if req.offline_mode is None else bool(req.offline_mode)
+
+        if req.offline_mode is False:
+            if explicit_offline_locked:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Server started with offline mode locked; cannot disable Offline Demo Fallback.",
+                )
+            if not is_cloud_managed_runtime():
+                ok, reason = probe_local_gcp_credentials()
+                if not ok:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Live GCP credentials unavailable ({reason}); cannot disable Offline Demo Fallback.",
+                    )
+
+        with state_lock:
+            if sid:
+                session_modes[sid] = {
+                    "architecture_mode": next_arch,
+                    "offline_mode": next_offline,
+                }
+                session_modes.move_to_end(sid)
+                while len(session_modes) > 2048:
+                    session_modes.popitem(last=False)
+
+        bundle = _get_bundle(next_offline)
+        mode_note = (
             f"4-Tier A-La-Carte Coexistence active: {profile.terminology.gateway_name} + OTLP + ADR-011 OBO"
-            if req.architecture_mode == "enterprise_hybrid"
+            if next_arch == "enterprise_hybrid"
             else "Full GCP-Native Paved-Path mode active across all 9 services"
         )
+        if req.offline_mode is not None:
+            mode_note += " (Offline Demo Fallback)" if next_offline else " (Live Vertex AI gemini-3.8-flash)"
         return {
-            "architecture_mode": runtime_cfg["architecture_mode"],
+            "architecture_mode": next_arch,
+            "offline_mode": next_offline,
+            "live_cloud_available": live_cloud_available,
             "tenant": profile.model_dump(),
             "platform_services": build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
-                last_event=obo_note,
+                store=bundle["store"],
+                mem_bank=bundle["mem_bank"],
+                tracer=bundle["tracer"],
+                architecture_mode=next_arch,
+                last_event=mode_note,
                 flow_sequence=["agent_identity", "agent_registry", "agent_gateway", "model_armor", "agent_runtime"],
                 active_edges=["identity->armor", "armor->gateway", "gateway->runtime"],
+                last_flywheel=_get_last_flywheel(),
             ),
         }
 
@@ -946,17 +1253,27 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.post("/api/agent/triage")
     async def start_governance_audit(req: TriageStartRequest, request: Request) -> Any:
         _verify_csrf(request)
+        is_offline, _, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        b_guard = bundle["guard"]
+        b_tracer = bundle["tracer"]
+        b_mem_bank = bundle["mem_bank"]
+
         t0 = time.perf_counter()
-        trace_id = tracer.new_trace_id()
+        trace_id = b_tracer.new_trace_id()
         sess_preview_id = f"sess-{trace_id[:10]}"
-        cand_id = (req.candidate_id or req.incident_id or "CAND-101").strip()
-        agent_name = (req.agent_name or req.service_name or "billing-dispute-assistant").strip()
+        cand_id = (
+            req.candidate_id or req.incident_id or req.agent_name or "CAND-101"
+        ).strip()[:32]
+        agent_name = (
+            req.agent_name or req.service_name or "billing-dispute-assistant"
+        ).strip()
 
         try:
-            store.assert_agent_active("agent-governance-demo")
-            store.reserve_preflight_budget("wallet-cymbal-ops")
-            verdict = guard.inspect_text(req.operator_prompt, direction="USER_PROMPT")
-            store.record_guardrail_audit(
+            b_store.assert_agent_active("agent-governance-demo")
+            b_store.reserve_preflight_budget("wallet-cymbal-ops")
+            verdict = b_guard.inspect_text(req.operator_prompt, direction="USER_PROMPT")
+            b_store.record_guardrail_audit(
                 trace_id=trace_id,
                 session_id=sess_preview_id,
                 agent_id="agent-governance-demo",
@@ -967,9 +1284,9 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 raise ModelArmorBlockedError(verdict.summary, verdict)
         except KillSwitchHaltedError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
                 architecture_mode=req.architecture_mode,
                 last_event=f"Execution halted immediately by Global Kill Switch ({exc.agent_status})",
                 trace_id=trace_id,
@@ -988,13 +1305,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                         "summary": "Blocked upstream before ADK 2.0 Workflow or Gemini invocation.",
                     },
                 },
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=423)
         except WalletBudgetExceededError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
                 architecture_mode=req.architecture_mode,
                 last_event="Execution rejected pre-inference by Atomic Nano-USD Wallet (403 budget_exceeded)",
                 trace_id=trace_id,
@@ -1013,13 +1331,14 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                         "summary": "Atomic Firestore pre-flight check prevented model token spend.",
                     },
                 },
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=403)
         except ModelArmorBlockedError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
                 architecture_mode=req.architecture_mode,
                 last_event=f"Blocked fail-closed by Dynamic Model Armor ({exc.audit_record.action_taken})",
                 trace_id=trace_id,
@@ -1043,255 +1362,361 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                         "summary": "Malicious payload stopped before ADK 2.0 Governance Workflow.",
                     },
                 },
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=400)
 
-        init_state: dict[str, Any] = {
-            "candidate_id": cand_id,
-            "incident_id": cand_id,
-            "agent_name": agent_name,
-            "service_name": agent_name,
-            "app_id": req.app_id,
-            "architecture_mode": req.architecture_mode,
-            "trace_id": trace_id,
-        }
-        if req.architecture_mode == "enterprise_hybrid":
-            t_gw, t_mcp = mint_demo_adr011_token_pair()
-            init_state["authorization_bearer"] = t_gw
-            init_state["x_user_authorization_bearer"] = t_mcp
+        async def _execute_audit(emit_cb: Any = None) -> dict[str, Any]:
+            step4_emitted = False
 
-        session = await runner.session_service.create_session(
-            app_name="cymbal_web_agent_app",
-            user_id="gov-reviewer-01",
-            state=init_state,
-        )
-
-        stream_messages: list[str] = []
-        pending_approval: dict[str, Any] | None = None
-
-        wf_t0 = time.perf_counter()
-        async for ev in runner.run_async(
-            user_id="gov-reviewer-01",
-            session_id=session.id,
-            new_message=types.Content(
-                role="user", parts=[types.Part(text=verdict.sanitized_text)]
-            ),
-        ):
-            if ev.long_running_tool_ids and ev.content and ev.content.parts:
-                for p in ev.content.parts:
-                    if p.function_call and p.function_call.args:
-                        pending_approval = dict(p.function_call.args.get("payload") or {})
-                        pending_approval["interrupt_id"] = next(iter(ev.long_running_tool_ids))
-            elif ev.content and ev.content.parts:
-                for p in ev.content.parts:
-                    if p.text:
-                        stream_messages.append(p.text)
-        wf_ms = round((time.perf_counter() - wf_t0) * 1000, 2)
-
-        updated = await runner.session_service.get_session(
-            app_name="cymbal_web_agent_app",
-            user_id="gov-reviewer-01",
-            session_id=session.id,
-        )
-        st = updated.state if updated else {}
-
-        ledger_row = store.settle_turn_spend(
-            wallet_id="wallet-cymbal-ops",
-            agent_id="agent-governance-demo",
-            session_id=session.id,
-            trace_id=trace_id,
-            architecture_mode=req.architecture_mode,
-            input_tokens=540,
-            output_tokens=280,
-            outcome="GOVERNANCE_AUDIT_SYNTHESIZED",
-            incident_id=cand_id,
-            incident_resolved=pending_approval is None,
-        )
-        total_ms = round((time.perf_counter() - t0) * 1000, 2)
-        tracer.record_span(
-            trace_id=trace_id,
-            session_id=session.id,
-            span_name="governance_workbench.audit_and_paved_path",
-            stage="adk_workflow_graph",
-            duration_ms=total_ms,
-            architecture_mode=req.architecture_mode,
-            cmdb_app_id=req.app_id,
-            attributes={
-                "candidate.id": cand_id,
-                "hitl.paused": pending_approval is not None,
-                "pii.masked_inline": verdict.pii_masked,
-            },
-        )
-
-        sandbox_obj = (
-            json.loads(st["sandbox_anomaly_summary"])
-            if st.get("sandbox_anomaly_summary")
-            else None
-        )
-        assessment = st.get("incident_assessment") or {}
-        recalled_cnt = int(st.get("recalled_facts_count", 1))
-        readiness_str = (
-            f"readiness={sandbox_obj['readiness_score']}/100"
-            if sandbox_obj and "readiness_score" in sandbox_obj
-            else "gVisor verified"
-        )
-
-        service_overrides: dict[str, dict[str, Any]] = {
-            "agent_identity": {
-                "status": "VERIFIED",
-                "badge_label": (
-                    "SPIFFE + azp OBO Verified"
-                    if req.architecture_mode == "enterprise_hybrid"
-                    else "SPIFFE SVID Verified"
-                ),
-                "latency_ms": 1.8,
-                "summary": (
-                    f"Verified workload SPIFFE posture and ADR-011 OIDC azp correlation for {cand_id}."
-                ),
-            },
-            "agent_registry": {
-                "status": "VERIFIED",
-                "badge_label": f"Blueprint {_load_prompt_pointer().get('active_version', 'v2')} Bound",
-                "latency_ms": 2.1,
-                "summary": (
-                    f"Checked Tier-1 Catalog & Supergraph metadata for {cand_id} ({req.app_id})."
-                ),
-            },
-            "agent_gateway": {
-                "status": "VERIFIED",
-                "badge_label": "3x Read-Only Audit Allowed",
-                "latency_ms": 4.2,
-                "summary": (
-                    "Enforced UAP Policy V2 CEL: allowed 3 readOnlyHint=true governance MCP tools "
-                    "while keeping force_bypass_governance_gate blocked (403)."
-                ),
-            },
-            "trace_wallet": {
-                "status": "VERIFIED",
-                "badge_label": f"OTLP + {ledger_row['total_cost_nano_usd']} nUSD",
-                "latency_ms": 5.1,
-                "summary": (
-                    f"Dual-exported W3C + OTLP span {trace_id[:12]}... and settled "
-                    f"{ledger_row['total_cost_nano_usd']} nano-USD in wallet_ledger."
-                ),
-            },
-            "model_armor": {
-                "status": "MASKED_PII" if verdict.pii_masked else "VERIFIED",
-                "badge_label": "Inline SDP Masked" if verdict.pii_masked else "Dynamic Policy Ready",
-                "latency_ms": verdict.latency_ms,
-                "summary": verdict.summary,
-                "metrics": {
-                    "action": verdict.action_taken,
-                    "pii_types_masked": ", ".join(verdict.pii_types_masked) or "None",
-                    "policy_key": verdict.dynamic_policy_key,
-                },
-            },
-            "agent_runtime": {
-                "status": "PAUSED_HITL" if pending_approval else "VERIFIED",
-                "badge_label": (
-                    f"Paused: {pending_approval['interrupt_id']}"
-                    if pending_approval
-                    else f"Completed ({readiness_str})"
-                ),
-                "latency_ms": wf_ms,
-                "summary": (
-                    f"Parallel 3-way MCP audit -> JoinNode -> gVisor ({readiness_str}) -> "
-                    + (
-                        f"Paused at RequestInput('{pending_approval['interrupt_id']}') awaiting AG3 Reviewer sign-off."
-                        if pending_approval
-                        else f"Verified {assessment.get('risk_level', 'AG1')} advisory readiness."
+            def _wrapped_cb(evt: dict[str, Any]) -> None:
+                nonlocal step4_emitted
+                if emit_cb is None:
+                    return
+                if evt.get("step") == 4:
+                    step4_emitted = True
+                if evt.get("step") == 5 and not step4_emitted:
+                    step4_emitted = True
+                    emit_cb(
+                        {
+                            "type": "step",
+                            "step": 4,
+                            "total_steps": 7,
+                            "status": "Governance Synthesizer",
+                            "detail": "Synthesized remediation plan, guardrail spec, and Terraform HCL via Gemini 3.8 Flash.",
+                            "elapsed_ms": evt.get("elapsed_ms", 0),
+                        }
                     )
-                ),
-            },
-            "memory_bank": {
-                "status": "VERIFIED",
-                "badge_label": (
-                    f"Recalled {recalled_cnt} Review(s)"
-                    if pending_approval
-                    else "Recalled + Persisted"
-                ),
-                "latency_ms": 6.4,
-                "summary": (
-                    f"Recalled {recalled_cnt} JWT-isolated compliance fact(s) for {agent_name}."
-                ),
-            },
-            "mcp_a2a_mesh": {
-                "status": "ACTIVE" if pending_approval else "VERIFIED",
-                "badge_label": "3x MCP Audit Done | A2A Ready",
-                "latency_ms": 8.9,
-                "summary": (
-                    "Executed inspect_candidate_agent_manifest, verify_tier1_intake_and_supergraph, "
-                    "and fetch_production_otel_traces in parallel."
-                ),
-            },
-            "eval_flywheel": {
-                "status": "VERIFIED",
-                "badge_label": f"Enforcing {assessment.get('risk_level', 'AG3')} Gate",
-                "latency_ms": None,
-                "summary": (
-                    "Synthesized Dynamic Guardrail JSON + Terraform Paved-Path HCL under promoted v2 rules."
-                ),
-            },
-        }
+                emit_cb(evt)
 
-        platform_services = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=req.architecture_mode,
-            last_event=(
-                f"Audit {cand_id}: Paused at AG3 Governance Reviewer Gate ({pending_approval['interrupt_id']})"
-                if pending_approval
-                else f"Audit {cand_id}: Completed AG1 compliance verification"
-            ),
-            trace_id=trace_id,
-            flow_sequence=[
-                "agent_identity",
-                "agent_registry",
-                "agent_gateway",
-                "trace_wallet",
-                "model_armor",
-                "mcp_a2a_mesh",
-                "memory_bank",
-                "agent_runtime",
-            ],
-            overrides=service_overrides,
-        )
+            req_runner = _make_per_request_runner(
+                is_offline,
+                bundle,
+                progress_callback=_wrapped_cb if emit_cb is not None else None,
+            )
+            init_state: dict[str, Any] = {
+                "candidate_id": cand_id,
+                "incident_id": cand_id,
+                "agent_name": agent_name,
+                "service_name": agent_name,
+                "app_id": req.app_id,
+                "architecture_mode": req.architecture_mode,
+                "trace_id": trace_id,
+            }
+            if req.risk_tier:
+                init_state["risk_tier"] = req.risk_tier
+            if req.architecture_mode == "enterprise_hybrid":
+                t_gw, t_mcp = mint_demo_adr011_token_pair()
+                init_state["authorization_bearer"] = t_gw
+                init_state["x_user_authorization_bearer"] = t_mcp
 
-        return {
-            "session_id": session.id,
-            "trace_id": trace_id,
-            "status": "WAITING_AG3_APPROVAL" if pending_approval else "COMPLETED",
-            "pii_masked_inline": verdict.pii_masked,
-            "sanitized_prompt": verdict.sanitized_text,
-            "stream_messages": stream_messages,
-            "correlated_bundle": st.get("correlated_bundle_dict"),
-            "sandbox_anomaly": sandbox_obj,
-            "assessment": st.get("incident_assessment"),
-            "pending_approval": pending_approval,
-            "remediation_outcome": st.get("remediation_outcome"),
-            "postmortem_record": st.get("postmortem_record"),
-            "wallet_settlement": ledger_row,
-            "agent_state": store.get_agent_state("agent-governance-demo"),
-            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
-            "recent_memories": mem_bank.retrieve_memories(
-                verified_user_id="gov-reviewer-01", limit=5
-            ),
-            "platform_services": platform_services,
-        }
+            session = await req_runner.session_service.create_session(
+                app_name="cymbal_web_agent_app",
+                user_id="gov-reviewer-01",
+                state=init_state,
+            )
+            _record_adk_session_mode(session.id, is_offline)
+
+            stream_messages: list[str] = []
+            pending_approval: dict[str, Any] | None = None
+
+            wf_t0 = time.perf_counter()
+            async for ev in req_runner.run_async(
+                user_id="gov-reviewer-01",
+                session_id=session.id,
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text=verdict.sanitized_text)]
+                ),
+            ):
+                if emit_cb is not None and not step4_emitted and getattr(ev, "author", "") == "governance_remediation_synthesizer":
+                    step4_emitted = True
+                    emit_cb(
+                        {
+                            "type": "step",
+                            "step": 4,
+                            "total_steps": 7,
+                            "status": "Governance Synthesizer",
+                            "detail": "Gemini 3.8 Flash synthesized structured GovernanceRemediationAssessment.",
+                            "elapsed_ms": round((time.perf_counter() - wf_t0) * 1000, 1),
+                        }
+                    )
+                if ev.long_running_tool_ids and ev.content and ev.content.parts:
+                    for p in ev.content.parts:
+                        if p.function_call and p.function_call.args:
+                            pending_approval = dict(p.function_call.args.get("payload") or {})
+                            pending_approval["interrupt_id"] = next(iter(ev.long_running_tool_ids))
+                elif ev.content and ev.content.parts:
+                    for p in ev.content.parts:
+                        if p.text:
+                            stream_messages.append(p.text)
+            wf_ms = round((time.perf_counter() - wf_t0) * 1000, 2)
+
+            updated = await req_runner.session_service.get_session(
+                app_name="cymbal_web_agent_app",
+                user_id="gov-reviewer-01",
+                session_id=session.id,
+            )
+            st = dict(updated.state) if updated else {}
+
+            rem_outcome = dict(st.get("remediation_outcome") or {})
+            if req.risk_tier == "AG5" and rem_outcome.get("status") != "PROHIBITED_AG5_BLOCKED":
+                pending_approval = None
+                rem_outcome = {
+                    "status": "PROHIBITED_AG5_BLOCKED",
+                    "candidate_id": cand_id,
+                    "agent_name": agent_name,
+                    "task_id": "block-prohibited-ag5",
+                    "golden_blueprint_id": None,
+                    "post_deploy_readiness_score": None,
+                    "compliance_verified": False,
+                    "terraform_paved_path_hcl": "",
+                    "summary": (
+                        "Blocked unconditionally: AEGIS AG5 (Fully Autonomous) is prohibited "
+                        "and cannot be deployed or bypassed via exception overrides."
+                    ),
+                }
+            rem_status = str(rem_outcome.get("status") or "")
+            is_ag5_blocked = rem_status == "PROHIBITED_AG5_BLOCKED"
+            if is_ag5_blocked:
+                pending_approval = None
+
+            ledger_row = b_store.settle_turn_spend(
+                wallet_id="wallet-cymbal-ops",
+                agent_id="agent-governance-demo",
+                session_id=session.id,
+                trace_id=trace_id,
+                architecture_mode=req.architecture_mode,
+                input_tokens=540,
+                output_tokens=280,
+                outcome="PROHIBITED_AG5_BLOCKED" if is_ag5_blocked else "GOVERNANCE_AUDIT_SYNTHESIZED",
+                incident_id=cand_id,
+                incident_resolved=(pending_approval is None) and (not is_ag5_blocked),
+            )
+            total_ms = round((time.perf_counter() - t0) * 1000, 2)
+            b_tracer.record_span(
+                trace_id=trace_id,
+                session_id=session.id,
+                span_name="governance_workbench.audit_and_paved_path",
+                stage="adk_workflow_graph",
+                duration_ms=total_ms,
+                architecture_mode=req.architecture_mode,
+                cmdb_app_id=req.app_id,
+                attributes={
+                    "candidate.id": cand_id,
+                    "hitl.paused": pending_approval is not None,
+                    "pii.masked_inline": verdict.pii_masked,
+                    "ag5.prohibited_blocked": is_ag5_blocked,
+                },
+            )
+
+            sandbox_obj = (
+                json.loads(st["sandbox_anomaly_summary"])
+                if st.get("sandbox_anomaly_summary")
+                else None
+            )
+            assessment = st.get("incident_assessment") or {}
+            recalled_cnt = int(st.get("recalled_facts_count", 1))
+            readiness_str = (
+                f"readiness={sandbox_obj['readiness_score']}/100"
+                if sandbox_obj and "readiness_score" in sandbox_obj
+                else "gVisor verified"
+            )
+
+            runtime_override: dict[str, Any]
+            if is_ag5_blocked:
+                runtime_override = {
+                    "status": "BLOCKED",
+                    "badge_label": "PROHIBITED_AG5_BLOCKED",
+                    "latency_ms": wf_ms,
+                    "summary": str(
+                        rem_outcome.get("summary")
+                        or "Unconditionally blocked: AEGIS AG5 is prohibited."
+                    ),
+                }
+            else:
+                runtime_override = {
+                    "status": "PAUSED_HITL" if pending_approval else "VERIFIED",
+                    "badge_label": (
+                        f"Paused: {pending_approval['interrupt_id']}"
+                        if pending_approval
+                        else f"Completed ({readiness_str})"
+                    ),
+                    "latency_ms": wf_ms,
+                    "summary": (
+                        f"Parallel 3-way MCP audit -> JoinNode -> gVisor ({readiness_str}) -> "
+                        + (
+                            f"Paused at RequestInput('{pending_approval['interrupt_id']}') awaiting AG3 Reviewer sign-off."
+                            if pending_approval
+                            else f"Verified {assessment.get('risk_level', 'AG1')} advisory readiness."
+                        )
+                    ),
+                }
+
+            service_overrides: dict[str, dict[str, Any]] = {
+                "agent_identity": {
+                    "status": "VERIFIED",
+                    "badge_label": (
+                        "SPIFFE + azp OBO Verified"
+                        if req.architecture_mode == "enterprise_hybrid"
+                        else "SPIFFE SVID Verified"
+                    ),
+                    "latency_ms": 1.8,
+                    "summary": (
+                        f"Verified workload SPIFFE posture and ADR-011 OIDC azp correlation for {cand_id}."
+                    ),
+                },
+                "agent_registry": {
+                    "status": "VERIFIED",
+                    "badge_label": f"Blueprint {_load_prompt_pointer().get('active_version', 'v2')} Bound",
+                    "latency_ms": 2.1,
+                    "summary": (
+                        f"Checked Tier-1 Catalog & Supergraph metadata for {cand_id} ({req.app_id})."
+                    ),
+                },
+                "agent_gateway": {
+                    "status": "VERIFIED",
+                    "badge_label": "3x Read-Only Audit Allowed",
+                    "latency_ms": 4.2,
+                    "summary": (
+                        "Enforced UAP Policy V2 CEL: allowed 3 readOnlyHint=true governance MCP tools "
+                        "while keeping force_bypass_governance_gate blocked (403)."
+                    ),
+                },
+                "trace_wallet": {
+                    "status": "VERIFIED",
+                    "badge_label": f"OTLP + {ledger_row['total_cost_nano_usd']} nUSD",
+                    "latency_ms": 5.1,
+                    "summary": (
+                        f"Dual-exported W3C + OTLP span {trace_id[:12]}... and settled "
+                        f"{ledger_row['total_cost_nano_usd']} nano-USD in wallet_ledger."
+                    ),
+                },
+                "model_armor": {
+                    "status": "MASKED_PII" if verdict.pii_masked else "VERIFIED",
+                    "badge_label": "Inline SDP Masked" if verdict.pii_masked else "Dynamic Policy Ready",
+                    "latency_ms": verdict.latency_ms,
+                    "summary": verdict.summary,
+                    "metrics": {
+                        "action": verdict.action_taken,
+                        "pii_types_masked": ", ".join(verdict.pii_types_masked) or "None",
+                        "policy_key": verdict.dynamic_policy_key,
+                    },
+                },
+                "agent_runtime": runtime_override,
+                "memory_bank": {
+                    "status": "VERIFIED",
+                    "badge_label": (
+                        f"Recalled {recalled_cnt} Review(s)"
+                        if pending_approval
+                        else "Recalled + Persisted"
+                    ),
+                    "latency_ms": 6.4,
+                    "summary": (
+                        f"Recalled {recalled_cnt} JWT-isolated compliance fact(s) for {agent_name}."
+                    ),
+                },
+                "mcp_a2a_mesh": {
+                    "status": "ACTIVE" if pending_approval else "VERIFIED",
+                    "badge_label": "3x MCP Audit Done | A2A Ready",
+                    "latency_ms": 8.9,
+                    "summary": (
+                        "Executed inspect_candidate_agent_manifest, verify_tier1_intake_and_supergraph, "
+                        "and fetch_production_otel_traces in parallel."
+                    ),
+                },
+                "eval_flywheel": {
+                    "status": "BLOCKED" if is_ag5_blocked else "VERIFIED",
+                    "badge_label": (
+                        "PROHIBITED (AG5)"
+                        if is_ag5_blocked
+                        else f"Enforcing {assessment.get('risk_level', 'AG3')} Gate"
+                    ),
+                    "latency_ms": None,
+                    "summary": (
+                        "Blocked AEGIS AG5 (Fully Autonomous) unconditionally per enterprise policy."
+                        if is_ag5_blocked
+                        else "Synthesized Dynamic Guardrail JSON + Terraform Paved-Path HCL under promoted v2 rules."
+                    ),
+                },
+            }
+
+            if is_ag5_blocked:
+                last_evt = f"Audit {cand_id}: Blocked unconditionally (AEGIS AG5 prohibited)"
+                audit_status = "BLOCKED_PROHIBITED_AG5"
+            elif pending_approval:
+                last_evt = f"Audit {cand_id}: Paused at AG3 Governance Reviewer Gate ({pending_approval['interrupt_id']})"
+                audit_status = "WAITING_AG3_APPROVAL"
+            else:
+                last_evt = f"Audit {cand_id}: Completed AG1 compliance verification"
+                audit_status = "COMPLETED"
+
+            platform_services = build_platform_services_snapshot(
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
+                architecture_mode=req.architecture_mode,
+                last_event=last_evt,
+                trace_id=trace_id,
+                flow_sequence=[
+                    "agent_identity",
+                    "agent_registry",
+                    "agent_gateway",
+                    "trace_wallet",
+                    "model_armor",
+                    "mcp_a2a_mesh",
+                    "memory_bank",
+                    "agent_runtime",
+                ],
+                overrides=service_overrides,
+                last_flywheel=_get_last_flywheel(),
+            )
+
+            return {
+                "session_id": session.id,
+                "trace_id": trace_id,
+                "status": audit_status,
+                "offline_mode": is_offline,
+                "pii_masked_inline": verdict.pii_masked,
+                "sanitized_prompt": verdict.sanitized_text,
+                "stream_messages": stream_messages,
+                "correlated_bundle": st.get("correlated_bundle_dict"),
+                "sandbox_anomaly": sandbox_obj,
+                "assessment": st.get("incident_assessment"),
+                "pending_approval": pending_approval,
+                "remediation_outcome": rem_outcome or None,
+                "postmortem_record": st.get("postmortem_record"),
+                "wallet_settlement": ledger_row,
+                "agent_state": b_store.get_agent_state("agent-governance-demo"),
+                "wallet_state": b_store.get_wallet_state("wallet-cymbal-ops"),
+                "recent_memories": b_mem_bank.retrieve_memories(
+                    verified_user_id="gov-reviewer-01", limit=5
+                ),
+                "platform_services": platform_services,
+            }
+
+        if _wants_ndjson(request, req.stream):
+            return _ndjson_stream_response(_execute_audit)
+        return await _execute_audit(emit_cb=None)
 
     @bff.post("/api/agent/resume")
     async def resume_agent_hitl(req: HitlResumeRequest, request: Request) -> Any:
         _verify_csrf(request)
+        is_offline, arch_mode, bundle = _resolve_ctx(
+            request, adk_session_id=req.session_id
+        )
+        b_store = bundle["store"]
+        b_tracer = bundle["tracer"]
+        b_mem_bank = bundle["mem_bank"]
+
         t0 = time.perf_counter()
         try:
-            store.assert_agent_active("agent-governance-demo")
+            b_store.assert_agent_active("agent-governance-demo")
         except KillSwitchHaltedError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
+                architecture_mode=arch_mode,
                 last_event=f"Resume blocked by Global Kill Switch ({exc.agent_status})",
                 flow_sequence=["trace_wallet"],
                 active_edges=[],
@@ -1302,9 +1727,11 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                         "summary": str(exc),
                     }
                 },
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=423)
 
+        req_runner = _make_per_request_runner(is_offline, bundle)
         part = create_request_input_response(
             req.interrupt_id,
             {
@@ -1315,7 +1742,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             },
         )
         messages: list[str] = []
-        async for ev in runner.run_async(
+        async for ev in req_runner.run_async(
             user_id="gov-reviewer-01",
             session_id=req.session_id,
             new_message=types.Content(role="user", parts=[part]),
@@ -1325,7 +1752,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     if p.text:
                         messages.append(p.text)
 
-        updated = await runner.session_service.get_session(
+        updated = await req_runner.session_service.get_session(
             app_name="cymbal_web_agent_app",
             user_id="gov-reviewer-01",
             session_id=req.session_id,
@@ -1333,39 +1760,41 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         if updated is None:
             raise HTTPException(status_code=404, detail="Workflow session not found.")
         st = updated.state
-        trace_id = str(st.get("trace_id") or tracer.new_trace_id())
+        trace_id = str(st.get("trace_id") or b_tracer.new_trace_id())
         cand_id = str(st.get("candidate_id") or st.get("incident_id") or "CAND-101")
+        rem_outcome = dict(st.get("remediation_outcome") or {})
+        deployed = rem_outcome.get("status") == "DEPLOYED_PAVED_PATH"
 
-        store.reserve_preflight_budget("wallet-cymbal-ops")
-        ledger_row = store.settle_turn_spend(
+        b_store.reserve_preflight_budget("wallet-cymbal-ops")
+        ledger_row = b_store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
             agent_id="agent-governance-demo",
             session_id=req.session_id,
             trace_id=trace_id,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            architecture_mode=arch_mode,
             input_tokens=220,
             output_tokens=150,
-            outcome="AG3_PAVED_PATH_DEPLOYED" if req.approved else "AG3_HELD_GOVERNANCE_FREEZE",
+            outcome="AG3_PAVED_PATH_DEPLOYED" if deployed else "AG3_HELD_GOVERNANCE_FREEZE",
             incident_id=cand_id,
-            incident_resolved=req.approved,
+            incident_resolved=deployed,
         )
         resume_ms = round((time.perf_counter() - t0) * 1000, 2)
-        tracer.record_span(
+        b_tracer.record_span(
             trace_id=trace_id,
             session_id=req.session_id,
             span_name="governance_workbench.ag3_resume_and_a2a_deploy",
             stage="hitl_resume",
             duration_ms=resume_ms,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            architecture_mode=arch_mode,
             attributes={
                 "ag3.approved": req.approved,
+                "ag3.deployed": deployed,
                 "ag3.approver": req.approver_principal,
                 "candidate.id": cand_id,
             },
         )
 
-        rem_outcome = dict(st.get("remediation_outcome") or {})
-        memories = mem_bank.retrieve_memories(verified_user_id="gov-reviewer-01", limit=5)
+        memories = b_mem_bank.retrieve_memories(verified_user_id="gov-reviewer-01", limit=5)
 
         resume_overrides: dict[str, dict[str, Any]] = {
             "agent_identity": {
@@ -1374,32 +1803,33 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "latency_ms": 1.4,
             },
             "agent_registry": {
-                "status": "VERIFIED" if req.approved else "STANDBY",
+                "status": "VERIFIED" if deployed else "STANDBY",
                 "badge_label": (
                     f"Enrolled {rem_outcome.get('golden_blueprint_id', 'Blueprint')}"
-                    if req.approved
+                    if deployed
                     else "Registry Held"
                 ),
-                "latency_ms": 4.1 if req.approved else None,
+                "latency_ms": 4.1 if deployed else None,
             },
             "agent_runtime": {
                 "status": "VERIFIED",
                 "badge_label": "HITL Resumed -> Completed",
                 "latency_ms": resume_ms,
                 "summary": (
-                    f"Resumed durable checkpoint '{req.interrupt_id}' with decision "
-                    f"{'APPROVED_DEPLOY' if req.approved else 'HELD_FOR_EXCEPTION'} by {req.approver_principal}."
+                    f"Resumed durable checkpoint '{req.interrupt_id}' with outcome "
+                    f"{rem_outcome.get('status') or ('APPROVED_DEPLOY' if deployed else 'HELD_FOR_EXCEPTION')} "
+                    f"by {req.approver_principal}."
                 ),
             },
             "agent_gateway": {
                 "status": "VERIFIED",
-                "badge_label": "A2A Approval Verified" if req.approved else "Deployment Withheld",
+                "badge_label": "A2A Approval Verified" if deployed else "Deployment Withheld",
                 "latency_ms": 3.4,
             },
             "mcp_a2a_mesh": {
-                "status": "VERIFIED" if req.approved else "STANDBY",
-                "badge_label": "A2A Paved-Path Deployed" if req.approved else "Held Pending VP Ticket",
-                "latency_ms": 11.6 if req.approved else None,
+                "status": "VERIFIED" if deployed else "STANDBY",
+                "badge_label": "A2A Paved-Path Deployed" if deployed else "Held Pending VP Ticket",
+                "latency_ms": 11.6 if deployed else None,
                 "summary": str(rem_outcome.get("summary") or "Completed HITL deployment branch."),
             },
             "memory_bank": {
@@ -1416,13 +1846,13 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         }
 
         platform_services = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=b_mem_bank,
+            tracer=b_tracer,
+            architecture_mode=arch_mode,
             last_event=(
                 f"Deployed {cand_id}: Enrolled Golden Blueprint & Terraform Paved Path across Tier-1 + GCP"
-                if req.approved
+                if deployed
                 else f"Held {cand_id}: Blueprint promotion paused pending VP Governance-Freeze Exception"
             ),
             trace_id=trace_id,
@@ -1436,10 +1866,11 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     "memory_bank",
                     "trace_wallet",
                 ]
-                if req.approved
+                if deployed
                 else ["agent_identity", "agent_runtime", "memory_bank", "trace_wallet"]
             ),
             overrides=resume_overrides,
+            last_flywheel=_get_last_flywheel(),
         )
 
         return {
@@ -1450,8 +1881,8 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             "remediation_outcome": rem_outcome,
             "postmortem_record": st.get("postmortem_record"),
             "wallet_settlement": ledger_row,
-            "agent_state": store.get_agent_state("agent-governance-demo"),
-            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
+            "agent_state": b_store.get_agent_state("agent-governance-demo"),
+            "wallet_state": b_store.get_wallet_state("wallet-cymbal-ops"),
             "memories": memories,
             "platform_services": platform_services,
         }
@@ -1461,31 +1892,36 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: KillSwitchUpdateRequest, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
-        updated = store.set_agent_status("agent-governance-demo", req.status)
+        _, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        updated = b_store.set_agent_status("agent-governance-demo", req.status)
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=f"Global Kill Switch set to {req.status} across Tier-1 & Agent Runtime",
             flow_sequence=["trace_wallet", "agent_runtime", "agent_gateway"],
+            last_flywheel=_get_last_flywheel(),
         )
         return {"agent_state": updated, "platform_services": snap}
 
     @bff.post("/api/steward/wallet-cap")
     async def update_wallet_cap(req: WalletCapUpdateRequest, request: Request) -> dict[str, Any]:
         _verify_csrf(request)
-        updated = store.update_wallet_cap(
+        _, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        updated = b_store.update_wallet_cap(
             "wallet-cymbal-ops",
             monthly_cap_nano_usd=req.monthly_cap_nano_usd,
             reset_spend=req.reset_spend,
         )
         cap_usd = req.monthly_cap_nano_usd / 1e9
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=f"Atomic Nano-USD Wallet ceiling updated to ${cap_usd:.6f}",
             flow_sequence=["trace_wallet", "agent_runtime"],
             overrides={
@@ -1494,6 +1930,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     "badge_label": f"Cap ${cap_usd:.4f}",
                 }
             },
+            last_flywheel=_get_last_flywheel(),
         )
         return {"wallet_state": updated, "platform_services": snap}
 
@@ -1507,26 +1944,31 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.post("/api/steward/guardrail-test")
     async def test_guardrail_live(req: GuardrailTestRequest, request: Request) -> dict[str, Any]:
         _verify_csrf(request)
-        verdict = guard.inspect_text(
+        _, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        b_guard = bundle["guard"]
+        b_tracer = bundle["tracer"]
+
+        verdict = b_guard.inspect_text(
             req.sample_text,
             direction="USER_PROMPT",
             dynamic_policy=req.dynamic_policy,
         )
-        trace_id = tracer.new_trace_id()
-        store.record_guardrail_audit(
+        trace_id = b_tracer.new_trace_id()
+        b_store.record_guardrail_audit(
             trace_id=trace_id,
             session_id="steward-threat-lab",
             agent_id="agent-governance-demo",
             direction="USER_PROMPT",
             verdict=verdict,
         )
-        tracer.record_span(
+        b_tracer.record_span(
             trace_id=trace_id,
             session_id="steward-threat-lab",
             span_name="threat_lab.dynamic_model_armor_inspect",
             stage="guardrail_test",
             duration_ms=verdict.latency_ms,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            architecture_mode=arch_mode,
             attributes={
                 "allowed": verdict.allowed,
                 "action": verdict.action_taken,
@@ -1541,10 +1983,10 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             else ("MASKED_PII" if verdict.pii_masked else "VERIFIED")
         )
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=bundle["mem_bank"],
+            tracer=b_tracer,
+            architecture_mode=arch_mode,
             last_event=(
                 f"Dynamic Model Armor Router [{verdict.dynamic_policy_key}]: "
                 f"{verdict.action_taken} ({verdict.latency_ms}ms)"
@@ -1569,6 +2011,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     "summary": f"Recorded guardrail audit row and OTLP span {trace_id[:12]}...",
                 },
             },
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "trace_id": trace_id,
@@ -1592,6 +2035,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
     @bff.post("/api/steward/obo-verify")
     async def verify_obo_pair(request: Request) -> dict[str, Any]:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
         t_gw, t_mcp = mint_demo_adr011_token_pair()
         valid_res = verify_adr011_dual_tokens(t_gw, t_mcp)
         _, forged_mcp = mint_demo_adr011_token_pair(mcp_azp="unregistered-shadow-agent")
@@ -1602,10 +2046,10 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             forged_blocked = True
 
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event="Verified SPIFFE zero-secret posture & ADR-011 azp OBO token correlation",
             flow_sequence=["agent_identity", "agent_gateway"],
             overrides={
@@ -1619,6 +2063,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     ),
                 }
             },
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "adr011_valid_pair": valid_res,
@@ -1631,57 +2076,73 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         _verify_csrf(request)
         if proof_id < 1 or proof_id > 8:
             raise HTTPException(status_code=400, detail="proof_id must be 1..8")
-        res = await run_single_proof(proof_id, live_cloud=live_cloud)
+        is_offline, arch_mode, bundle = _resolve_ctx(request)
+        res = await run_single_proof(proof_id, live_cloud=not is_offline)
         exercised = list(res.get("services_exercised") or ["agent_runtime"])
         ov = {
             sid: {
                 "status": "VERIFIED" if res["passed"] else "BLOCKED",
                 "badge_label": f"Proof #{proof_id} {'PASS' if res['passed'] else 'FAIL'}",
                 "latency_ms": res["latency_ms"],
-                "summary": res["measured_evidence"],
             }
             for sid in exercised
         }
         res["platform_services"] = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=f"Modular Proof #{proof_id}: {'PASS' if res['passed'] else 'FAIL'} in {res['latency_ms']}ms",
             flow_sequence=exercised,
             overrides=ov,
+            last_flywheel=_get_last_flywheel(),
         )
         return res
 
     @bff.post("/api/steward/proofs-all")
-    async def trigger_all_proofs(request: Request) -> dict[str, Any]:
+    async def trigger_all_proofs(
+        request: Request,
+        body: ProofsTriggerRequest | None = None,
+    ) -> Any:
         _verify_csrf(request)
-        summary = await run_all_beyond_scape_proofs(live_cloud=live_cloud)
-        ov: dict[str, dict[str, Any]] = {}
-        for p in summary.get("proofs", []):
-            for sid in p.get("services_exercised", []):
-                ov[sid] = {
-                    "status": "VERIFIED" if p["passed"] else "BLOCKED",
-                    "badge_label": "Verified Live",
-                    "latency_ms": p["latency_ms"],
-                    "summary": p["measured_evidence"],
-                }
-        summary["platform_services"] = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=f"All {summary['passed_count']}/{summary['total_count']} Modular Coexistence Proofs passed live",
-            overrides=ov,
-        )
-        return summary
+        is_offline, arch_mode, bundle = _resolve_ctx(request)
+
+        async def _run_proofs(emit_cb: Any = None) -> dict[str, Any]:
+            summary = await run_all_beyond_scape_proofs(
+                live_cloud=not is_offline,
+                progress_callback=emit_cb,
+            )
+            ov: dict[str, dict[str, Any]] = {}
+            for p in summary.get("proofs", []):
+                for sid in p.get("services_exercised", []):
+                    ov[sid] = {
+                        "status": "VERIFIED" if p["passed"] else "BLOCKED",
+                        "badge_label": "Verified Live" if not is_offline else "Verified Local",
+                        "latency_ms": p["latency_ms"],
+                    }
+            summary["offline_mode"] = is_offline
+            summary["platform_services"] = build_platform_services_snapshot(
+                store=bundle["store"],
+                mem_bank=bundle["mem_bank"],
+                tracer=bundle["tracer"],
+                architecture_mode=arch_mode,
+                last_event=f"All {summary['passed_count']}/{summary['total_count']} Modular Coexistence Proofs passed",
+                overrides=ov,
+                last_flywheel=_get_last_flywheel(),
+            )
+            return summary
+
+        if _wants_ndjson(request, bool(body and body.stream)):
+            return _ndjson_stream_response(_run_proofs)
+        return await _run_proofs(emit_cb=None)
 
     @bff.post("/api/steward/closed-loop-eval")
     async def trigger_closed_loop(
         request: Request,
         body: ClosedLoopTriggerRequest | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         _verify_csrf(request)
+        is_offline, arch_mode, bundle = _resolve_ctx(request)
         custom_traces = None
         if body and body.custom_traces_json:
             try:
@@ -1695,61 +2156,87 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                     status_code=400, detail=f"Invalid custom_traces_json: {exc}"
                 ) from exc
 
-        res = await execute_closed_loop_flywheel(
-            live_cloud=live_cloud, custom_traces=custom_traces
-        )
-        v2_score = res["v2_candidate"]["behavior_score"]
-        res["platform_services"] = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
-            last_event=(
-                f"6-Stage Closed-Loop Flywheel promoted Golden Blueprint v2 "
-                f"(behavior_score={v2_score}) in {res['elapsed_seconds']}s"
-            ),
-            flow_sequence=[
-                "trace_wallet",
-                "eval_flywheel",
-                "model_armor",
-                "agent_registry",
-                "agent_runtime",
-            ],
-            overrides={
-                "eval_flywheel": {
-                    "status": "VERIFIED",
-                    "badge_label": f"v1 (58) -> v2 ({v2_score})",
-                    "latency_ms": round(res["elapsed_seconds"] * 1000, 1),
-                    "summary": (
-                        f"Ingested cross-cloud OTLP spans, scored v1=58.0 (BLOCKED), synthesized v2 "
-                        f"+ few-shots, and passed {res['v2_candidate']['cases_passed']}/"
-                        f"{res['v2_candidate']['cases_total']} gVisor simulations."
-                    ),
+        async def _run_flywheel(emit_cb: Any = None) -> dict[str, Any]:
+            res = await execute_closed_loop_flywheel(
+                live_cloud=not is_offline,
+                custom_traces=custom_traces,
+                progress_callback=emit_cb,
+            )
+            v1_base = res.get("v1_baseline") or {}
+            v2_cand = res.get("v2_candidate") or {}
+            v1_score = v1_base.get("behavior_score", 0.0)
+            v1_verdict = v1_base.get("gate_verdict", "EVALUATED")
+            v2_score = v2_cand.get("behavior_score", 0.0)
+            v2_passed = v2_cand.get("cases_passed", 0)
+            v2_total = v2_cand.get("cases_total", 8)
+            eval_engine = res.get("eval_engine_used", "agentplatform.Client.evals")
+
+            with state_lock:
+                last_flywheel_metrics.clear()
+                last_flywheel_metrics["v1_baseline"] = dict(v1_base)
+                last_flywheel_metrics["v2_candidate"] = dict(v2_cand)
+
+            res["offline_mode"] = is_offline
+            res["platform_services"] = build_platform_services_snapshot(
+                store=bundle["store"],
+                mem_bank=bundle["mem_bank"],
+                tracer=bundle["tracer"],
+                architecture_mode=arch_mode,
+                last_event=(
+                    f"6-Stage Closed-Loop Flywheel completed ({res.get('status', 'DONE')}): "
+                    f"v1={v1_score} ({v1_verdict}) -> v2={v2_score} in {res['elapsed_seconds']}s"
+                ),
+                flow_sequence=[
+                    "trace_wallet",
+                    "eval_flywheel",
+                    "model_armor",
+                    "agent_registry",
+                    "agent_runtime",
+                ],
+                overrides={
+                    "eval_flywheel": {
+                        "status": "VERIFIED",
+                        "badge_label": f"v1 ({v1_score}) -> v2 ({v2_score})",
+                        "latency_ms": round(res["elapsed_seconds"] * 1000, 1),
+                        "summary": (
+                            f"Ingested cross-cloud OTLP spans via {eval_engine}, scored "
+                            f"v1={v1_score} ({v1_verdict}), synthesized v2 + few-shots, and passed "
+                            f"{v2_passed}/{v2_total} simulations."
+                        ),
+                    },
+                    "agent_registry": {
+                        "status": "VERIFIED",
+                        "badge_label": f"Blueprint {v2_cand.get('prompt_version', 'v2')} ({v2_score})",
+                        "summary": "Committed Golden Blueprint across Enterprise Catalog, Agent Registry, and state store.",
+                    },
                 },
-                "agent_registry": {
-                    "status": "VERIFIED",
-                    "badge_label": f"Blueprint v2 ({v2_score})",
-                    "summary": "Committed Golden Blueprint v2 across Enterprise Catalog, Agent Registry, and Firestore.",
-                },
-            },
-        )
-        return res
+                last_flywheel=_get_last_flywheel(),
+            )
+            return res
+
+        if _wants_ndjson(request, bool(body and body.stream)):
+            return _ndjson_stream_response(_run_flywheel)
+        return await _run_flywheel(emit_cb=None)
 
     @bff.get("/api/steward/telemetry")
-    async def get_telemetry_snapshot() -> dict[str, Any]:
+    async def get_telemetry_snapshot(request: Request) -> dict[str, Any]:
+        _, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        b_tracer = bundle["tracer"]
         return {
-            "agent_state": store.get_agent_state("agent-governance-demo"),
-            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
-            "recent_traces": tracer.list_recent_traces(limit=12),
-            "recent_otlp_exports": tracer.list_recent_otlp_exports(limit=6),
-            "recent_ledger": store.recent_ledger_rows(limit=12),
-            "recent_guardrail_audits": store.recent_guardrail_audits(limit=12),
+            "agent_state": b_store.get_agent_state("agent-governance-demo"),
+            "wallet_state": b_store.get_wallet_state("wallet-cymbal-ops"),
+            "recent_traces": b_tracer.list_recent_traces(limit=12),
+            "recent_otlp_exports": b_tracer.list_recent_otlp_exports(limit=6),
+            "recent_ledger": b_store.recent_ledger_rows(limit=12),
+            "recent_guardrail_audits": b_store.recent_guardrail_audits(limit=12),
             "platform_services": build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
+                store=b_store,
+                mem_bank=bundle["mem_bank"],
+                tracer=b_tracer,
+                architecture_mode=arch_mode,
                 last_event="Refreshed live OTLP, Cloud Trace, Firestore, and BigQuery governance telemetry",
+                last_flywheel=_get_last_flywheel(),
             ),
         }
 
@@ -1783,7 +2270,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 lbl = "Unconfigured" if prov == "unconfigured" else "Action Required"
             else:
                 st_val = "VERIFIED"
-                lbl = "Cymbal Active" if prov == "cymbal_stack" else "Google Cloud"
+                lbl = "Enterprise Baseline" if prov == "cymbal_stack" else "Google Cloud"
             prev = overrides.get(svc_id)
             if prev is None or severity_rank[st_val] >= severity_rank.get(prev["status"], 0):
                 overrides[svc_id] = {"status": st_val, "badge_label": lbl}
@@ -1799,11 +2286,137 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         }
         return overrides
 
+    @bff.get("/api/templates/starters")
+    async def get_starter_templates() -> dict[str, Any]:
+        profile = load_tenant_profile()
+        return {"starters": list_local_starter_templates(profile=profile)}
+
+    @bff.post("/api/templates/starters/{starter_id}/load")
+    async def load_starter_template(
+        starter_id: str,
+        request: Request,
+        body: StarterLoadRequest | None = None,
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
+        profile = load_tenant_profile()
+        try:
+            tpl = load_local_starter_template(starter_id, profile=profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        if body and body.agent_name and body.agent_name.strip():
+            clean_name = body.agent_name.strip()
+            tpl = tpl.model_copy(
+                update={
+                    "template_id": clean_name.lower().replace(" ", "-"),
+                    "agent_name": clean_name,
+                    "name": clean_name,
+                }
+            )
+
+        if body is None or body.save:
+            saved = workbench.upsert_template(tpl)
+            tpl = AgentDeploymentTemplate.model_validate(saved)
+
+        rubric = workbench.get_rubric()
+        evaluation = evaluate_template_against_rubric(tpl, rubric, profile=profile)
+        snap = build_platform_services_snapshot(
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
+            last_event=(
+                f"Loaded starter template '{tpl.agent_name}' "
+                f"(score={evaluation['overall_score']}/100)"
+            ),
+            overrides=_template_to_service_overrides(tpl, evaluation),
+            last_flywheel=_get_last_flywheel(),
+        )
+        return {
+            "template": tpl.model_dump(),
+            "templates": workbench.list_templates(),
+            "evaluation": evaluation,
+            "platform_services": snap,
+        }
+
+    @bff.post("/api/templates/export-yaml")
+    async def export_template_yaml(
+        req: TemplateEvaluateRequest, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        yaml_text = export_template_to_yaml(req.template)
+        safe_slug = "".join(
+            c if c.isalnum() or c in {"-", "_"} else "-"
+            for c in (req.template.template_id or req.template.agent_name or "agent-template")
+        ).strip("-") or "agent-template"
+        return {
+            "filename": f"{safe_slug}.local.yaml",
+            "yaml_content": yaml_text,
+        }
+
+    @bff.post("/api/templates/phase5-reviewers")
+    async def update_phase5_reviewers(
+        req: Phase5ReviewUpdateRequest, request: Request
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
+        profile = load_tenant_profile()
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        signoffs = [
+            s for s in (req.template.reviewer_signoffs or []) if s.role != req.role
+        ]
+        signoffs.append(
+            Phase5ReviewerSignoff(
+                role=req.role,
+                status=req.status,
+                conditions=req.conditions,
+                notes=req.notes,
+                reviewer_principal=req.reviewer_principal,
+                updated_at=now_iso,
+            )
+        )
+        updated_tpl = req.template.model_copy(update={"reviewer_signoffs": signoffs})
+
+        existing_ids = {t["template_id"] for t in workbench.list_templates()}
+        if updated_tpl.template_id in existing_ids:
+            saved = workbench.upsert_template(updated_tpl)
+            updated_tpl = AgentDeploymentTemplate.model_validate(saved)
+
+        rubric = workbench.get_rubric()
+        evaluation = evaluate_template_against_rubric(
+            updated_tpl, rubric, profile=profile
+        )
+        gate = evaluation["phase5_reviewer_gate"]
+        snap = build_platform_services_snapshot(
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
+            last_event=(
+                f"Updated Phase 5 reviewer '{req.role}' -> {req.status} "
+                f"(verdict={gate['verdict']}, {gate['approved_count']}/7 approved)"
+            ),
+            overrides=_template_to_service_overrides(updated_tpl, evaluation),
+            last_flywheel=_get_last_flywheel(),
+        )
+        return {
+            "template": updated_tpl.model_dump(),
+            "templates": workbench.list_templates(),
+            "evaluation": evaluation,
+            "phase5_reviewer_gate": gate,
+            "platform_services": snap,
+        }
+
     @bff.post("/api/templates/upload")
     async def upload_template_manifest(
         req: TemplateUploadRequest, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
         profile = load_tenant_profile()
         try:
             tpl = parse_uploaded_template_manifest(
@@ -1815,15 +2428,16 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         rubric = workbench.get_rubric()
         evaluation = evaluate_template_against_rubric(tpl, rubric, profile=profile)
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=(
                 f"Inspected uploaded template '{tpl.agent_name}': "
                 f"score={evaluation['overall_score']}/100 ({evaluation['gate_verdict']})"
             ),
             overrides=_template_to_service_overrides(tpl, evaluation),
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "template": tpl.model_dump(),
@@ -1836,21 +2450,23 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: TemplateEvaluateRequest, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
         profile = load_tenant_profile()
         rubric = workbench.get_rubric()
         evaluation = evaluate_template_against_rubric(
             req.template, rubric, profile=profile
         )
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=(
                 f"Evaluated '{req.template.agent_name}' against {rubric.name}: "
                 f"{evaluation['overall_score']}/100 ({evaluation['recommendations_count']} recommendation(s))"
             ),
             overrides=_template_to_service_overrides(req.template, evaluation),
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "template": req.template.model_dump(),
@@ -1863,6 +2479,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: TemplateRemediateRequest, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
         profile = load_tenant_profile()
         rubric = workbench.get_rubric()
         try:
@@ -1883,15 +2500,16 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             updated_tpl, rubric, profile=profile
         )
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=(
                 f"Applied '{req.action}' on {req.rule_id} for '{updated_tpl.agent_name}' -> "
                 f"updated score {evaluation['overall_score']}/100"
             ),
             overrides=_template_to_service_overrides(updated_tpl, evaluation),
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "template": updated_tpl.model_dump(),
@@ -1904,19 +2522,25 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: TemplateDeployRequest, request: Request
     ) -> Any:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
+        b_store = bundle["store"]
+        b_guard = bundle["guard"]
+        b_tracer = bundle["tracer"]
+        b_mem_bank = bundle["mem_bank"]
+
         t0 = time.perf_counter()
-        trace_id = tracer.new_trace_id()
+        trace_id = b_tracer.new_trace_id()
         sess_id = f"dep-sess-{trace_id[:10]}"
         profile = load_tenant_profile()
         rubric = workbench.get_rubric()
 
         try:
-            store.assert_agent_active("agent-governance-demo")
-            store.reserve_preflight_budget("wallet-cymbal-ops")
-            verdict = guard.inspect_text(
+            b_store.assert_agent_active("agent-governance-demo")
+            b_store.reserve_preflight_budget("wallet-cymbal-ops")
+            verdict = b_guard.inspect_text(
                 req.template.system_instruction, direction="USER_PROMPT"
             )
-            store.record_guardrail_audit(
+            b_store.record_guardrail_audit(
                 trace_id=trace_id,
                 session_id=sess_id,
                 agent_id="agent-governance-demo",
@@ -1927,38 +2551,58 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 raise ModelArmorBlockedError(verdict.summary, verdict)
         except KillSwitchHaltedError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
+                architecture_mode=arch_mode,
                 last_event=f"Deployment blocked by Global Kill Switch ({exc.agent_status})",
                 trace_id=trace_id,
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=423)
         except WalletBudgetExceededError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
+                architecture_mode=arch_mode,
                 last_event="Deployment blocked by Atomic Nano-USD Wallet cap (403)",
                 trace_id=trace_id,
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=403)
         except ModelArmorBlockedError as exc:
             snap = build_platform_services_snapshot(
-                store=store,
-                mem_bank=mem_bank,
-                tracer=tracer,
-                architecture_mode=runtime_cfg["architecture_mode"],
+                store=b_store,
+                mem_bank=b_mem_bank,
+                tracer=b_tracer,
+                architecture_mode=arch_mode,
                 last_event=f"Deployment blocked by Model Armor ({exc.audit_record.action_taken})",
                 trace_id=trace_id,
+                last_flywheel=_get_last_flywheel(),
             )
             return JSONResponse({"detail": str(exc), "platform_services": snap}, status_code=400)
 
         evaluation = evaluate_template_against_rubric(
             req.template, rubric, profile=profile
         )
+        if evaluation.get("ag5_prohibited_blocked"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Deployment unconditionally blocked: '{req.template.agent_name}' is classified as "
+                    "AEGIS AG5 (Fully Autonomous), which is prohibited and cannot be bypassed."
+                ),
+            )
+        phase5_gate = evaluation.get("phase5_reviewer_gate") or {}
+        if phase5_gate.get("verdict") == "DENIED":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Phase 5 7-Reviewer Gate denied deployment for '{req.template.agent_name}' "
+                    f"({phase5_gate.get('denied_count', 1)} denial(s))."
+                ),
+            )
         if not evaluation["gate_passed"]:
             raise HTTPException(
                 status_code=400,
@@ -1973,18 +2617,22 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         tpl_clean = req.template.model_copy(
             update={"system_instruction": verdict.sanitized_text}
         )
-        dep_record = workbench.record_deployment(
-            template=tpl_clean,
-            initial_score=req.initial_score,
-            approver_principal=req.approver_principal,
-            trace_id=trace_id,
-        )
-        ledger_row = store.settle_turn_spend(
+        try:
+            dep_record = workbench.record_deployment(
+                template=tpl_clean,
+                initial_score=req.initial_score,
+                approver_principal=req.approver_principal,
+                trace_id=trace_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        ledger_row = b_store.settle_turn_spend(
             wallet_id="wallet-cymbal-ops",
             agent_id="agent-governance-demo",
             session_id=sess_id,
             trace_id=trace_id,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            architecture_mode=arch_mode,
             input_tokens=480,
             output_tokens=260,
             outcome="GOVERNED_TEMPLATE_DEPLOYED",
@@ -1992,13 +2640,13 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             incident_resolved=True,
         )
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-        tracer.record_span(
+        b_tracer.record_span(
             trace_id=trace_id,
             session_id=sess_id,
             span_name="governance_workbench.deploy_template",
             stage="template_deployment",
             duration_ms=elapsed_ms,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            architecture_mode=arch_mode,
             cmdb_app_id=tpl_clean.app_id,
             attributes={
                 "deployment.id": dep_record["deployment_id"],
@@ -2006,7 +2654,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
                 "eval.final_score": dep_record["final_eval_score"],
             },
         )
-        mem_bank.persist_memory(
+        b_mem_bank.persist_memory(
             verified_user_id="gov-reviewer-01",
             incident_id=dep_record["deployment_id"],
             service_name=tpl_clean.agent_name,
@@ -2017,28 +2665,116 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             ),
         )
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=b_store,
+            mem_bank=b_mem_bank,
+            tracer=b_tracer,
+            architecture_mode=arch_mode,
             last_event=(
                 f"Deployed {dep_record['deployment_id']} ({tpl_clean.agent_name}) -> "
                 f"Score {dep_record['final_eval_score']}/100 | ${dep_record['monthly_run_rate_usd']}/mo"
             ),
             trace_id=trace_id,
             overrides=_template_to_service_overrides(tpl_clean, evaluation),
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "deployment": dep_record,
             "templates": workbench.list_templates(),
+            "recertification_records": workbench.list_recertification_records(),
             "wallet_settlement": ledger_row,
-            "wallet_state": store.get_wallet_state("wallet-cymbal-ops"),
+            "wallet_state": b_store.get_wallet_state("wallet-cymbal-ops"),
             "operations_metrics": workbench.build_operations_metrics(),
             "executive_costs": workbench.build_executive_cost_summary(),
-            "recent_memories": mem_bank.retrieve_memories(
+            "recent_memories": b_mem_bank.retrieve_memories(
                 verified_user_id="gov-reviewer-01", limit=5
             ),
             "platform_services": snap,
+        }
+
+    @bff.get("/api/govern/recertification")
+    async def list_govern_recertification() -> dict[str, Any]:
+        return {"records": workbench.list_recertification_records()}
+
+    @bff.post("/api/govern/recertification/{agent_id}/recertify")
+    async def recertify_govern_agent(
+        agent_id: str,
+        request: Request,
+        body: RecertifyRequest | None = None,
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        req_body = body or RecertifyRequest()
+        try:
+            rec = workbench.recertify_agent(
+                agent_id,
+                scopes_confirmed=req_body.scopes_confirmed,
+                scopes_removed=req_body.scopes_removed,
+                certified_by=req_body.certified_by,
+                next_review_date=req_body.next_review_date,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "record": rec,
+            "records": workbench.list_recertification_records(),
+        }
+
+    @bff.post("/api/govern/recertification/{agent_id}/expire")
+    async def expire_govern_agent(
+        agent_id: str,
+        request: Request,
+        body: ExpireAgentRequest | None = None,
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        req_body = body or ExpireAgentRequest()
+        try:
+            rec = workbench.expire_agent(agent_id, reason=req_body.reason)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "record": rec,
+            "records": workbench.list_recertification_records(),
+        }
+
+    @bff.post("/api/govern/recertification/{agent_id}/offboard")
+    async def offboard_govern_agent(
+        agent_id: str,
+        request: Request,
+        body: OffboardAgentRequest | None = None,
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        req_body = body or OffboardAgentRequest()
+        try:
+            rec = workbench.offboard_agent(
+                agent_id,
+                actor=req_body.actor,
+                transfer_owner=req_body.transfer_owner,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "record": rec,
+            "records": workbench.list_recertification_records(),
+            "operations_metrics": workbench.build_operations_metrics(),
+        }
+
+    @bff.post("/api/govern/recertification/{agent_id}/advance-timer")
+    async def advance_govern_recert_timer(
+        agent_id: str,
+        req: AdvanceTimerRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _verify_csrf(request)
+        try:
+            rec = workbench.advance_recertification_timer(
+                agent_id,
+                cycle_day=req.cycle_day,
+                days_since_activity=req.days_since_activity,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "record": rec,
+            "records": workbench.list_recertification_records(),
         }
 
     @bff.post("/api/ops/rubric")
@@ -2058,6 +2794,7 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
         req: AgentDeploymentTemplate, request: Request
     ) -> dict[str, Any]:
         _verify_csrf(request)
+        _, arch_mode, bundle = _resolve_ctx(request)
         profile = load_tenant_profile()
         saved = workbench.upsert_template(req)
         rubric = workbench.get_rubric()
@@ -2066,15 +2803,16 @@ def create_bff_app(*, offline_mode: bool | None = None) -> FastAPI:
             validated_tpl, rubric, profile=profile
         )
         snap = build_platform_services_snapshot(
-            store=store,
-            mem_bank=mem_bank,
-            tracer=tracer,
-            architecture_mode=runtime_cfg["architecture_mode"],
+            store=bundle["store"],
+            mem_bank=bundle["mem_bank"],
+            tracer=bundle["tracer"],
+            architecture_mode=arch_mode,
             last_event=(
                 f"Saved deployment template '{validated_tpl.agent_name}' "
                 f"(score={evaluation['overall_score']}/100)"
             ),
             overrides=_template_to_service_overrides(validated_tpl, evaluation),
+            last_flywheel=_get_last_flywheel(),
         )
         return {
             "template": saved,

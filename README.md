@@ -38,13 +38,13 @@ flowchart TD
 | **1** | **Identity & Access** | Control | `Okta OIDC + HashiCorp Vault` | `Google Agent Identity (SPIFFE + WIF)` | Eliminates static secrets via platform-minted SPIFFE SVIDs and verifies `ADR-011` `azp` correlation across pairwise OBO tokens. |
 | **2** | **Agent Registry** | Control | `Backstage + ServiceNow CMDB` | `Google Agent Registry` | Bidirectional CMDB / intake verification (`ATLAS` + `ServiceAtlas`) and versioned Golden Blueprint synchronization. |
 | **3** | **AI & Tool Gateway** | Control | `Kong AI Gateway + LiteLLM` | `Google Agent Gateway (PSC-I + UAP CEL)` | Private `/26` PSC-I egress with UAP Policy V2 CEL rules permitting `readOnlyHint=true` MCP tools while blocking destructive calls (`403`). |
-| **4** | **Safety Guardrails** | Control | `Guardrails AI + Microsoft Presidio` | `Google Model Armor + Cloud SDP` | Routes per-request BU/risk/SDP JSON policies onto 2 Floor-enforced templates (`$0.10` / 1M tokens Tier-0 pre-filter + inline PII redaction). |
+| **4** | **Safety Guardrails** | Control | `Guardrails AI + Microsoft Presidio` | `Google Model Armor + Cloud SDP` | Routes per-request BU/risk/SDP JSON policies onto 3 Floor-enforced templates (`$0.10` / 1M tokens Tier-0 pre-filter + inline PII redaction; standalone middleware adapter in `services/gateway_tier0_model_armor/`). |
 | **5** | **Foundation Model** | Intelligence | `OpenAI GPT-4o / Meta Llama (vLLM)` | `Google Gemini 3.8 Flash (Vertex AI)` | 12-month Long-Term Availability (`gemini-3.8-flash`) with enterprise data governance and predictable low-latency reasoning. |
 | **6** | **Runtime & Sandbox** | Experience | `LangGraph + E2B Firecracker Sandbox` | `Google Agent Runtime (Agent Engine + gVisor)` | Managed ADK 2.0 `Workflow` graph execution, resumable `RequestInput` HITL checkpoints, and native `gVisor` code sandboxing. |
 | **7** | **Memory & Knowledge** | Intelligence | `Mem0 + Redis Vector Store` | `Google Vertex AI Memory Bank` | Longitudinal compliance & reviewer memory strictly isolated by verified JWT `user_id` (`0` cross-tenant leakage). |
 | **8** | **Observability & Tracing** | Control | `Langfuse + OpenTelemetry` | `Google Cloud Trace & Cloud Logging` | Dual-exports W3C TraceContext and OTLP v1 `resourceSpans` across multi-cloud runtimes. |
 | **9** | **Cost & Kill Controls** | Economics | `Revenium + Helicone` | `Google Firestore Atomic Wallet & Switch` | Pre-inference atomic nano-USD budget reservation (`403` on cap breach) and sub-second global `ACTIVE / PAUSED / DISABLED` kill switch (`423`). |
-| **10** | **Evaluation & Optimization** | Intelligence | `LangSmith + Promptfoo` | `Google Vertex AI Gen AI Eval & Optimizer` | 6-stage closed-loop engine grading AWS/Azure/GCP OTLP traces via `agentplatform.Client.evals` and promoting `v2` prompts (`58.0 -> 96.4`). |
+| **10** | **Evaluation & Optimization** | Intelligence | `LangSmith + Promptfoo` | `Google Vertex AI Gen AI Eval & Optimizer` | 6-stage closed-loop engine grading AWS/Azure/GCP OTLP traces concurrently across 8 golden cases via `agentplatform.Client.evals` and promoting `v2` prompts. |
 
 ### Unified Console Design Rubric (`Build`, `Evaluate`, `Deploy`, `Govern`)
 
@@ -101,14 +101,17 @@ bash infra/05_deploy_web_ui.sh
 ```bash
 # Copyright 2026 Google LLC.
 # SPDX-License-Identifier: Apache-2.0
-# Unit, ADK 2.0 Workflow Graph, Dynamic Guardrail Router & Cloud Run Compliance tests (19 tests)
-CYMBAL_BFF_OFFLINE=true .venv/bin/pytest tests/ -v
+# Unit, ADK 2.0 Workflow Graph, Tier-0 Gateway Adapter, Dynamic Guardrail & Cloud Run Compliance tests (45+ tests)
+CYMBAL_RUNTIME_STATE_DIR=/tmp/cymbal_pytest_state CYMBAL_BFF_OFFLINE=true .venv/bin/pytest tests/ -v
 
-# Local pre-flight Web UI security, CSP, CSRF & HITL deployment smoke test on 127.0.0.1 (7 checks)
-.venv/bin/python scripts/smoke_test_web_ui.py --local --offline
+# Local pre-flight Web UI security, CSP, CSRF & HITL deployment smoke test on 127.0.0.1
+CYMBAL_RUNTIME_STATE_DIR=/tmp/cymbal_smoke_state .venv/bin/python scripts/smoke_test_web_ui.py --local --offline
 
 # Deterministic Apache-2.0 header, zero-leak & disclaimer compliance gate
 .venv/bin/python scripts/verify_repo_compliance.py
+
+# One-command live demo reset, Gemini/Model Armor/Cloud Run warmup & local console launcher
+.venv/bin/python scripts/demo_reset_and_warmup.py
 
 # 6-Stage Cross-Cloud Closed-Loop Optimizer (ingests AWS/Azure/GCP OTLP traces -> promotes v2)
 .venv/bin/python -m evals.run_closed_loop_eval
@@ -116,7 +119,7 @@ CYMBAL_BFF_OFFLINE=true .venv/bin/pytest tests/ -v
 # 8-Capability Modular Coexistence Benchmark (writes docs/GOOGLE_AGENT_PLATFORM_BENCHMARK.md)
 .venv/bin/python -m evals.run_beyond_scape_proofs
 
-# Launch the Cymbal Agent Governance Platform locally on http://127.0.0.1:8080
+# Or launch the Cymbal Agent Governance Platform Web UI directly on http://127.0.0.1:8080
 .venv/bin/python -m web.api
 ```
 
@@ -131,7 +134,7 @@ CYMBAL_BFF_OFFLINE=true .venv/bin/pytest tests/ -v
 2. **Minute 3-6 (`Evaluate` - 10-Rule Governance Gate, 6-Stage `gemini-3.8-flash` Optimizer & ADK 2.0 Audit)**:
    - In the auto-expanded **`billing-dispute-assistant`** row on **`/evaluate`**, review the 5 Readiness & Pillar KPIs (`Control`, `Intelligence`, `Economics`, `Experience`), the **10 Horizontal Status Blocks** (`[OK]` / `[~]` / `[!]`), and the **10 Nested Rule & Remediation Expanders** (`RUB-01`..`RUB-10`).
    - Remediate blocking gates via **`Apply Recommended Fix`** (or record an architecture variance via **`Record Exception`**) and watch the readiness score and monthly run-rate delta update live.
-   - Click **`Optimize Prompt & Traces`** to execute the 6-stage cross-cloud OTLP trace evaluation & prompt optimizer (`58.0 -> 96.4/100` via `agentplatform.Client.evals` and `gemini-3.8-flash`), click **`Run ADK Workflow Audit`** to run the 3-way parallel MCP + `gVisor` audit and stage the `AG3` `RequestInput` approval checkpoint, then click **`Proceed to Deploy ->`**.
+   - Click **`Optimize Prompt & Traces`** to execute the 6-stage cross-cloud OTLP trace evaluation & prompt optimizer (concurrent 8-case `agentplatform.Client.evals` + `gemini-3.8-flash` live synthesis), click **`Run ADK Workflow Audit`** to run the 3-way parallel MCP + `gVisor` audit and stage the `AG3` `RequestInput` approval checkpoint, then click **`Proceed to Deploy ->`**.
 3. **Minute 6-8 (`Deploy` - AG3 HITL Checkpoint, Terraform Paved-Path HCL, Guardrail JSON & Fleet Promotion)**:
    - Inside **`1. Release Gate & Production Approval`** on **`/deploy`**, review **Projected Monthly Run-Rate**, **One-Time Onboarding & Eval**, **Monthly Consolidation Delta**, and **`AG3`** sign-off posture.
    - Expand **`2. Generated Terraform Module (infra/terraform)`** and **`3. Dynamic Guardrail Policy Payload`** to inspect the synthesized Paved-Path HCL and per-request Google Model Armor + Cloud SDP JSON.

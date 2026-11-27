@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from google.adk.apps.app import App, ResumabilityConfig
@@ -33,10 +34,16 @@ from cymbal_agent.governance.plugin import CymbalGovernancePlugin
 from cymbal_agent.governance.telemetry_bridge import UnifiedTraceBridge
 from cymbal_agent.governance.wallet_ledger import AtomicWalletAndGovernanceStore
 from cymbal_agent.memory.memory_bank import ScopedMemoryBankClient
+from cymbal_agent.schemas import GovernanceRemediationAssessment
 from cymbal_agent.tenant import (
     DEFAULT_PROFILE_PATH,
     list_available_profiles,
     load_tenant_profile,
+)
+from services.cymbal_ops_mcp_server.server import (
+    fetch_production_otel_traces as local_fetch_traces,
+    inspect_candidate_agent_manifest as local_inspect_manifest,
+    verify_tier1_intake_and_supergraph as local_verify_tier1,
 )
 from web.api import create_bff_app
 
@@ -335,3 +342,220 @@ async def test_tracked_cymbal_profile_coexistence_default_and_9_service_pipeline
         b_map = {s["id"]: s for s in bad_audit.json()["platform_services"]["services"]}
         assert b_map["model_armor"]["status"] == "BLOCKED"
         assert b_map["agent_runtime"]["status"] == "STANDBY"
+
+
+@pytest.mark.asyncio
+async def test_cand204_vp_gov_204_non_bypass_holds_without_ticket_and_deploys_with_ticket() -> None:
+    # 1. Approved HITL WITHOUT vp_exception_ticket must fail-closed to HELD_FOR_GOVERNANCE_EXCEPTION
+    _, runner_no_ticket, _ = _make_offline_app()
+    sess1 = await runner_no_ticket.session_service.create_session(
+        app_name="pytest_cymbal_agent",
+        user_id="gov-reviewer-01",
+        state={"prompt_version_override": "v2"},
+    )
+    interrupt_1 = None
+    async for ev in runner_no_ticket.run_async(
+        user_id="gov-reviewer-01",
+        session_id=sess1.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Audit CAND-204 on media-entitlement-router")]
+        ),
+    ):
+        if ev.long_running_tool_ids:
+            interrupt_1 = next(iter(ev.long_running_tool_ids))
+    assert interrupt_1 == "ag3_deploy_1"
+
+    resume_no_ticket = create_request_input_response(
+        interrupt_1,
+        {
+            "approved": True,
+            "approver_principal": "gov-director-01",
+            "vp_exception_ticket": None,
+            "reason": "Attempting deploy without explicit VP exception ticket.",
+        },
+    )
+    async for _ in runner_no_ticket.run_async(
+        user_id="gov-reviewer-01",
+        session_id=sess1.id,
+        new_message=types.Content(role="user", parts=[resume_no_ticket]),
+    ):
+        pass
+
+    final1 = await runner_no_ticket.session_service.get_session(
+        app_name="pytest_cymbal_agent", user_id="gov-reviewer-01", session_id=sess1.id
+    )
+    assert final1 is not None
+    outcome1 = final1.state["remediation_outcome"]
+    assert outcome1["status"] == "HELD_FOR_GOVERNANCE_EXCEPTION"
+    assert outcome1["compliance_verified"] is False
+
+    # 2. Approved HITL WITH valid VP-EXC-2040 ticket succeeds -> DEPLOYED_PAVED_PATH
+    _, runner_with_ticket, _ = _make_offline_app()
+    sess2 = await runner_with_ticket.session_service.create_session(
+        app_name="pytest_cymbal_agent",
+        user_id="gov-reviewer-01",
+        state={"prompt_version_override": "v2"},
+    )
+    interrupt_2 = None
+    async for ev in runner_with_ticket.run_async(
+        user_id="gov-reviewer-01",
+        session_id=sess2.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Audit CAND-204 on media-entitlement-router")]
+        ),
+    ):
+        if ev.long_running_tool_ids:
+            interrupt_2 = next(iter(ev.long_running_tool_ids))
+    assert interrupt_2 == "ag3_deploy_1"
+
+    resume_with_ticket = create_request_input_response(
+        interrupt_2,
+        {
+            "approved": True,
+            "approver_principal": "vp-governance-01",
+            "vp_exception_ticket": "VP-EXC-2040",
+            "reason": "Verified VP exception ticket for active freeze window.",
+        },
+    )
+    async for _ in runner_with_ticket.run_async(
+        user_id="gov-reviewer-01",
+        session_id=sess2.id,
+        new_message=types.Content(role="user", parts=[resume_with_ticket]),
+    ):
+        pass
+
+    final2 = await runner_with_ticket.session_service.get_session(
+        app_name="pytest_cymbal_agent", user_id="gov-reviewer-01", session_id=sess2.id
+    )
+    assert final2 is not None
+    outcome2 = final2.state["remediation_outcome"]
+    assert outcome2["status"] == "DEPLOYED_PAVED_PATH"
+    assert outcome2["compliance_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_ag5_workflow_prohibited_block_and_freeze_quarantine_manual_hold() -> None:
+    def _ag5_injector(tool_name: str, args: dict[str, str]) -> str:
+        cid = args.get("candidate_id", "CAND-101")
+        if tool_name == "inspect_candidate_agent_manifest":
+            return local_inspect_manifest(candidate_id=cid)
+        if tool_name == "verify_tier1_intake_and_supergraph":
+            payload = json.loads(
+                local_verify_tier1(candidate_id=cid, app_id=args.get("app_id", "SVC-CYMBAL-101"))
+            )
+            payload["risk_tier"] = "AG5"
+            return json.dumps(payload)
+        return local_fetch_traces(candidate_id=cid, window_minutes=60)
+
+    store = AtomicWalletAndGovernanceStore(in_memory_only=True)
+    guard = FailClosedModelArmorGuard(live_api_enabled=False)
+    tracer = UnifiedTraceBridge(cloud_trace_enabled=False)
+    mem = ScopedMemoryBankClient(in_memory_only=True)
+    wf = build_cymbal_workflow(
+        memory_bank=mem,
+        use_live_llm=False,
+        mcp_fault_injector=_ag5_injector,
+    )
+    adk_app = App(
+        name="pytest_ag5_app",
+        root_agent=wf,
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        plugins=[CymbalGovernancePlugin(store=store, guard=guard, tracer=tracer)],
+    )
+    runner = InMemoryRunner(app=adk_app)
+    sess = await runner.session_service.create_session(
+        app_name="pytest_ag5_app",
+        user_id="gov-reviewer-01",
+        state={"prompt_version_override": "v2"},
+    )
+    interrupted = False
+    async for ev in runner.run_async(
+        user_id="gov-reviewer-01",
+        session_id=sess.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Audit CAND-101 for autonomous AG5 tier")]
+        ),
+    ):
+        if ev.long_running_tool_ids:
+            interrupted = True
+
+    assert interrupted is False
+    final_sess = await runner.session_service.get_session(
+        app_name="pytest_ag5_app", user_id="gov-reviewer-01", session_id=sess.id
+    )
+    assert final_sess is not None
+    assert final_sess.state["remediation_outcome"]["status"] == "PROHIBITED_AG5_BLOCKED"
+    assert final_sess.state["remediation_outcome"]["compliance_verified"] is False
+
+    # Verify GovernanceRemediationAssessment accepts freeze_quarantine and manual_hold_node handles missing ag3_approval_decision
+    quarantine_assessment = GovernanceRemediationAssessment(
+        candidate_id="CAND-204",
+        agent_name="media-entitlement-router",
+        app_id="SVC-CYMBAL-204",
+        governance_gaps_summary="Active release freeze without VP exception.",
+        risk_level="AG3",
+        recommended_route="freeze_quarantine",
+        policy_freeze_detected=True,
+        vp_exception_required=True,
+        remediation_plan="Quarantine until VP exception is recorded.",
+    )
+    assert quarantine_assessment.recommended_route == "freeze_quarantine"
+
+    node_map = {n.name: n for n in wf.graph.nodes}
+    route_node = node_map["route_governance_assessment"]
+    hold_node = node_map["record_manual_hold"]
+
+    class _MockCtx:
+        def __init__(self, state: dict) -> None:
+            self.state = state
+
+    r_ctx = _MockCtx({"incident_assessment": quarantine_assessment.model_dump()})
+    routed_events = [e async for e in route_node._func(r_ctx)]
+    assert routed_events[-1].actions.route == "freeze_quarantine"
+
+    h_ctx = _MockCtx({"incident_assessment": quarantine_assessment.model_dump()})
+    hold_outcome = await hold_node._func(h_ctx)
+    assert hold_outcome.status == "HELD_FOR_GOVERNANCE_EXCEPTION"
+    assert "policy-freeze-quarantine-gate" in hold_outcome.summary
+
+
+def test_memory_bank_retains_enterprise_domain_terms_with_jwt_isolation() -> None:
+    mem = ScopedMemoryBankClient(in_memory_only=True)
+    domain_fact = (
+        "portal-catalog flow-gateway registry-hub cross-cloud state preserved with "
+        "tier1 intake correlation and telemetry sync."
+    )
+    mem.persist_memory(
+        verified_user_id="reviewer-alpha",
+        service_name="catalog-router-agent",
+        fact=domain_fact,
+        incident_id="CAND-777",
+    )
+
+    alpha_recs = mem.retrieve_memories(
+        verified_user_id="reviewer-alpha",
+        service_name="catalog-router-agent",
+        limit=5,
+    )
+    assert len(alpha_recs) == 1
+    assert alpha_recs[0]["fact"] == domain_fact
+    assert "portal-catalog" in alpha_recs[0]["fact"]
+    assert "flow-gateway" in alpha_recs[0]["fact"]
+
+    beta_recs = mem.retrieve_memories(
+        verified_user_id="reviewer-beta",
+        service_name="catalog-router-agent",
+        limit=5,
+    )
+    assert beta_recs == []
+
+    removed = mem.forget_user_memories("reviewer-alpha")
+    assert removed == 1
+    assert (
+        mem.retrieve_memories(
+            verified_user_id="reviewer-alpha",
+            service_name="catalog-router-agent",
+            limit=5,
+        )
+        == []
+    )

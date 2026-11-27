@@ -18,10 +18,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 
-from evals.run_beyond_scape_proofs import calculate_guardrail_tco, run_all_beyond_scape_proofs
-from evals.run_closed_loop_eval import execute_closed_loop_flywheel
+from evals.run_beyond_scape_proofs import (
+    calculate_guardrail_tco,
+    run_all_beyond_scape_proofs,
+    run_single_proof,
+)
+from evals.run_closed_loop_eval import (
+    execute_closed_loop_flywheel,
+    get_writable_prompts_dir,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,7 +56,7 @@ async def test_closed_loop_flywheel_executes_6_stages_blocks_v1_and_promotes_v2_
     assert v2["cases_passed"] == v2["cases_total"] == 8
 
     pointer = json.loads(
-        (REPO_ROOT / "config" / "prompts" / "active_version.json").read_text(encoding="utf-8")
+        (get_writable_prompts_dir() / "active_version.json").read_text(encoding="utf-8")
     )
     assert pointer["active_version"] == "v2"
     assert pointer["behavior_score"] >= 90.0
@@ -64,7 +74,21 @@ async def test_platform_8_capability_suite_and_ensemble_tco_math() -> None:
     assert tco["google_model_armor_annual_usd"] == 365_000.0
     assert tco["ensemble_tier0_hybrid_annual_usd"] == 584_000.0
     assert tco["annual_savings_vs_azure_usd"] == 3_285_000.0
+    assert tco["pct_reduction_vs_azure"] == 90.0
+    assert tco["ensemble_annual_savings_vs_azure_usd"] == 3_066_000.0
+    assert tco["ensemble_pct_reduction_vs_azure"] == 84.0
     assert tco["annual_savings_vs_bedrock_usd"] == 730_000.0
+    assert tco["pct_reduction_vs_bedrock"] == 66.7
+    assert tco["ensemble_annual_savings_vs_bedrock_usd"] == 511_000.0
+    assert tco["ensemble_pct_reduction_vs_bedrock"] == 46.7
+
+    proof1 = await run_single_proof(1, live_cloud=False)
+    assert proof1["passed"] is True
+    assert proof1["control_availability"] == "GA (Kill Switch) + Preview (ACT / AgentGateway)"
+    assert any("[GA]" in item for item in proof1["ga_controls"])
+    assert any("[Preview]" in item for item in proof1["preview_controls"])
+    assert "[GA]" in proof1["measured_evidence"]
+    assert "[Preview]" in proof1["measured_evidence"]
 
     summary = await run_all_beyond_scape_proofs(live_cloud=False)
     assert summary["status"] == "PASS"
@@ -78,3 +102,21 @@ async def test_platform_8_capability_suite_and_ensemble_tco_math() -> None:
     assert "\u2014" not in doc_text
     assert "\u2013" not in doc_text
     assert "Cymbal Agent Governance, Optimization & Deployment Workbench" in doc_text
+
+
+def test_closed_loop_eval_has_no_fallback_clamps_and_cli_offline_json() -> None:
+    eval_src = (REPO_ROOT / "evals" / "run_closed_loop_eval.py").read_text(encoding="utf-8")
+    assert "deterministic_rubric_fallback" not in eval_src
+    assert "96.4" not in eval_src
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "evals.run_closed_loop_eval", "--offline", "--json"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "PROMOTED_V2"
+    assert payload["v2_candidate"]["cases_passed"] == 8
+    assert payload["v2_candidate"]["cases_total"] == 8

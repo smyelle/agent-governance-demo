@@ -1,39 +1,79 @@
 {
-  "version": "v2",
-  "title": "cymbal-uap-per-tool-cel-policy",
-  "description": "Unified Access Policy V2 CEL enforcing empty tool.name MCP handshake allow, read_only_hint allow, and principal-scoped mutating MCP/A2A governance.",
-  "rules": [
-    {
-      "id": "allow-mcp-handshake-and-readonly-tools",
-      "effect": "ALLOW",
-      "condition": {
-        "title": "Allow MCP initialize/tools/list or readOnlyHint tools",
-        "expression": "destination.agent_registry.mcp_server.tool.name == '' || destination.agent_registry.mcp_server.tool.annotations.read_only_hint == true"
+  "displayName": "cymbal-uap-per-tool-cel-policy",
+  "details": {
+    "rules": [
+      {
+        "effect": "ALLOW",
+        "description": "allow-mcp-handshake-and-readonly-tools: Allow MCP initialize/tools/list or readOnlyHint tools",
+        "principals": [
+          "principalSet://goog/public:all"
+        ],
+        "operation": {
+          "permissions": [
+            "iap.googleapis.com/resources.egressViaIAP"
+          ]
+        },
+        "conditions": {
+          "iap.googleapis.com": {
+            "title": "Allow MCP initialize/tools/list or readOnlyHint tools",
+            "expression": "destination.agent_registry.agent.name == '' && (destination.agent_registry.mcp_server.tool.name == '' || destination.agent_registry.mcp_server.tool.annotations.read_only_hint == true)"
+          }
+        }
+      },
+      {
+        "effect": "ALLOW",
+        "description": "allow-scoped-incident-annotation: Allow non-destructive ticket/evidence annotation tools only for registered Cymbal agent identity",
+        "principals": [
+          "principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/agent-runtime/sa/agent-governance-demo"
+        ],
+        "operation": {
+          "permissions": [
+            "iap.googleapis.com/resources.egressViaIAP"
+          ]
+        },
+        "conditions": {
+          "iap.googleapis.com": {
+            "title": "Allow SCOPED_NON_DESTRUCTIVE_TOOLS (annotate_incident_ticket, record_compliance_evidence_note) for registered agent SPIFFE identity",
+            "expression": "destination.agent_registry.mcp_server.tool.name in ['annotate_incident_ticket', 'record_compliance_evidence_note'] && destination.agent_registry.mcp_server.tool.annotations.destructive_hint == false"
+          }
+        }
+      },
+      {
+        "effect": "DENY",
+        "description": "deny-destructive-mcp-tools-by-default: Block destructive or gate-bypass MCP tools even if caller holds coarse mcp.use scope",
+        "principals": [
+          "principalSet://goog/public:all"
+        ],
+        "operation": {
+          "permissions": [
+            "iap.googleapis.com/resources.egressViaIAP"
+          ]
+        },
+        "conditions": {
+          "iap.googleapis.com": {
+            "title": "Block destructive or administrative override MCP tools",
+            "expression": "destination.agent_registry.mcp_server.tool.annotations.destructive_hint == true || destination.agent_registry.mcp_server.tool.name in ['force_bypass_governance_gate', 'purge_production_valkey_stream']"
+          }
+        }
+      },
+      {
+        "effect": "ALLOW",
+        "description": "allow-governed-a2a-remediation-after-ag3-hitl: Allow A2A Paved-Path Agent only for authorized Cymbal Agent identity with AG3 approval header",
+        "principals": [
+          "principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/agent-runtime/sa/agent-governance-demo"
+        ],
+        "operation": {
+          "permissions": [
+            "iap.googleapis.com/resources.egressViaIAP"
+          ]
+        },
+        "conditions": {
+          "iap.googleapis.com": {
+            "title": "Allow A2A Paved-Path Deployment & Blueprint Agent only with AG3 approval header",
+            "expression": "destination.agent_registry.agent.name == 'remediation-a2a-agent' && has(request.headers['x-cymbal-ag3-approval-id'])"
+          }
+        }
       }
-    },
-    {
-      "id": "allow-scoped-incident-annotation",
-      "effect": "ALLOW",
-      "condition": {
-        "title": "Allow non-destructive ticket annotation only for registered Cymbal Core Operations & Release Agent SPIFFE identity",
-        "expression": "destination.agent_registry.mcp_server.tool.name == 'annotate_incident_ticket' && destination.agent_registry.mcp_server.tool.annotations.destructive_hint == false && request.auth.principal.contains('agent-governance-demo')"
-      }
-    },
-    {
-      "id": "deny-destructive-mcp-tools-by-default",
-      "effect": "DENY",
-      "condition": {
-        "title": "Block destructive MCP tools (e.g. purge_production_valkey_stream) even if caller holds coarse mcp.use scope",
-        "expression": "destination.agent_registry.mcp_server.tool.annotations.destructive_hint == true"
-      }
-    },
-    {
-      "id": "allow-governed-a2a-remediation-after-ag3-hitl",
-      "effect": "ALLOW",
-      "condition": {
-        "title": "Allow A2A Release Remediation Agent only for authorized Cymbal Agent identity with AG3 approval header",
-        "expression": "destination.agent_registry.agent.name == 'remediation-a2a-agent' && has(request.headers['x-cymbal-ag3-approval-id'])"
-      }
-    }
-  ]
+    ]
+  }
 }

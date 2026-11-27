@@ -51,7 +51,7 @@ from cymbal_agent.governance.gcp_auth import (  # noqa: E402
 RUNTIME_REQUIREMENTS = [
     "google-adk>=2.14.0",
     "google-genai>=1.40.0",
-    "google-cloud-aiplatform[adk,agent_engines]>=1.95.0",
+    "google-cloud-aiplatform[adk,agent_engines]>=2.10.0",
     "google-cloud-modelarmor>=0.2.0",
     "google-cloud-firestore>=2.19.0",
     "google-cloud-bigquery>=3.27.0",
@@ -134,11 +134,7 @@ def _register_agent_in_agent_registry(
 def main() -> int:
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "cymbal-agent-platform"
     location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    staging_bucket = (
-        os.getenv("CYMBAL_STAGING_BUCKET")
-        or os.getenv("SCAPE_STAGING_BUCKET")
-        or f"gs://{project_id}-{location}"
-    )
+    staging_bucket = os.getenv("CYMBAL_STAGING_BUCKET") or f"gs://{project_id}-{location}"
     if "<PROJECT_ID>" in staging_bucket:
         staging_bucket = f"gs://{project_id}-{location}"
 
@@ -158,11 +154,20 @@ def main() -> int:
         "GOOGLE_GENAI_API_TRANSPORT": "rest",
         "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
         "GEMINI_MODEL": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-        "CYMBAL_PLATFORM_MODE": os.getenv("CYMBAL_PLATFORM_MODE", "google_native"),
+        "CYMBAL_PLATFORM_MODE": os.getenv("CYMBAL_PLATFORM_MODE", "enterprise_hybrid"),
         "CYMBAL_BQ_DATASET": os.getenv("CYMBAL_BQ_DATASET", "cymbal_governance"),
         "CYMBAL_MCP_URL": os.getenv("CYMBAL_MCP_URL", ""),
         "CYMBAL_A2A_URL": os.getenv("CYMBAL_A2A_URL", ""),
     }
+    for optional_env_key in (
+        "CYMBAL_MODEL_ARMOR_DEFAULT_TEMPLATE",
+        "CYMBAL_MODEL_ARMOR_STRICT_TEMPLATE",
+        "CYMBAL_MODEL_ARMOR_LOW_TEMPLATE",
+        "CYMBAL_UPSTREAM_CONTENT_AUTHZ_ACTIVE",
+    ):
+        optional_val = os.getenv(optional_env_key, "").strip()
+        if optional_val:
+            env_vars[optional_env_key] = optional_val
 
     configured_re = os.getenv("CYMBAL_REASONING_ENGINE_NAME", "").strip()
     existing_name = ""

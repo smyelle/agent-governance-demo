@@ -18,6 +18,18 @@ provider "google" {
 }
 
 locals {
+  sanitized_agent_slug = trim(
+    replace(lower(var.agent_id), "/[^a-z0-9]+/", "-"),
+    "-"
+  )
+  sa_base_id = (
+    local.sanitized_agent_slug == "" ? "cymbal-agent" :
+    can(regex("^[a-z]", local.sanitized_agent_slug)) ? local.sanitized_agent_slug : "ag-${local.sanitized_agent_slug}"
+  )
+  sa_trimmed          = trimsuffix(substr(local.sa_base_id, 0, 28), "-")
+  agent_sa_account_id = length(local.sa_trimmed) >= 6 ? local.sa_trimmed : "${local.sa_trimmed}-agent"
+  wif_pool_id         = "${trimsuffix(substr(local.sa_base_id, 0, 20), "-")}-wif-pool"
+
   common_labels = {
     datacloud         = "antigravity"
     managed_by        = "paved_path_terraform"
@@ -29,7 +41,7 @@ locals {
 
 # 1. Zero-Secret Workload Identity & Least-Privilege Agent Service Account
 resource "google_service_account" "agent_workload_sa" {
-  account_id   = substr(replace(var.agent_id, "_", "-"), 0, 28)
+  account_id   = local.agent_sa_account_id
   display_name = "Governed ADK 2.0 Agent Workload (${var.agent_id})"
   description  = "Zero-secret SPIFFE / WIF identity for ${var.enterprise_app_id}"
 }
@@ -49,7 +61,7 @@ resource "google_project_iam_member" "agent_least_privilege_roles" {
 # 2. Standardized External IdP / OIDC Workload Identity Federation (ADR-011 azp binding)
 resource "google_iam_workload_identity_pool" "enterprise_agent_pool" {
   count                     = var.enable_spiffe_wif ? 1 : 0
-  workload_identity_pool_id = "${substr(var.agent_id, 0, 20)}-wif-pool"
+  workload_identity_pool_id = local.wif_pool_id
   display_name              = "Enterprise IdP & SPIFFE Federation Pool"
   description               = "Federates external OIDC azp claims to zero-secret GCP credentials."
 }
@@ -81,7 +93,7 @@ resource "google_compute_network" "agent_vpc" {
 
 resource "google_compute_subnetwork" "agent_psci_subnet" {
   name                     = "${var.agent_id}-psci-subnet"
-  ip_cidr_range            = "10.10.2.0/26"
+  ip_cidr_range            = var.psci_cidr_range
   region                   = var.region
   network                  = google_compute_network.agent_vpc.id
   private_ip_google_access = true

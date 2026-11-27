@@ -20,7 +20,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Build | Cymbal Agent Governance Platform</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20261125k">
+  <link rel="stylesheet" href="/static/styles.css?v=20261126m2">
 </head>
 <body>
   <a href="#center-workspace" class="skip-link visually-hidden">Skip to main content</a>
@@ -42,7 +42,7 @@
           <path d="M31.2 5.2a17.5 17.5 0 0 1 0 20.6" fill="none" stroke="#2563EB" stroke-width="3.2" stroke-linecap="round"></path>
         </svg>
         <div id="sidebar-brand-title" class="brand-lockup">
-          <span class="brand-wordmark">Cymbal</span>
+          <span id="sidebar-brand-wordmark" class="brand-wordmark">Cymbal</span>
           <span id="sidebar-brand-subtitle" class="brand-subword">Agent Governance Platform</span>
         </div>
       </div>
@@ -74,14 +74,27 @@
     </aside>
 
     <main id="center-workspace" class="main-workspace" tabindex="-1">
+      <header id="workspace-topbar" class="workspace-topbar">
+        <div class="topbar-meta">
+          <span id="topbar-platform-label" class="topbar-platform-label">Cymbal Agent Governance Platform</span>
+          <span id="topbar-tier-badge" class="agent-context-pill">4-Tier Coexistence</span>
+        </div>
+        <div class="topbar-controls">
+          <span id="topbar-runtime-badge" class="status-badge status-ok">Live Vertex AI (gemini-3.8-flash)</span>
+          <label class="offline-toggle-label" for="offline-demo-toggle">
+            <input type="checkbox" id="offline-demo-toggle">
+            <span>Offline Demo Fallback</span>
+          </label>
+        </div>
+      </header>
       <div id="global-alert-banner" class="alert-banner" role="alert" hidden></div>
       <div id="status-toast-banner" class="toast-banner" hidden></div>
 
       <div id="stage-body-content" class="stage-body"></div>
 
       <footer class="workspace-footer">
-        <span>Cymbal Agent Governance Platform (Apache-2.0) | Foundation Model Standard: gemini-3.8-flash</span>
-        <span>Cost figures represent non-binding engineering capacity models based on published cloud and enterprise unit rates.</span>
+        <span id="workspace-footer-brand">Cymbal Agent Governance Platform (Apache-2.0) | Foundation Model Standard: gemini-3.8-flash</span>
+        <span id="workspace-footer-disclaimer">Cost figures represent non-binding engineering capacity models based on published cloud and enterprise unit rates.</span>
       </footer>
     </main>
   </div>
@@ -96,6 +109,6 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=20261125k" defer></script>
+  <script src="/static/app.js?v=20261126m2" defer></script>
 </body>
 </html>

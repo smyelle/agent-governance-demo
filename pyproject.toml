@@ -26,7 +26,7 @@ requires-python = ">=3.11"
 dependencies = [
     "google-adk>=2.14.0",
     "google-genai>=1.40.0",
-    "google-cloud-aiplatform[agent_engines,adk]>=1.95.0",
+    "google-cloud-aiplatform[agent_engines,adk]>=2.10.0",
     "google-cloud-modelarmor>=0.2.0",
     "google-cloud-firestore>=2.19.0",
     "google-cloud-bigquery>=3.27.0",

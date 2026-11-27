@@ -49,9 +49,21 @@ DEFAULT_BUSINESS_UNITS: dict[str, str] = {
 }
 
 
+class SlotTcoOverride(BaseModel):
+    infra_monthly_usd: float | None = None
+    maintenance_monthly_usd: float | None = None
+    per_1m_turns_usd: float | None = None
+    onboarding_usd: float | None = None
+    consolidates: str | None = None
+    tco_notes: str = ""
+
+
 class TerminologyMap(BaseModel):
     platform_name: str = "Cymbal Agent Governance Platform"
+    platform_title: str = "Cymbal Agent Governance Platform"
     sidebar_brand: str = "Cymbal Agent Governance Platform"
+    brand_wordmark: str = "Cymbal"
+    brand_subtitle: str = "Agent Governance Platform"
     customer_provider_short: str = "Third-Party / OSS"
     gcp_provider_short: str = "Google Cloud"
     gateway_name: str
@@ -63,7 +75,10 @@ class TerminologyMap(BaseModel):
     runtime_name: str
     risk_framework: str
     risk_col_label: str = "SENTINEL Agency Tier"
+    agency_tier_label: str = "SENTINEL Agency Tier"
     registry_name: str
+    target_registry_name: str = "Enterprise Agent Registry (Target)"
+    identity_provider_name: str = "Okta OIDC + HashiCorp Vault"
     blueprint_registry_name: str = "Enterprise Golden Blueprint Catalog"
     observability_name: str
     eval_engine_name: str = "Gen AI Eval & Prompt Optimizer"
@@ -73,12 +88,19 @@ class TerminologyMap(BaseModel):
     guardrail_policy_name: str
     high_risk_tier: str = "AG3"
     low_risk_tier: str = "AG1"
+    prohibited_risk_tier: str = "AG5"
     best_practices_name: str = "Cymbal Platform Governance Rubric"
+    tco_framing_note: str = (
+        "Fully-loaded infrastructure + platform engineering maintenance + marginal API spend"
+    )
     slot_cymbal_names: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_SLOT_CYMBAL_NAMES)
     )
     business_units: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_BUSINESS_UNITS)
+    )
+    slot_tco_overrides: dict[str, dict[str, SlotTcoOverride]] = Field(
+        default_factory=dict
     )
 
 
